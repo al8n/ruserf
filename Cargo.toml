@@ -1,0 +1,16 @@
+[workspace]
+members = [
+  "ruserf",
+  "core",
+  "traits",
+  "types",
+]
+
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+repository = "https://github.com/al8n/ruserf"
+homepage = "https://github.com/al8n/ruserf"
+license = "MPL-2.0"
+
