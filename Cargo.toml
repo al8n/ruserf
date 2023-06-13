@@ -2,10 +2,8 @@
 members = [
   "ruserf",
   "core",
-  "traits",
-  "types",
 ]
-
+resolver = "2"
 
 [workspace.package]
 version = "0.0.0"
@@ -13,4 +11,10 @@ edition = "2021"
 repository = "https://github.com/al8n/ruserf"
 homepage = "https://github.com/al8n/ruserf"
 license = "MPL-2.0"
+
+[workspace.dependencies]
+derive_more = "0.99"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+humantime-serde = "1"
 

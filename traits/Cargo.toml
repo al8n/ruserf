@@ -1,9 +1,0 @@
-[package]
-name = "ruraft-traits"
-version = { workspace = true } 
-edition = { workspace = true }
-license = { workspace = true }
-description = "A placeholder"
-
-
-[dependencies]
