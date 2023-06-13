@@ -2,8 +2,6 @@
 members = [
   "ruserf",
   "core",
-  "traits",
-  "types",
 ]
 
 

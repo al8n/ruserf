@@ -5,4 +5,12 @@ edition = { workspace = true }
 license = { workspace = true }
 description = "A placeholder"
 
+[features]
+default = ["async", "async-io", "metrics"]
+async = ["showbiz-core/async"]
+async-io = ["showbiz-core/async-io"]
+wasm-async = ["async", "showbiz-core/wasm-async"]
+metrics = ["showbiz-core/metrics"]
+
 [dependencies]
+showbiz-core = { path = "../../showbiz/core", default-features = false }

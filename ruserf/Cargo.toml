@@ -1,5 +1,5 @@
 [package]
-name = "ruraft"
+name = "ruserf"
 version = { workspace = true } 
 edition = { workspace = true }
 license = { workspace = true }
