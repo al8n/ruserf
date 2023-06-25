@@ -9,6 +9,12 @@ use showbiz_core::{bytes::Bytes, DelegateVersion, NodeId, ProtocolVersion};
 
 use crate::{clock::LamportTime, types::MessageType};
 
+/// Maximum 128 KB snapshot
+const SNAPSHOT_SIZE_LIMIT: usize = 128 * 1024;
+
+/// Maximum 9KB for event name and payload
+pub const USER_EVENT_SIZE_LIMIT: usize = 9 * 1024;
+
 /// Used to buffer events to prevent re-delivery
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct UserEvents {

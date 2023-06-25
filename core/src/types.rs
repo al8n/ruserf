@@ -1,11 +1,11 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, time::Duration, sync::Arc};
 
 use rmp_serde::{
   decode::Error as DecodeError, encode::Error as EncodeError, Deserializer as RmpDeserializer,
   Serializer as RmpSerializer,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize, Serializer};
-use showbiz_core::{bytes::Bytes, security::SecretKey, Message, NodeId};
+use showbiz_core::{bytes::{Bytes, BytesMut, BufMut}, security::SecretKey, Message, NodeId, Name};
 
 use crate::{clock::LamportTime, UserEvents};
 
@@ -118,17 +118,19 @@ pub(crate) struct PushPull {
 }
 
 /// Used for user-generated events
+#[viewit::viewit]
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct MessageUserEvent {
   ltime: LamportTime,
-  name: String,
+  name: Name,
   payload: Bytes,
   /// "Can Coalesce".
   cc: bool,
 }
 
+#[viewit::viewit]
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Query {
+pub(crate) struct QueryMessage {
   /// Event lamport time
   ltime: LamportTime,
   /// query id, randomly generated
@@ -144,12 +146,12 @@ pub(crate) struct Query {
   /// Maximum time between delivery and response
   timeout: Duration,
   /// Query nqme
-  name: String,
+  name: Name,
   /// Query payload
   payload: Bytes,
 }
 
-impl Query {
+impl QueryMessage {
   /// checks if the ack flag is set
   #[inline]
   pub(crate) fn ack(&self) -> bool {
@@ -161,10 +163,22 @@ impl Query {
   pub(crate) fn no_broadcast(&self) -> bool {
     (QueryFlag { bits: self.flags } & QueryFlag::NO_BROADCAST) != QueryFlag::empty()
   }
+
+  #[inline]
+  pub(crate) fn response(&self, num_nodes: usize) -> Arc<QueryResponse> {
+    let resp = QueryResponse {
+      ltime: todo!(),
+      id: todo!(),
+      from: todo!(),
+      flags: todo!(),
+      payload: todo!(),
+    };
+  }
 }
 
+#[viewit::viewit]
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct QueryResponse {
+pub struct QueryResponseMessage {
   /// Event lamport time
   ltime: LamportTime,
   /// query id
@@ -177,7 +191,7 @@ pub(crate) struct QueryResponse {
   payload: Bytes,
 }
 
-impl QueryResponse {
+impl QueryResponseMessage {
   /// checks if the ack flag is set
   #[inline]
   pub(crate) fn ack(&self) -> bool {
@@ -251,12 +265,12 @@ impl KeyRequestOptions {
   }
 }
 
-pub(crate) fn encode_message<T>(t: MessageType, msg: &T) -> Result<Vec<u8>, EncodeError>
+pub(crate) fn encode_message<T>(t: MessageType, msg: &T) -> Result<Message, EncodeError>
 where
   T: Serialize + ?Sized,
 {
-  let mut wr = Vec::with_capacity(128);
-  wr.push(t as u8);
+  let mut wr = Message::with_capacity(128);
+  wr.put_u8(t as u8);
   msg.serialize(&mut RmpSerializer::new(&mut wr)).map(|_| wr)
 }
 

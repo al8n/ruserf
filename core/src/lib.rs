@@ -2,6 +2,7 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod clock;
+
 // mod coalesce;
 mod delegate;
 // pub mod event;
@@ -15,3 +16,5 @@ mod types;
 
 mod options;
 pub use options::*;
+
+mod query;

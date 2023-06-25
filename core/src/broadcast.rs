@@ -2,6 +2,7 @@ use arc_swap::ArcSwapOption;
 use async_channel::Sender;
 use showbiz_core::{async_trait, broadcast::Broadcast, Message, Name};
 
+#[viewit::viewit]
 pub(crate) struct SerfBroadcast {
   name: Name,
   msg: Message,

@@ -19,12 +19,12 @@ impl std::fmt::Display for SerfDelegateError {
 
 impl std::error::Error for SerfDelegateError {}
 
-pub(crate) struct SerfDelegate<D: MergeDelegate, T: Transport, R: Runtime>(
+pub(crate) struct SerfDelegate<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime>(
   pub(crate) Serf<D, T, R>,
 );
 
 #[async_trait::async_trait]
-impl<D: MergeDelegate, T: Transport, R: Runtime> ShowbizDelegate for SerfDelegate<D, T, R> {
+impl<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime> ShowbizDelegate for SerfDelegate<D, T, R> {
   type Error = SerfDelegateError;
 
   fn node_meta(&self, _limit: usize) -> Bytes {
