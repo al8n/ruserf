@@ -12,3 +12,7 @@ repository = "https://github.com/al8n/ruserf"
 homepage = "https://github.com/al8n/ruserf"
 license = "MPL-2.0"
 
+[workspace.dependencies]
+agnostic = { path = "../agnostic/agnostic", features = ["net"] }
+serde = { version = "1", features = ["derive"] }
+

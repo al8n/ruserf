@@ -1,7 +1,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A lamport time is a simple u64 that represents a point in time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+  Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
 pub struct LamportTime(u64);
 
 impl core::fmt::Display for LamportTime {

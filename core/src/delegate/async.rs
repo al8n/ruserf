@@ -1,12 +1,9 @@
 use std::sync::Arc;
 
+use agnostic::Runtime;
 use showbiz_core::{
-  async_trait,
-  bytes::Bytes,
-  delegate::Delegate,
-  transport::Transport,
-  types::{Message, Node, NodeId},
-  Spawner,
+  async_trait, bytes::Bytes, delegate::Delegate as ShowbizDelegate, transport::Transport, Message,
+  Node, NodeId,
 };
 
 use crate::Serf;
@@ -22,10 +19,12 @@ impl std::fmt::Display for SerfDelegateError {
 
 impl std::error::Error for SerfDelegateError {}
 
-pub(crate) struct SerfDelegate<T: Transport, S: Spawner>(pub(crate) Serf<T, S>);
+pub(crate) struct SerfDelegate<D: MergeDelegate, T: Transport, R: Runtime>(
+  pub(crate) Serf<D, T, R>,
+);
 
 #[async_trait::async_trait]
-impl<T: Transport, S: Spawner> Delegate for SerfDelegate<T, S> {
+impl<D: MergeDelegate, T: Transport, R: Runtime> ShowbizDelegate for SerfDelegate<D, T, R> {
   type Error = SerfDelegateError;
 
   fn node_meta(&self, _limit: usize) -> Bytes {
@@ -97,4 +96,12 @@ impl<T: Transport, S: Spawner> Delegate for SerfDelegate<T, S> {
   fn disable_reliable_pings(&self, _node: &NodeId) -> bool {
     false
   }
+}
+
+#[cfg_attr(not(feature = "nightly"), async_trait::async_trait)]
+pub trait MergeDelegate: Send + Sync + 'static {
+  type Error: std::error::Error + Send + Sync + 'static;
+
+  #[cfg(not(feature = "nightly"))]
+  async fn notify_merge(&self, members: &[crate::Member]) -> Result<(), Self::Error>;
 }

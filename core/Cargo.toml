@@ -6,11 +6,23 @@ license = { workspace = true }
 description = "A placeholder"
 
 [features]
-default = ["async", "async-io", "metrics"]
+default = ["async", "metrics"]
 async = ["showbiz-core/async"]
-async-io = ["showbiz-core/async-io"]
-wasm-async = ["async", "showbiz-core/wasm-async"]
 metrics = ["showbiz-core/metrics"]
 
+serde = ["dep:serde"]
+
 [dependencies]
+atomic = "0.5"
+arc-swap = "1.6"
+async-lock = "2.7"
+async-channel = { version = "1.2" }
+agnostic = { workspace = true }
+bitflags = "1"
+rmp-serde = { version = "1.1" }
+serde = { workspace = true, optional = true }
 showbiz-core = { path = "../../showbiz/core", default-features = false }
+viewit = "0.1.5"
+
+[dev-dependencies]
+tokio = { version = "1.28", features = ["full"] }
