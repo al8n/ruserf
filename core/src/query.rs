@@ -97,7 +97,7 @@ struct QueryResponseInner {
 
 /// Returned for each new Query. It is used to collect
 /// Ack's as well as responses and to provide those back to a client.
-#[viewit::viewit(vis_all = "")]
+#[viewit::viewit(vis_all = "pub(crate)")]
 #[derive(Clone)]
 pub struct QueryResponse {
   /// The duration of the query
@@ -109,7 +109,7 @@ pub struct QueryResponse {
   /// Stores the LTime of the query
   ltime: LamportTime,
 
-  #[viewit(getter(const, style = "ref"))]
+  #[viewit(getter(vis = "pub(crate)", const, style = "ref"))]
   inner: Arc<QueryResponseInner>,
 }
 
@@ -382,6 +382,7 @@ where
       ));
     }
 
+    // Relay to a random set of peers.
     let relay_members = random_members(relay_factor as usize, members);
 
     let futs = relay_members.into_iter().map(|m| {

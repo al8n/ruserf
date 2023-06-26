@@ -39,6 +39,10 @@ impl NodeCalculator for SerfNodeCalculator {
   }
 }
 
+pub(crate) struct SerfQueryCore {
+  responses: Arc<RwLock<HashMap<LamportTime, QueryResponse>>>,
+}
+
 #[viewit::viewit]
 pub(crate) struct SerfCore<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime> {
   clock: LamportClock,
@@ -53,6 +57,8 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport<Runtime = R>, R: Runti
   merge_delegate: Option<D>,
 
   event_broadcasts: TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>,
+
+  query_core: SerfQueryCore,
 
   opts: Options<T>,
 
@@ -250,5 +256,22 @@ impl<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime> Serf<D, T, R> {
     todo!()
   }
 
-  async fn register_query_response(&self, timeout: Duration, resp: QueryResponse) {}
+  /// Used to setup the listeners for the query,
+  /// and to schedule closing the query after the timeout.
+  async fn register_query_response(&self, timeout: Duration, resp: QueryResponse) {
+    let tresps = self.inner.query_core.responses.clone();
+    let mut resps = self.inner.query_core.responses.write().await;
+    // Map the LTime to the QueryResponse. This is necessarily 1-to-1,
+    // since we increment the time for each new query.
+    let ltime = resp.ltime;
+    resps.insert(ltime, resp);
+
+    // Setup a timer to close the response and deregister after the timeout
+    R::delay(timeout, async move {
+      let mut resps = tresps.write().await;
+      if let Some(resp) = resps.remove(&ltime) {
+        resp.close().await;
+      }
+    });
+  }
 }
