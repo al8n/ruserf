@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::mutable_key_type)]
 
+pub mod channel;
 pub mod clock;
 
 // mod coalesce;

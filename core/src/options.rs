@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use showbiz_core::{
   humantime_serde, transport::Transport, Options as ShowbizOptions, ProtocolVersion,
@@ -8,7 +8,6 @@ use showbiz_core::{
 #[viewit::viewit(getters(vis_all = "pub"), setters(vis_all = "pub", prefix = "with"))]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Options<T: Transport> {
-  // tags: HashMap<Name, >
   /// The protocol version to speak
   protocol_version: ProtocolVersion,
 

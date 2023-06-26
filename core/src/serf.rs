@@ -1,6 +1,6 @@
 #[cfg(feature = "async")]
 mod r#async;
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 #[cfg(feature = "async")]
 pub use r#async::*;
@@ -47,6 +47,7 @@ pub enum MemberStatus {
 }
 
 /// A single member of the Serf cluster.
+#[viewit::viewit(vis_all = "pub(crate)")]
 pub struct Member {
   id: NodeId,
   tags: HashMap<String, String>,
@@ -58,8 +59,10 @@ pub struct Member {
 /// Used to track members that are no longer active due to
 /// leaving, failing, partitioning, etc. It tracks the member along with
 /// when that member was marked as leaving.
+#[viewit::viewit]
+#[derive(Clone)]
 pub(crate) struct MemberState {
-  member: Member,
+  member: Arc<Member>,
   /// lamport clock time of last received message
   status_time: LamportTime,
   /// wall clock time of leave

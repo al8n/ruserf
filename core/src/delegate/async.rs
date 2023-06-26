@@ -24,7 +24,9 @@ pub(crate) struct SerfDelegate<D: MergeDelegate, T: Transport<Runtime = R>, R: R
 );
 
 #[async_trait::async_trait]
-impl<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime> ShowbizDelegate for SerfDelegate<D, T, R> {
+impl<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime> ShowbizDelegate
+  for SerfDelegate<D, T, R>
+{
   type Error = SerfDelegateError;
 
   fn node_meta(&self, _limit: usize) -> Bytes {

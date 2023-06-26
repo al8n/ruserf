@@ -1,13 +1,18 @@
-use std::{collections::HashMap, time::Duration, sync::Arc};
+use std::{
+  collections::HashMap,
+  sync::Arc,
+  time::{Duration, Instant},
+};
 
+use async_lock::Mutex;
 use rmp_serde::{
   decode::Error as DecodeError, encode::Error as EncodeError, Deserializer as RmpDeserializer,
   Serializer as RmpSerializer,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize, Serializer};
-use showbiz_core::{bytes::{Bytes, BytesMut, BufMut}, security::SecretKey, Message, NodeId, Name};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use showbiz_core::{bytes::Bytes, security::SecretKey, Message, Name, NodeId};
 
-use crate::{clock::LamportTime, UserEvents};
+use crate::{clock::LamportTime, query::QueryResponse, UserEvents};
 
 /// The types of gossip messages Serf will send along
 /// showbiz.
@@ -61,10 +66,29 @@ bitflags::bitflags! {
 /// Used with a queryFilter to specify the type of
 /// filter we are sending
 #[derive(Debug, Clone, Eq, PartialEq)]
-#[repr(u8)]
 pub(crate) enum FilterType {
   Node(Vec<NodeId>),
   Tag(Tag),
+}
+
+impl FilterType {
+  pub(crate) const NODE: u8 = 0;
+  pub(crate) const TAG: u8 = 1;
+
+  pub(crate) fn as_ref(&self) -> FilterTypeRef {
+    match self {
+      FilterType::Node(nodes) => FilterTypeRef::Node(nodes),
+      FilterType::Tag(t) => FilterTypeRef::Tag(TagRef {
+        tag: t.tag.as_str(),
+        expr: t.expr.as_str(),
+      }),
+    }
+  }
+}
+
+pub(crate) enum FilterTypeRef<'a> {
+  Node(&'a [NodeId]),
+  Tag(TagRef<'a>),
 }
 
 // impl FilterType {
@@ -165,14 +189,14 @@ impl QueryMessage {
   }
 
   #[inline]
-  pub(crate) fn response(&self, num_nodes: usize) -> Arc<QueryResponse> {
-    let resp = QueryResponse {
-      ltime: todo!(),
-      id: todo!(),
-      from: todo!(),
-      flags: todo!(),
-      payload: todo!(),
-    };
+  pub(crate) fn response(&self, num_nodes: usize) -> QueryResponse {
+    QueryResponse::new(
+      self.id,
+      self.ltime,
+      num_nodes,
+      Instant::now() + self.timeout,
+      self.ack(),
+    )
   }
 }
 
@@ -200,14 +224,25 @@ impl QueryResponseMessage {
 }
 
 /// Used to store the end destination of a relayed message
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+#[repr(transparent)]
 pub(crate) struct RelayHeader {
   dest: NodeId,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[viewit::viewit]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Tag {
   tag: String,
   expr: String,
+}
+
+#[viewit::viewit]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct TagRef<'a> {
+  tag: &'a str,
+  expr: &'a str,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Copy)]
@@ -279,4 +314,32 @@ where
   T: DeserializeOwned,
 {
   T::deserialize(&mut RmpDeserializer::new(src))
+}
+
+/// Wraps a message in the `MessageType::Relay`, adding the length and
+/// address of the end recipient to the front of the message
+pub(crate) fn encode_relay_message<T>(
+  t: MessageType,
+  dest: NodeId,
+  msg: &T,
+) -> Result<Message, EncodeError>
+where
+  T: Serialize + ?Sized,
+{
+  let mut wr = Message::with_capacity(128);
+  wr.put_u8(MessageType::Relay as u8);
+  {
+    let ser = &mut RmpSerializer::new(&mut wr);
+    RelayHeader { dest }.serialize(ser)?;
+  }
+
+  wr.put_u8(t as u8);
+  msg.serialize(&mut RmpSerializer::new(&mut wr)).map(|_| wr)
+}
+
+pub(crate) fn encode_filter(f: FilterTypeRef<'_>) -> Result<Bytes, EncodeError> {
+  match f {
+    FilterTypeRef::Node(nodes) => rmp_serde::to_vec(nodes).map(Into::into),
+    FilterTypeRef::Tag(t) => rmp_serde::to_vec(&t).map(Into::into),
+  }
 }

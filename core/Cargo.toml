@@ -20,6 +20,7 @@ async-channel = { version = "1.2" }
 agnostic = { workspace = true }
 bitflags = "1"
 rand = "0.8"
+regex = "1.7"
 rmp-serde = { version = "1.1" }
 serde = { workspace = true, optional = true }
 showbiz-core = { path = "../../showbiz/core", default-features = false }
