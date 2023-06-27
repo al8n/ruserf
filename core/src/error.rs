@@ -21,13 +21,15 @@ impl std::error::Error for VoidError {}
 #[derive(thiserror::Error)]
 pub enum Error<D: MergeDelegate, T: Transport> {
   #[error("ruserf: {0}")]
-  Showbiz(#[from] showbiz_core::error::Error<SerfDelegate<D, T, T::Runtime>, T>),
+  Showbiz(#[from] ShowbizError<D, T>),
   #[error("ruserf: user event exceeds sane limit of {0} bytes before encoding")]
   UserEventTooLarge(usize),
   #[error("ruserf: user event exceeds sane limit of {0} bytes after encoding")]
   RawUserEventTooLarge(usize),
   #[error("ruserf: query exceeds limit of {0} bytes")]
   QueryTooLarge(usize),
+  #[error("ruserf: encoded length of tags exceeds limit of {0} bytes")]
+  TagsTooLarge(usize),
   #[error("ruserf: relayed response exceeds limit of {0} bytes")]
   RelayedResponseTooLarge(usize),
   #[error("ruserf: relay error\n{0}")]
@@ -38,6 +40,32 @@ pub enum Error<D: MergeDelegate, T: Transport> {
   Decode(#[from] rmp_serde::decode::Error),
   #[error("ruserf: failed to deliver query response, dropping")]
   QueryResponseDeliveryFailed,
+}
+
+pub struct ShowbizError<D: MergeDelegate, T: Transport>(
+  showbiz_core::error::Error<SerfDelegate<D, T, T::Runtime>, T>,
+);
+
+impl<D: MergeDelegate, T: Transport>
+  From<showbiz_core::error::Error<SerfDelegate<D, T, T::Runtime>, T>> for ShowbizError<D, T>
+{
+  fn from(value: showbiz_core::error::Error<SerfDelegate<D, T, T::Runtime>, T>) -> Self {
+    Self(value)
+  }
+}
+
+impl<D: MergeDelegate, T: Transport> core::fmt::Display for ShowbizError<D, T> {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    write!(f, "{}", self.0)
+  }
+}
+
+impl<D: MergeDelegate, T: Transport>
+  From<showbiz_core::error::Error<SerfDelegate<D, T, T::Runtime>, T>> for Error<D, T>
+{
+  fn from(value: showbiz_core::error::Error<SerfDelegate<D, T, T::Runtime>, T>) -> Self {
+    Self::Showbiz(ShowbizError(value))
+  }
 }
 
 pub struct RelayError<D: MergeDelegate, T: Transport>(

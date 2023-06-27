@@ -10,11 +10,13 @@ use std::{
 use super::*;
 
 use agnostic::Runtime;
-use arc_swap::ArcSwapOption;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use async_lock::{Mutex, RwLock};
 use showbiz_core::{
+  bytes::{BufMut, BytesMut},
   futures_util::Stream,
   queue::{NodeCalculator, TransmitLimitedQueue},
+  tracing,
   transport::Transport,
   Name, Showbiz,
 };
@@ -28,6 +30,8 @@ use crate::{
   types::{encode_message, MessageUserEvent, QueryFlag, QueryMessage, QueryResponseMessage},
   Options,
 };
+
+const MAGIC_BYTE: u8 = 255;
 
 pub(crate) struct SerfNodeCalculator {
   num_nodes: Arc<AtomicU32>,
@@ -67,7 +71,7 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport<Runtime = R>, R: Runti
   /// differentiate "load-balancer" from a "web" role as parts of the same cluster.
   /// Tags are deprecating 'Role', and instead it acts as a special key in this
   /// map.
-  tags: HashMap<String, String>,
+  tags: ArcSwap<HashMap<String, String>>,
 }
 
 /// Serf is a single node that is part of a single cluster that gets
@@ -110,6 +114,27 @@ where
   #[inline]
   pub async fn members(&self) -> usize {
     self.inner.members.read().await.len()
+  }
+
+  /// Used to dynamically update the tags associated with
+  /// the local node. This will propagate the change to the rest of
+  /// the cluster. Blocks until a the message is broadcast out.
+  #[inline]
+  pub async fn set_tags(&self, tags: HashMap<String, String>) -> Result<(), Error<D, T>> {
+    // Check that the meta data length is okay
+    if self.encode_tags(&tags)?.len() > showbiz_core::META_MAX_SIZE {
+      return Err(Error::TagsTooLarge(showbiz_core::META_MAX_SIZE));
+    }
+    // update the config
+    self.inner.tags.store(Arc::new(tags));
+
+    // trigger a memberlist update
+    self
+      .inner
+      .memberlist
+      .update_node(self.inner.opts.broadcast_timeout)
+      .await
+      .map_err(From::from)
   }
 
   /// Used to broadcast a custom user event with a given
@@ -273,5 +298,46 @@ impl<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime> Serf<D, T, R> {
         resp.close().await;
       }
     });
+  }
+
+  /// Used to encode a tag map
+  fn encode_tags(&self, tag: &HashMap<String, String>) -> Result<Bytes, Error<D, T>> {
+    struct EncodeHelper(BytesMut);
+
+    impl std::io::Write for EncodeHelper {
+      fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.put_slice(buf);
+        Ok(buf.len())
+      }
+
+      fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+      }
+    }
+
+    let mut buf = EncodeHelper(BytesMut::with_capacity(128));
+    // Use a magic byte prefix and msgpack encode the tags
+    buf.0.put_u8(MAGIC_BYTE);
+    match tag.serialize(&mut rmp_serde::Serializer::new(&mut buf)) {
+      Ok(_) => Ok(buf.0.freeze()),
+      Err(e) => {
+        tracing::error!(target = "reserf", err=%e, "failed to encode tags");
+        Err(Error::Encode(e))
+      }
+    }
+  }
+
+  /// Used to decode a tag map
+  fn decode_tags(&self, src: &[u8]) -> HashMap<String, String> {
+    // Decode the tags
+    let r = std::io::Cursor::new(&src[1..]);
+    let mut de = rmp_serde::Deserializer::new(r);
+    match HashMap::<String, String>::deserialize(&mut de) {
+      Ok(tags) => tags,
+      Err(e) => {
+        tracing::error!(target = "reserf", err=%e, "failed to decode tags");
+        HashMap::new()
+      }
+    }
   }
 }

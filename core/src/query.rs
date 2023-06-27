@@ -90,7 +90,7 @@ struct QueryResponseCore {
   responses: HashSet<Name>,
 }
 
-struct QueryResponseInner {
+pub(crate) struct QueryResponseInner {
   core: Mutex<QueryResponseCore>,
   channel: QueryResponseChannel,
 }
@@ -310,7 +310,7 @@ where
           };
 
           // Check if we match this regex
-          if let Some(expr) = self.inner.tags.get(&filter.tag) {
+          if let Some(expr) = self.inner.tags.load().get(&filter.tag) {
             match regex::Regex::new(&filter.expr) {
               Ok(re) => {
                 if !re.is_match(expr) {
