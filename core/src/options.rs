@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use showbiz_core::{
   humantime_serde, transport::Transport, Options as ShowbizOptions, ProtocolVersion,

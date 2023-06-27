@@ -27,7 +27,7 @@ use crate::{
   delegate::{MergeDelegate, SerfDelegate},
   error::Error,
   query::{QueryParam, QueryResponse},
-  types::{encode_message, MessageUserEvent, QueryFlag, QueryMessage, QueryResponseMessage},
+  types::{encode_message, MessageUserEvent, QueryFlag, QueryMessage},
   Options,
 };
 
@@ -48,14 +48,14 @@ pub(crate) struct SerfQueryCore {
 }
 
 #[viewit::viewit]
-pub(crate) struct SerfCore<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime> {
+pub(crate) struct SerfCore<D: MergeDelegate, T: Transport> {
   clock: LamportClock,
   event_clock: LamportClock,
   query_clock: LamportClock,
 
   broadcasts: TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>,
   // opts: Options,
-  memberlist: Showbiz<SerfDelegate<D, T, R>, T, R>,
+  memberlist: Showbiz<SerfDelegate<D, T>, T>,
   members: RwLock<HashMap<Name, MemberState>>,
 
   merge_delegate: Option<D>,
@@ -80,11 +80,11 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport<Runtime = R>, R: Runti
 ///
 /// All functions on the Serf structure are safe to call concurrently.
 #[repr(transparent)]
-pub struct Serf<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime> {
-  pub(crate) inner: Arc<SerfCore<D, T, R>>,
+pub struct Serf<D: MergeDelegate, T: Transport> {
+  pub(crate) inner: Arc<SerfCore<D, T>>,
 }
 
-impl<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime> Clone for Serf<D, T, R> {
+impl<D: MergeDelegate, T: Transport> Clone for Serf<D, T> {
   fn clone(&self) -> Self {
     Self {
       inner: self.inner.clone(),
@@ -93,13 +93,12 @@ impl<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime> Clone for Serf<D, 
 }
 
 // ------------------------------------Public methods------------------------------------
-impl<D, T, R> Serf<D, T, R>
+impl<D, T> Serf<D, T>
 where
   D: MergeDelegate,
-  T: Transport<Runtime = R>,
-  R: Runtime,
-  <R::Sleep as Future>::Output: Send,
-  <R::Interval as Stream>::Item: Send,
+  T: Transport,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   /// A predicate that determines whether or not encryption
   /// is enabled, which can be possible in one of 2 cases:
@@ -271,7 +270,7 @@ where
 
 // ---------------------------------Private Methods-------------------------------
 
-impl<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime> Serf<D, T, R> {
+impl<D: MergeDelegate, T: Transport> Serf<D, T> {
   async fn handle_user_event(&self) -> bool {
     // TODO: implement this method
     true
@@ -292,7 +291,7 @@ impl<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime> Serf<D, T, R> {
     resps.insert(ltime, resp);
 
     // Setup a timer to close the response and deregister after the timeout
-    R::delay(timeout, async move {
+    <T::Runtime as Runtime>::delay(timeout, async move {
       let mut resps = tresps.write().await;
       if let Some(resp) = resps.remove(&ltime) {
         resp.close().await;

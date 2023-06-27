@@ -43,13 +43,13 @@ pub enum Error<D: MergeDelegate, T: Transport> {
 }
 
 pub struct ShowbizError<D: MergeDelegate, T: Transport>(
-  showbiz_core::error::Error<SerfDelegate<D, T, T::Runtime>, T>,
+  showbiz_core::error::Error<SerfDelegate<D, T>, T>,
 );
 
-impl<D: MergeDelegate, T: Transport>
-  From<showbiz_core::error::Error<SerfDelegate<D, T, T::Runtime>, T>> for ShowbizError<D, T>
+impl<D: MergeDelegate, T: Transport> From<showbiz_core::error::Error<SerfDelegate<D, T>, T>>
+  for ShowbizError<D, T>
 {
-  fn from(value: showbiz_core::error::Error<SerfDelegate<D, T, T::Runtime>, T>) -> Self {
+  fn from(value: showbiz_core::error::Error<SerfDelegate<D, T>, T>) -> Self {
     Self(value)
   }
 }
@@ -60,18 +60,19 @@ impl<D: MergeDelegate, T: Transport> core::fmt::Display for ShowbizError<D, T> {
   }
 }
 
-impl<D: MergeDelegate, T: Transport>
-  From<showbiz_core::error::Error<SerfDelegate<D, T, T::Runtime>, T>> for Error<D, T>
+impl<D: MergeDelegate, T: Transport> From<showbiz_core::error::Error<SerfDelegate<D, T>, T>>
+  for Error<D, T>
 {
-  fn from(value: showbiz_core::error::Error<SerfDelegate<D, T, T::Runtime>, T>) -> Self {
+  fn from(value: showbiz_core::error::Error<SerfDelegate<D, T>, T>) -> Self {
     Self::Showbiz(ShowbizError(value))
   }
 }
 
 pub struct RelayError<D: MergeDelegate, T: Transport>(
+  #[allow(clippy::type_complexity)]
   Vec<(
     Arc<Member>,
-    showbiz_core::error::Error<SerfDelegate<D, T, T::Runtime>, T>,
+    showbiz_core::error::Error<SerfDelegate<D, T>, T>,
   )>,
 );
 
@@ -79,14 +80,14 @@ impl<D: MergeDelegate, T: Transport>
   From<
     Vec<(
       Arc<Member>,
-      showbiz_core::error::Error<SerfDelegate<D, T, T::Runtime>, T>,
+      showbiz_core::error::Error<SerfDelegate<D, T>, T>,
     )>,
   > for RelayError<D, T>
 {
   fn from(
     value: Vec<(
       Arc<Member>,
-      showbiz_core::error::Error<SerfDelegate<D, T, T::Runtime>, T>,
+      showbiz_core::error::Error<SerfDelegate<D, T>, T>,
     )>,
   ) -> Self {
     Self(value)

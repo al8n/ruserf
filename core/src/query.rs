@@ -241,13 +241,12 @@ pub struct NodeResponse {
   payload: Bytes,
 }
 
-impl<D, T, R> Serf<D, T, R>
+impl<D, T> Serf<D, T>
 where
   D: MergeDelegate,
-  T: Transport<Runtime = R>,
-  R: Runtime,
-  <R::Sleep as std::future::Future>::Output: Send,
-  <R::Interval as futures_util::Stream>::Item: Send,
+  T: Transport,
+  <<T::Runtime as Runtime>::Sleep as std::future::Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
 {
   /// Returns the default timeout value for a query
   /// Computed as

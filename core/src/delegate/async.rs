@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use agnostic::Runtime;
 use showbiz_core::{
   async_trait, bytes::Bytes, delegate::Delegate as ShowbizDelegate, transport::Transport, Message,
   Node, NodeId,
@@ -19,14 +18,10 @@ impl std::fmt::Display for SerfDelegateError {
 
 impl std::error::Error for SerfDelegateError {}
 
-pub(crate) struct SerfDelegate<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime>(
-  pub(crate) Serf<D, T, R>,
-);
+pub(crate) struct SerfDelegate<D: MergeDelegate, T: Transport>(pub(crate) Serf<D, T>);
 
 #[async_trait::async_trait]
-impl<D: MergeDelegate, T: Transport<Runtime = R>, R: Runtime> ShowbizDelegate
-  for SerfDelegate<D, T, R>
-{
+impl<D: MergeDelegate, T: Transport> ShowbizDelegate for SerfDelegate<D, T> {
   type Error = SerfDelegateError;
 
   fn node_meta(&self, _limit: usize) -> Bytes {
