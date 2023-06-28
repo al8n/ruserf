@@ -1,6 +1,6 @@
 use std::{
   collections::{HashMap, HashSet},
-  sync::Arc,
+  sync::{atomic::Ordering, Arc},
   time::{Duration, Instant},
 };
 
@@ -353,13 +353,16 @@ where
     // be needed.
     let members = {
       let members = self.inner.members.read().await;
-      if members.len() < relay_factor as usize + 1 {
+      if members.states.len() < relay_factor as usize + 1 {
         return Ok(());
       }
       members
+        .states
         .iter()
         .filter_map(|(name, m)| {
-          if m.member.status != MemberStatus::Alive || name == self.inner.memberlist.name() {
+          if m.member.status.load(Ordering::SeqCst) != MemberStatus::Alive
+            || name == self.inner.memberlist.name()
+          {
             None
           } else {
             Some(m.member.clone())

@@ -2,6 +2,7 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod clock;
+pub mod coordinate;
 
 // mod coalesce;
 mod delegate;

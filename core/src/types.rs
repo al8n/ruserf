@@ -108,10 +108,17 @@ pub(crate) enum FilterTypeRef<'a> {
 
 /// The message broadcasted after we join to
 /// associated the node with a lamport clock
+#[viewit::viewit]
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Join {
+pub(crate) struct JoinMessage {
   ltime: LamportTime,
-  node: NodeId,
+  node: Name,
+}
+
+impl JoinMessage {
+  pub fn new(ltime: LamportTime, node: Name) -> Self {
+    Self { ltime, node }
+  }
 }
 
 /// The message broadcasted to signal the intentional to

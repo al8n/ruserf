@@ -1,7 +1,7 @@
 use std::{
   future::Future,
   sync::{
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
     Arc,
   },
   time::Duration,
@@ -18,7 +18,7 @@ use showbiz_core::{
   queue::{NodeCalculator, TransmitLimitedQueue},
   tracing,
   transport::Transport,
-  Name, Showbiz,
+  Address, Name, Showbiz,
 };
 
 use crate::{
@@ -27,7 +27,7 @@ use crate::{
   delegate::{MergeDelegate, SerfDelegate},
   error::Error,
   query::{QueryParam, QueryResponse},
-  types::{encode_message, MessageUserEvent, QueryFlag, QueryMessage},
+  types::{encode_message, JoinMessage, MessageUserEvent, QueryFlag, QueryMessage},
   Options,
 };
 
@@ -47,6 +47,11 @@ pub(crate) struct SerfQueryCore {
   responses: Arc<RwLock<HashMap<LamportTime, QueryResponse>>>,
 }
 
+struct Members {
+  states: HashMap<Name, MemberState>,
+  recent_intents: HashMap<Name, NodeIntent>,
+}
+
 #[viewit::viewit]
 pub(crate) struct SerfCore<D: MergeDelegate, T: Transport> {
   clock: LamportClock,
@@ -56,15 +61,20 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport> {
   broadcasts: TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>,
   // opts: Options,
   memberlist: Showbiz<SerfDelegate<D, T>, T>,
-  members: RwLock<HashMap<Name, MemberState>>,
+  members: RwLock<Members>,
 
   merge_delegate: Option<D>,
 
   event_broadcasts: TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>,
+  event_join_ignore: AtomicBool,
 
   query_core: SerfQueryCore,
 
   opts: Options<T>,
+
+  state: Mutex<SerfState>,
+
+  join_lock: Mutex<()>,
 
   /// The tags for this role, if any. This is used to provide arbitrary
   /// key/value metadata per-node. For example, a "role" tag may be used to
@@ -109,10 +119,35 @@ where
     self.inner.memberlist.encryption_enabled()
   }
 
+  /// The current state of this Serf instance.
+  #[inline]
+  pub async fn state(&self) -> SerfState {
+    *self.inner.state.lock().await
+  }
+
   /// Returns a point-in-time snapshot of the members of this cluster.
   #[inline]
   pub async fn members(&self) -> usize {
-    self.inner.members.read().await.len()
+    self.inner.members.read().await.states.len()
+  }
+
+  /// Used to provide operator debugging information
+  #[inline]
+  pub async fn stats(&self) -> Stats {
+    let members = self.inner.members.read().await;
+    todo!()
+  }
+
+  /// Returns the number of nodes in the serf cluster, regardless of
+  /// their health or status.
+  #[inline]
+  pub async fn num_nodes(&self) -> usize {
+    self.inner.members.read().await.states.len()
+  }
+
+  #[inline]
+  pub fn validate_node_name(&self) {
+    self.validate_node_name_in(&self.inner.opts.showbiz_options().name())
   }
 
   /// Used to dynamically update the tags associated with
@@ -189,7 +224,7 @@ where
       .queue_broadcast(SerfBroadcast {
         name,
         msg: raw,
-        notify_tx: ArcSwapOption::from_pointee(None),
+        notify_tx: None,
       })
       .await;
     Ok(())
@@ -261,10 +296,56 @@ where
       .queue_broadcast(SerfBroadcast {
         name,
         msg: raw,
-        notify_tx: ArcSwapOption::from_pointee(None),
+        notify_tx: None,
       })
       .await;
     Ok(resp)
+  }
+
+  /// Joins an existing Serf cluster. Returns the number of nodes
+  /// successfully contacted. The returned error will be non-nil only in the
+  /// case that no nodes could be contacted. If `ignore_old` is true, then any
+  /// user messages sent prior to the join will be ignored.
+  // TODO: implement a JoinError
+  pub async fn join(
+    &self,
+    existing: HashMap<Address, Name>,
+    ignore_old: bool,
+  ) -> (usize, Result<(), Error<D, T>>) {
+    // Do a quick state check
+    if self.state().await != SerfState::Alive {
+      return (0, Err(Error::BadStatus));
+    }
+
+    // Hold the joinLock, this is to make eventJoinIgnore safe
+    let _join_lock = self.inner.join_lock.lock().await;
+
+    // Ignore any events from a potential join. This is safe since we hold
+    // the joinLock and nobody else can be doing a Join
+    if ignore_old {
+      self.inner.event_join_ignore.store(true, Ordering::SeqCst);
+      scopeguard::defer!(self.inner.event_join_ignore.store(false, Ordering::SeqCst));
+    }
+
+    // Have memberlist attempt to join
+    let num_joined = match self.inner.memberlist.join(existing).await {
+      Ok((joined, _)) => joined,
+      Err(e) => return (0, Err(e.into())),
+    };
+
+    // If we joined any nodes, broadcast the join message
+    if num_joined > 0 {
+      // Start broadcasting the update
+      if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
+        return (num_joined, Err(e));
+      }
+    }
+
+    (num_joined, Ok(()))
+  }
+
+  pub async fn leave(&self) -> Result<(), Error<D, T>> {
+    Ok(())
   }
 }
 
@@ -278,6 +359,47 @@ impl<D: MergeDelegate, T: Transport> Serf<D, T> {
 
   async fn handle_query(&self, q: QueryMessage) {
     todo!()
+  }
+
+  /// Called when a node broadcasts a
+  /// join message to set the lamport time of its join
+  async fn handle_node_join_intent(&self, join_msg: &JoinMessage) -> bool {
+    // Witness a potentially newer time
+    self.inner.clock.witness(join_msg.ltime);
+
+    let mut members = self.inner.members.write().await;
+    match members.states.get_mut(&join_msg.node) {
+      Some(member) => {
+        // Check if this time is newer than what we have
+        if join_msg.ltime <= member.status_time {
+          return false;
+        }
+
+        // Update the LTime
+        member.status_time = join_msg.ltime;
+
+        // If we are in the leaving state, we should go back to alive,
+        // since the leaving message must have been for an older time
+        let _ = member.member.status.compare_exchange(
+          MemberStatus::Leaving,
+          MemberStatus::Alive,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        );
+
+        true
+      }
+      None => {
+        // Rebroadcast only if this was an update we hadn't seen before.
+        upsert_intent(
+          &mut members.recent_intents,
+          &join_msg.node,
+          MessageType::Join,
+          join_msg.ltime,
+          Instant::now,
+        )
+      }
+    }
   }
 
   /// Used to setup the listeners for the query,
@@ -297,6 +419,54 @@ impl<D: MergeDelegate, T: Transport> Serf<D, T> {
         resp.close().await;
       }
     });
+  }
+
+  /// Takes a Serf message type, encodes it for the wire, and queues
+  /// the broadcast. If a notify channel is given, this channel will be closed
+  /// when the broadcast is sent.
+  async fn broadcast(
+    &self,
+    t: MessageType,
+    node: Name,
+    msg: impl Serialize,
+    notify_tx: Option<async_channel::Sender<()>>,
+  ) -> Result<(), Error<D, T>> {
+    let raw = encode_message(t, &msg)?;
+
+    self
+      .inner
+      .broadcasts
+      .queue_broadcast(SerfBroadcast {
+        name: node,
+        msg: raw,
+        notify_tx,
+      })
+      .await;
+    Ok(())
+  }
+
+  /// Broadcasts a new join intent with a
+  /// given clock value. It is used on either join, or if
+  /// we need to refute an older leave intent. Cannot be called
+  /// with the memberLock held.
+  async fn broadcast_join(&self, ltime: LamportTime) -> Result<(), Error<D, T>> {
+    // Construct message to update our lamport clock
+    let msg = JoinMessage::new(ltime, self.inner.opts.showbiz_options.name().clone());
+    self.inner.clock().witness(ltime);
+
+    // Process update locally
+    self.handle_node_join_intent(&msg).await;
+
+    // Start broadcasting the update
+    if let Err(e) = self
+      .broadcast(MessageType::Join, msg.node.clone(), &msg, None)
+      .await
+    {
+      tracing::warn!(target = "ruserf", err=%e, "failed to broadcast join intent");
+      return Err(e);
+    }
+
+    Ok(())
   }
 
   /// Used to encode a tag map
@@ -337,6 +507,112 @@ impl<D: MergeDelegate, T: Transport> Serf<D, T> {
         tracing::error!(target = "reserf", err=%e, "failed to decode tags");
         HashMap::new()
       }
+    }
+  }
+
+  /// Serialize the current keyring and save it to a file.
+  fn write_keyring_file(&self) -> std::io::Result<()> {
+    use base64::{engine::general_purpose, Engine as _};
+
+    let Some(path) = self.inner.opts.keyring_file() else {
+      return Ok(());
+    };
+
+    if let Some(keyring) = self.inner.memberlist.keyring() {
+      let encoded_keys = keyring
+        .keys()
+        .map(|k| general_purpose::STANDARD.encode(&k))
+        .collect::<Vec<_>>();
+
+      #[cfg(unix)]
+      {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.truncate(true).write(true).create(true).mode(0o600);
+        return opts.open(path).and_then(|file| {
+          serde_json::to_writer_pretty(file, &encoded_keys)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        });
+      }
+      // TODO: I don't know how to set permissions on windows
+      // need helps :)
+      #[cfg(windows)]
+      {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.truncate(true).write(true).create(true);
+        return opts.open(path).and_then(|file| {
+          serde_json::to_writer_pretty(file, &encoded_keys)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        });
+      }
+    }
+
+    Ok(())
+  }
+
+  fn validate_node_name(&self, name: &Name) {
+    let name_str = name.as_str();
+    if self.config.validate_node_names {
+      let invalid_name_re = regex::Regex::new(r"[^A-Za-z0-9\-\.]+").unwrap();
+      if invalid_name_re.is_match(name_str) {
+        return Err(Box::new(NodeNameError(format!(
+              "Node name contains invalid characters {}, Valid characters include all alpha-numerics, dashes and '.'",
+              name
+          ))));
+      }
+      if name.len() > MAX_NODE_NAME_LENGTH {
+        return Err(Box::new(NodeNameError(format!(
+          "Node name is {} characters. Valid length is between 1 and 128 characters",
+          name.len()
+        ))));
+      }
+    }
+    Ok(())
+  }
+}
+
+#[viewit::viewit(vis_all = "", getters(prefix = "get"))]
+#[cfg_attr(feature = "async-graphql", derive(async_graphql::SimpleObject))]
+pub struct Stats {
+  members: usize,
+  failed: usize,
+  left: usize,
+  health_score: usize,
+  member_time: u64,
+  event_time: u64,
+  query_time: u64,
+  intent_time: u64,
+  event_queue: usize,
+  query_queue: usize,
+  encrypted: bool,
+}
+
+fn upsert_intent(
+  intents: &mut HashMap<Name, NodeIntent>,
+  node: &Name,
+  t: MessageType,
+  ltime: LamportTime,
+  stamper: impl FnOnce() -> Instant,
+) -> bool {
+  match intents.entry(node.clone()) {
+    std::collections::hash_map::Entry::Occupied(mut ent) => {
+      let intent = ent.get_mut();
+      if ltime > intent.ltime {
+        intent.ty = t;
+        intent.ltime = ltime;
+        intent.wall_time = stamper();
+        true
+      } else {
+        false
+      }
+    }
+    std::collections::hash_map::Entry::Vacant(mut ent) => {
+      ent.insert(NodeIntent {
+        ty: t,
+        wall_time: stamper(),
+        ltime,
+      });
+      true
     }
   }
 }

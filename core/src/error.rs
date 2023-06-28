@@ -24,6 +24,8 @@ pub enum Error<D: MergeDelegate, T: Transport> {
   Showbiz(#[from] ShowbizError<D, T>),
   #[error("ruserf: user event exceeds sane limit of {0} bytes before encoding")]
   UserEventTooLarge(usize),
+  #[error("ruserf: can't join after leave or shutdown")]
+  BadStatus,
   #[error("ruserf: user event exceeds sane limit of {0} bytes after encoding")]
   RawUserEventTooLarge(usize),
   #[error("ruserf: query exceeds limit of {0} bytes")]

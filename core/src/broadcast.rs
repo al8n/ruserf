@@ -1,4 +1,3 @@
-use arc_swap::ArcSwapOption;
 use async_channel::Sender;
 use showbiz_core::{async_trait, broadcast::Broadcast, Message, Name};
 
@@ -6,7 +5,7 @@ use showbiz_core::{async_trait, broadcast::Broadcast, Message, Name};
 pub(crate) struct SerfBroadcast {
   name: Name,
   msg: Message,
-  notify_tx: ArcSwapOption<Sender<()>>,
+  notify_tx: Option<Sender<()>>,
 }
 
 #[cfg_attr(not(feature = "nightly"), async_trait::async_trait)]
@@ -25,7 +24,9 @@ impl Broadcast for SerfBroadcast {
 
   #[cfg(not(feature = "nightly"))]
   async fn finished(&self) {
-    self.notify_tx.store(None);
+    if let Some(ref tx) = self.notify_tx {
+      tx.close();
+    }
   }
 
   #[cfg(feature = "nightly")]
@@ -33,7 +34,9 @@ impl Broadcast for SerfBroadcast {
     &'a self,
   ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'a {
     async move {
-      self.notify_tx.store(None);
+      if let Some(ref tx) = self.notify_tx {
+        tx.close();
+      }
     }
   }
 }

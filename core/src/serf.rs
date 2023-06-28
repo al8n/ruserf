@@ -2,6 +2,7 @@
 mod r#async;
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
+use atomic::Atomic;
 #[cfg(feature = "async")]
 pub use r#async::*;
 use serde::{Deserialize, Serialize};
@@ -51,7 +52,7 @@ pub enum MemberStatus {
 pub struct Member {
   id: NodeId,
   tags: HashMap<String, String>,
-  status: MemberStatus,
+  status: Atomic<MemberStatus>,
   protocol_version: ProtocolVersion,
   delegate_version: DelegateVersion,
 }
@@ -79,6 +80,7 @@ pub(crate) struct NodeIntent {
 }
 
 /// The state of the Serf instance.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum SerfState {
   Alive,
   Leaving,
