@@ -24,6 +24,8 @@ const DEFAULT_DIMENSIONALITY: usize = 8;
 /// The default adjustment window size.
 const DEFAULT_ADJUSTMENT_WINDOW_SIZE: usize = 20;
 
+const DEFAULT_LATENCY_FILTER_SAMPLES_SIZE: usize = 8;
+
 #[derive(thiserror::Error)]
 pub enum CoordinateError {
   #[error("dimensions aren't compatible")]
@@ -157,7 +159,7 @@ struct CoordinateClientInner {
   /// Used to store the last several RTT samples,
   /// keyed by node name. We will use the config's LatencyFilterSamples
   /// value to determine how many samples we keep, per node.
-  latency_filter_samples: HashMap<Name, f64>,
+  latency_filter_samples: HashMap<Name, SmallVec<[f64; DEFAULT_LATENCY_FILTER_SAMPLES_SIZE]>>,
 }
 
 impl CoordinateClientInner {
@@ -171,6 +173,66 @@ impl CoordinateClientInner {
     self
       .coord
       .apply_force_in_place(self.opts.height_min, force, &self.origin);
+  }
+
+  #[inline]
+  fn latency_filter(&mut self, node: &Name, rtt_seconds: f64) -> f64 {
+    let samples = self
+      .latency_filter_samples
+      .entry(node.clone())
+      .or_insert_with(|| {
+        let mut v = SmallVec::with_capacity(self.opts.latency_filter_size);
+        v.resize(self.opts.latency_filter_size, 0);
+      });
+
+    // Add the new sample and trim the list, if needed.
+    samples.push(rtt_seconds);
+    if samples.len() > self.opts.latency_filter_size {
+      samples.remove(0);
+    }
+    // Sort a copy of the samples and return the median.
+    samples.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    samples[self.opts.latency_filter_size / 2]
+  }
+
+  /// Updates the Vivaldi portion of the client's coordinate. This
+  /// assumes that the mutex has been locked already.
+  fn update_vivaldi(&mut self, other: &Coordinate, mut rtt_seconds: f64) {
+    const ZERO_THRESHOLD: f64 = 1.0e-6;
+
+    let dist = self.coord.distance_to(other).as_secs_f64();
+    rtt_seconds = rtt_seconds.max(ZERO_THRESHOLD);
+
+    let wrongness = ((dist - rtt_seconds) / rtt_seconds).abs();
+
+    let total_error = (self.coord.error + other.error).max(ZERO_THRESHOLD);
+
+    let weight = self.coord.error / total_error;
+
+    self.coord.error = ((self.opts.vivaldi_ce * weight * wrongness)
+      + (self.coord.error * (1.0 - self.opts.vivaldi_ce * weight)))
+      .min(self.opts.vivaldi_error_max);
+
+    let force = self.opts.vivaldi_cc * weight * (rtt_seconds - dist);
+    self
+      .coord
+      .apply_force_in_place(self.opts.height_min, force, other);
+  }
+
+  /// Updates the adjustment portion of the client's coordinate, if
+  /// the feature is enabled. This assumes that the mutex has been locked already.
+  fn update_adjustment(&mut self, other: &Coordinate, rtt_seconds: f64) {
+    if self.opts.adjustment_window_size == 0 {
+      return;
+    }
+    // Note that the existing adjustment factors don't figure in to this
+    // calculation so we use the raw distance here.
+    let dist = self.coord.raw_distance_to(other);
+    self.adjustment_samples[self.adjustment_index] = rtt_seconds - dist;
+    self.adjustment_index = (self.adjustment_index + 1) % self.opts.adjustment_window_size;
+
+    self.coord.adjustment =
+      self.adjustment_samples.iter().sum::<f64>() / (2.0 * self.opts.adjustment_window_size as f64);
   }
 }
 
@@ -208,7 +270,7 @@ impl CoordinateClient {
   #[inline]
   pub fn with_options(opts: CoordinateOptions) -> Self {
     let mut adjustment_samples = SmallVec::with_capacity(opts.adjustment_window_size);
-    adjustment_samples.fill(0);
+    adjustment_samples.resize(opts.adjustment_window_size, 0);
     Self {
       inner: Arc::new(RwLock::new(CoordinateClientInner {
         coord: Coordinate::with_options(opts),
@@ -277,10 +339,10 @@ impl CoordinateClient {
       // TODO: metrics
     }
 
-    let rtt_seconds = Self::latency_filter(node, rtt.as_secs());
-    Self::update_vivaldi(&mut l, other, rtt_seconds);
-    Self::update_adjustment(&mut l, other, rtt_seconds);
-    Self::update_gravity(&mut l);
+    let rtt_seconds = l.latency_filter(node, rtt.as_secs_f64());
+    l.update_vivaldi(other, rtt_seconds);
+    l.update_adjustment(other, rtt_seconds);
+    l.update_gravity();
 
     if !l.coord.is_valid() {
       self.stats.fetch_add(1, Ordering::Acquire);
