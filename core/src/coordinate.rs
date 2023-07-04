@@ -8,6 +8,7 @@ use std::{
 };
 
 use async_lock::RwLock;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use showbiz_core::Name;
 use smallvec::SmallVec;
@@ -26,13 +27,13 @@ const DEFAULT_ADJUSTMENT_WINDOW_SIZE: usize = 20;
 
 const DEFAULT_LATENCY_FILTER_SAMPLES_SIZE: usize = 8;
 
-#[derive(thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum CoordinateError {
   #[error("dimensions aren't compatible")]
   DimensionalityMismatch,
   #[error("invalid coordinate")]
   InvalidCoordinate,
-  #[error("round trip time not in valid range, duration {0} is not a value less than 10s")]
+  #[error("round trip time not in valid range, duration {0:?} is not a value less than 10s")]
   InvalidRTT(Duration),
 }
 
@@ -169,7 +170,7 @@ impl CoordinateClientInner {
   #[inline]
   fn update_gravity(&mut self) {
     let dist = self.origin.distance_to(&self.coord).as_secs();
-    let force = -1.0 * f64::powf(dist / self.opts.gravity_rho, 2.0);
+    let force = -1.0 * f64::powf((dist as f64) / self.opts.gravity_rho, 2.0);
     self
       .coord
       .apply_force_in_place(self.opts.height_min, force, &self.origin);
@@ -182,7 +183,8 @@ impl CoordinateClientInner {
       .entry(node.clone())
       .or_insert_with(|| {
         let mut v = SmallVec::with_capacity(self.opts.latency_filter_size);
-        v.resize(self.opts.latency_filter_size, 0);
+        v.resize(self.opts.latency_filter_size, 0.0);
+        v
       });
 
     // Add the new sample and trim the list, if needed.
@@ -242,11 +244,17 @@ impl CoordinateClientInner {
 /// for more details.
 ///
 /// `CoordinateClient` is thread-safe.
-#[repr(transparent)]
 pub struct CoordinateClient {
   inner: RwLock<CoordinateClientInner>,
   /// Used to record events that occur when updating coordinates.
   stats: AtomicUsize,
+}
+
+impl Default for CoordinateClient {
+  #[inline]
+  fn default() -> Self {
+    Self::new()
+  }
 }
 
 impl CoordinateClient {
@@ -254,14 +262,14 @@ impl CoordinateClient {
   #[inline]
   pub fn new() -> Self {
     Self {
-      inner: Arc::new(RwLock::new(CoordinateClientInner {
+      inner: RwLock::new(CoordinateClientInner {
         coord: Coordinate::new(),
         origin: Coordinate::new(),
         opts: CoordinateOptions::new(),
         adjustment_index: 0,
         adjustment_samples: SmallVec::from_slice(&[0.0; DEFAULT_ADJUSTMENT_WINDOW_SIZE]),
         latency_filter_samples: HashMap::new(),
-      })),
+      }),
       stats: AtomicUsize::new(0),
     }
   }
@@ -270,16 +278,16 @@ impl CoordinateClient {
   #[inline]
   pub fn with_options(opts: CoordinateOptions) -> Self {
     let mut adjustment_samples = SmallVec::with_capacity(opts.adjustment_window_size);
-    adjustment_samples.resize(opts.adjustment_window_size, 0);
+    adjustment_samples.resize(opts.adjustment_window_size, 0.0);
     Self {
-      inner: Arc::new(RwLock::new(CoordinateClientInner {
+      inner: RwLock::new(CoordinateClientInner {
         coord: Coordinate::with_options(opts),
         origin: Coordinate::with_options(opts),
         opts,
         adjustment_index: 0,
         adjustment_samples,
         latency_filter_samples: HashMap::new(),
-      })),
+      }),
       stats: AtomicUsize::new(0),
     }
   }
@@ -356,7 +364,13 @@ impl CoordinateClient {
   /// coordinate for another node.
   #[inline]
   pub async fn distance_to(&self, coord: &Coordinate) -> f64 {
-    self.inner.read().await.coord.distance_to(coord)
+    self
+      .inner
+      .read()
+      .await
+      .coord
+      .distance_to(coord)
+      .as_secs_f64()
   }
 
   /// Returns an error if the coordinate isn't compatible with
@@ -400,18 +414,25 @@ pub struct Coordinate {
   height: f64,
 }
 
+impl Default for Coordinate {
+  #[inline]
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl Coordinate {
   /// Creates a new coordinate at the origin, using the default options
   /// to supply key initial values.
   #[inline]
-  pub const fn new() -> Self {
+  pub fn new() -> Self {
     Self::with_options(CoordinateOptions::new())
   }
 
   /// Creates a new coordinate at the origin, using the given options
   /// to supply key initial values.
   #[inline]
-  pub const fn with_options(opts: CoordinateOptions) -> Self {
+  pub fn with_options(opts: CoordinateOptions) -> Self {
     Self {
       vec: SmallVec::from_slice(&[0.0; DEFAULT_DIMENSIONALITY]),
       error: opts.vivaldi_error_max,
@@ -443,7 +464,7 @@ impl Coordinate {
 
     let mut ret = self.clone();
     let (mut unit, mag) = unit_vector_at(&self.vec, &other.vec);
-    add_in_place(&mut ret.vec, &mul_in_place(&mut unit, force));
+    add_in_place(&mut ret.vec, mul_in_place(&mut unit, force));
     if mag > ZERO_THRESHOLD {
       ret.height = (ret.height + other.height) * force / mag + ret.height;
       ret.height = ret.height.max(height_min);
@@ -451,6 +472,8 @@ impl Coordinate {
     ret
   }
 
+  /// Apply the result of applying the force from the direction of the
+  /// other coordinate to self.
   pub fn apply_force_in_place(&mut self, height_min: f64, force: f64, other: &Self) {
     assert!(
       self.is_compatible_with(other),
@@ -458,7 +481,9 @@ impl Coordinate {
     );
 
     let mag = unit_vector_at_in_place(&mut self.vec, &other.vec);
-    add_in_place(&mut self.vec, &mul_in_place(&mut self.vec, force));
+    mul_in_place(&mut self.vec, force)
+      .iter_mut()
+      .for_each(|f| *f += *f);
     if mag > ZERO_THRESHOLD {
       self.height = (self.height + other.height) * force / mag + self.height;
       self.height = self.height.max(height_min);
@@ -506,15 +531,15 @@ fn diff(vec1: &[f64], vec2: &[f64]) -> SmallVec<[f64; DEFAULT_DIMENSIONALITY]> {
 /// computes difference between the vec1 and vec2 in place. This assumes the
 /// dimensions have already been checked to be compatible.
 #[inline]
-fn diff_in_place(vec1: &[f64], vec2: &[f64]) -> impl Iterator<Item = f64> {
+fn diff_in_place<'a>(vec1: &'a [f64], vec2: &'a [f64]) -> impl Iterator<Item = f64> + 'a {
   vec1.iter().zip(vec2).map(|(x, y)| x - y)
 }
 
 /// computes difference between the vec1 and vec2 in place. This assumes the
 /// dimensions have already been checked to be compatible.
 #[inline]
-fn diff_mut_in_place(vec1: &[f64], vec2: &[f64]) {
-  vec1.iter_mut().zip(vec2).for_each(|(x, y)| *x = *x - *y);
+fn diff_mut_in_place(vec1: &mut [f64], vec2: &[f64]) {
+  vec1.iter_mut().zip(vec2).for_each(|(x, y)| *x -= *y);
 }
 
 /// multiplied by a scalar factor in place.
@@ -529,7 +554,7 @@ fn mul_in_place(vec: &mut [f64], factor: f64) -> &mut [f64] {
 /// Computes the magnitude of the vec.
 #[inline]
 fn magnitude_in_place(vec: impl Iterator<Item = f64>) -> f64 {
-  vec.fold(0.0, |acc, &x| acc + x * x).sqrt()
+  vec.fold(0.0, |acc, x| acc + x * x).sqrt()
 }
 
 /// Returns a unit vector pointing at vec1 from vec2. If the two
@@ -538,17 +563,20 @@ fn magnitude_in_place(vec: impl Iterator<Item = f64>) -> f64 {
 fn unit_vector_at(vec1: &[f64], vec2: &[f64]) -> (SmallVec<[f64; DEFAULT_DIMENSIONALITY]>, f64) {
   let mut ret = diff(vec1, vec2);
 
-  if let Some(mag) = magnitude_in_place(&ret).partial_recip() {
-    mul_in_place(&mut ret, mag);
-    return (ret, mag.recip());
+  let mag = magnitude_in_place(ret.iter().copied());
+  if mag > ZERO_THRESHOLD {
+    mul_in_place(&mut ret, mag.recip());
+    return (ret, mag);
   }
 
   let mut rng = rand::thread_rng();
   for x in ret.iter_mut() {
     *x = rng.gen::<f64>() - 0.5;
   }
-  if let Some(mag) = magnitude_in_place(&ret).partial_recip() {
-    mul_in_place(&mut ret, mag);
+
+  let mag = magnitude_in_place(ret.iter().copied());
+  if mag > ZERO_THRESHOLD {
+    mul_in_place(&mut ret, mag.recip());
     return (ret, 0.0);
   }
 
@@ -562,17 +590,20 @@ fn unit_vector_at(vec1: &[f64], vec2: &[f64]) -> (SmallVec<[f64; DEFAULT_DIMENSI
 fn unit_vector_at_in_place(vec1: &mut [f64], vec2: &[f64]) -> f64 {
   diff_mut_in_place(vec1, vec2);
 
-  if let Some(mag) = magnitude_in_place(vec1).partial_recip() {
-    mul_in_place(vec1, mag);
-    return mag.recip();
+  let mag = magnitude_in_place(vec1.iter().copied());
+  if mag > ZERO_THRESHOLD {
+    mul_in_place(vec1, mag.recip());
+    return mag;
   }
 
   let mut rng = rand::thread_rng();
   for x in vec1.iter_mut() {
     *x = rng.gen::<f64>() - 0.5;
   }
-  if let Some(mag) = magnitude_in_place(vec1).partial_recip() {
-    mul_in_place(vec1, mag);
+
+  let mag = magnitude_in_place(vec1.iter().copied());
+  if mag > ZERO_THRESHOLD {
+    mul_in_place(vec1, mag.recip());
     return 0.0;
   }
 
@@ -581,4 +612,143 @@ fn unit_vector_at_in_place(vec1: &mut [f64], vec2: &[f64]) -> f64 {
   vec1.fill(0.0);
   vec1[0] = 1.0;
   0.0
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn verify_equal_floats(f1: f64, f2: f64) {
+    if (f1 - f2).abs() > ZERO_THRESHOLD {
+      panic!("Equal assertion fail, {:9.6} != {:9.6}", f1, f2);
+    }
+  }
+
+  fn verify_equal_vectors(vec1: &[f64], vec2: &[f64]) {
+    if vec1.len() != vec2.len() {
+      panic!("Vector length mismatch, {} != {}", vec1.len(), vec2.len());
+    }
+
+    for (v1, v2) in vec1.iter().zip(vec2.iter()) {
+      verify_equal_floats(*v1, *v2);
+    }
+  }
+
+  #[test]
+  fn test_coordinate_new() {
+    let opts = CoordinateOptions::default();
+    let c = Coordinate::with_options(opts);
+    assert_eq!(opts.dimensionality, c.vec.len());
+  }
+
+  #[test]
+  fn test_coordinate_is_valid() {
+    let c = Coordinate::new();
+    let mut fields = vec![];
+    for i in 0..c.vec.len() {
+      fields.push(c.vec[i]);
+    }
+    fields.push(c.error);
+    fields.push(c.adjustment);
+    fields.push(c.height);
+
+    for (i, field) in fields.iter_mut().enumerate() {
+      assert!(c.is_valid());
+      *field = f64::NAN;
+    }
+  }
+
+  #[test]
+  fn test_coordinate_is_compatible_with() {}
+
+  #[test]
+  fn test_coordinate_add() {
+    let mut vec1 = [1.0, -3.0, 3.0];
+    let vec2 = [-4.0, 5.0, 6.0];
+    add_in_place(&mut vec1, &vec2);
+    verify_equal_vectors(&vec1, [-3.0, 2.0, 9.0].as_slice());
+
+    let zero = [0.0; 3];
+    let mut vec1 = [1.0, -3.0, 3.0];
+    add_in_place(&mut vec1, &zero);
+    verify_equal_vectors(&[1.0, -3.0, 3.0], vec1.as_slice());
+  }
+
+  #[test]
+  fn test_coordinate_diff() {
+    let vec1 = [1.0, -3.0, 3.0];
+    let vec2 = [-4.0, 5.0, 6.0];
+    verify_equal_vectors(diff(&vec1, &vec2).as_slice(), [5.0, -8.0, -3.0].as_slice());
+
+    let zero = [0.0; 3];
+    verify_equal_vectors(diff(&vec1, &zero).as_slice(), vec1.as_slice());
+  }
+
+  #[test]
+  fn test_coordinate_diff_in_place() {
+    let vec1 = [1.0, -3.0, 3.0];
+    let vec2 = [-4.0, 5.0, 6.0];
+    verify_equal_vectors(
+      &diff_in_place(&vec1, &vec2).collect::<Vec<_>>(),
+      [5.0, -8.0, -3.0].as_slice(),
+    );
+
+    let zero = [0.0; 3];
+    verify_equal_vectors(
+      &diff_in_place(&vec1, &zero).collect::<Vec<_>>(),
+      vec1.as_slice(),
+    );
+  }
+
+  #[test]
+  fn test_coordinate_magnitude() {
+    let zero = [0.0; 3];
+    verify_equal_floats(magnitude_in_place(zero.into_iter()), 0.0);
+
+    let vec = [1.0, -2.0, 3.0];
+    verify_equal_floats(magnitude_in_place(vec.into_iter()), 3.7416573867739413);
+  }
+
+  #[test]
+  fn test_coordinate_unit_vector_at_in_place() {
+    let mut vec1 = [1.0, 2.0, 3.0];
+    let vec2 = [0.5, 0.6, 0.7];
+    let mag = unit_vector_at_in_place(&mut vec1, &vec2);
+    verify_equal_vectors(
+      &vec1,
+      [0.18257418583505536, 0.511207720338155, 0.8398412548412546].as_slice(),
+    );
+    verify_equal_floats(magnitude_in_place(vec1.iter().copied()), 1.0);
+    let vec1 = [1.0, 2.0, 3.0];
+    verify_equal_floats(mag, magnitude_in_place(diff(&vec1, &vec2).into_iter()));
+
+    // If we give positions that are equal we should get a random unit vector
+    // returned to us, rather than a divide by zero.
+    let mut vec1 = [1.0, 2.0, 3.0];
+    let vec2 = [1.0, 2.0, 3.0];
+    let mag = unit_vector_at_in_place(&mut vec1, &vec2);
+    verify_equal_floats(mag, 0.0);
+    verify_equal_floats(magnitude_in_place(vec1.iter().copied()), 1.0);
+  }
+
+  #[test]
+  fn test_coordinate_unit_vector_at() {
+    let vec1 = [1.0, 2.0, 3.0];
+    let vec2 = [0.5, 0.6, 0.7];
+    let (u, mag) = unit_vector_at(&vec1, &vec2);
+    verify_equal_vectors(
+      &u,
+      [0.18257418583505536, 0.511207720338155, 0.8398412548412546].as_slice(),
+    );
+    verify_equal_floats(magnitude_in_place(u.iter().copied()), 1.0);
+    let vec1 = [1.0, 2.0, 3.0];
+    verify_equal_floats(mag, magnitude_in_place(diff(&vec1, &vec2).into_iter()));
+
+    // If we give positions that are equal we should get a random unit vector
+    // returned to us, rather than a divide by zero.
+    let vec1 = [1.0, 2.0, 3.0];
+    let (u, mag) = unit_vector_at(&vec1, &vec1);
+    verify_equal_floats(mag, 0.0);
+    verify_equal_floats(magnitude_in_place(u.iter().copied()), 1.0);
+  }
 }

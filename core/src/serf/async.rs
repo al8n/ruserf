@@ -47,8 +47,8 @@ pub(crate) struct SerfQueryCore {
   responses: Arc<RwLock<HashMap<LamportTime, QueryResponse>>>,
 }
 
-struct Members {
-  states: HashMap<Name, MemberState>,
+pub(crate) struct Members {
+  pub(crate) states: HashMap<Name, MemberState>,
   recent_intents: HashMap<Name, NodeIntent>,
 }
 
@@ -143,11 +143,6 @@ where
   #[inline]
   pub async fn num_nodes(&self) -> usize {
     self.inner.members.read().await.states.len()
-  }
-
-  #[inline]
-  pub fn validate_node_name(&self) {
-    self.validate_node_name_in(&self.inner.opts.showbiz_options().name())
   }
 
   /// Used to dynamically update the tags associated with
@@ -547,26 +542,6 @@ impl<D: MergeDelegate, T: Transport> Serf<D, T> {
       }
     }
 
-    Ok(())
-  }
-
-  fn validate_node_name(&self, name: &Name) {
-    let name_str = name.as_str();
-    if self.config.validate_node_names {
-      let invalid_name_re = regex::Regex::new(r"[^A-Za-z0-9\-\.]+").unwrap();
-      if invalid_name_re.is_match(name_str) {
-        return Err(Box::new(NodeNameError(format!(
-              "Node name contains invalid characters {}, Valid characters include all alpha-numerics, dashes and '.'",
-              name
-          ))));
-      }
-      if name.len() > MAX_NODE_NAME_LENGTH {
-        return Err(Box::new(NodeNameError(format!(
-          "Node name is {} characters. Valid length is between 1 and 128 characters",
-          name.len()
-        ))));
-      }
-    }
     Ok(())
   }
 }

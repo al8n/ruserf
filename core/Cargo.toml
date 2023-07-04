@@ -29,7 +29,7 @@ rmp-serde = { version = "1.1" }
 scopeguard = "1"
 serde = { workspace = true, optional = true }
 serde_json = "1"
-smallvec = "1.10"
+smallvec = { version = "1.10", features = ["serde"] }
 showbiz-core = { path = "../../showbiz/core", default-features = false }
 thiserror = "1"
 viewit = "0.1.5"

@@ -214,14 +214,9 @@ pub struct Options<T: Transport> {
   /// Maximum byte size limit of user event `name` + `payload` in bytes.
   /// It's optimal to be relatively small, since it's going to be gossiped through the cluster.
   max_user_event_size: usize,
-
   // /// An optional interface which when present allows
   // /// the application to cause reaping of a node to happen when it otherwise wouldn't
   // reconnect_timeout_override: ,
-  /// Controls whether nodenames only
-  /// contain alphanumeric, dashes and '.'characters
-  /// and sets maximum length to 128 characters
-  validate_node_names: bool,
 }
 
 impl<T: Transport> Default for Options<T> {
@@ -276,7 +271,6 @@ impl<T: Transport> Options<T> {
       disable_coordinates: false,
       keyring_file: None,
       max_user_event_size: 512,
-      validate_node_names: false,
     }
   }
 }
