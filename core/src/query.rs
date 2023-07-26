@@ -254,7 +254,7 @@ where
   /// gossip_interval * query_timeout_mult * log(N+1)
   /// ```
   pub async fn default_query_timeout(&self) -> Duration {
-    let n = self.inner.memberlist.num_members().await;
+    let n = self.inner.memberlist.alive_members().await;
     let mut timeout = self.inner.opts.showbiz_options.gossip_interval();
     timeout *= self.inner.opts.query_timeout_mult as u32;
     timeout *= (f64::log10((n + 1) as f64) + 0.5) as u32; // Using ceil approximation

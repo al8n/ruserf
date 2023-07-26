@@ -276,7 +276,7 @@ where
     }
 
     // Register QueryResponse to track acks and responses
-    let resp = q.response(self.inner.memberlist.num_members().await);
+    let resp = q.response(self.inner.memberlist.alive_members().await);
     self
       .register_query_response(params.timeout, resp.clone())
       .await;
@@ -304,7 +304,7 @@ where
   // TODO: implement a JoinError
   pub async fn join(
     &self,
-    existing: HashMap<Address, Name>,
+    existing: impl Iterator<Item = (Address, Name)>,
     ignore_old: bool,
   ) -> (usize, Result<(), Error<D, T>>) {
     // Do a quick state check
@@ -323,20 +323,28 @@ where
     }
 
     // Have memberlist attempt to join
-    let num_joined = match self.inner.memberlist.join(existing).await {
-      Ok((joined, _)) => joined,
-      Err(e) => return (0, Err(e.into())),
-    };
-
-    // If we joined any nodes, broadcast the join message
-    if num_joined > 0 {
-      // Start broadcasting the update
-      if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
-        return (num_joined, Err(e));
-      }
-    }
-
-    (num_joined, Ok(()))
+    // match self.inner.memberlist.join(existing).await {
+    //   Ok(num) => {
+    //     // Start broadcasting the update
+    //     if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
+    //       return (num, Err(e));
+    //     }
+    //     Ok(num)
+    //   },
+    //   Err(e) => {
+    //     let num_joined = e.joined();
+    //     // If we joined any nodes, broadcast the join message
+    //     if e.joined() > 0 {
+    //       // Start broadcasting the update
+    //       if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
+    //         return Err(e);
+    //       }
+    //     } else {
+    //       Err()
+    //     }
+    //   }
+    // }
+    todo!()
   }
 
   pub async fn leave(&self) -> Result<(), Error<D, T>> {

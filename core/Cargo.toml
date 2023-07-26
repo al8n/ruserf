@@ -23,6 +23,7 @@ async-graphql = { version = "5", optional = true }
 agnostic = { workspace = true }
 base64 = "0.21"
 bitflags = "1"
+parking_lot = "0.12"
 rand = "0.8"
 regex = "1.7"
 rmp-serde = { version = "1.1" }

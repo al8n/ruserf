@@ -1,5 +1,5 @@
 use async_channel::Sender;
-use showbiz_core::{async_trait, broadcast::Broadcast, Message, Name};
+use showbiz_core::{async_trait, broadcast::Broadcast, Message, Name, NodeId};
 
 #[viewit::viewit]
 pub(crate) struct SerfBroadcast {
@@ -10,8 +10,9 @@ pub(crate) struct SerfBroadcast {
 
 #[cfg_attr(not(feature = "nightly"), async_trait::async_trait)]
 impl Broadcast for SerfBroadcast {
-  fn name(&self) -> &Name {
-    &self.name
+  fn id(&self) -> &NodeId {
+    // &self.name
+    todo!()
   }
 
   fn invalidates(&self, _other: &Self) -> bool {
