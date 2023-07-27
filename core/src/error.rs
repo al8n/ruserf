@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use showbiz_core::transport::Transport;
+use showbiz_core::{transport::Transport, Address, NodeId};
 
 use crate::{
   delegate::{MergeDelegate, SerfDelegate},
@@ -42,6 +42,8 @@ pub enum Error<D: MergeDelegate, T: Transport> {
   Decode(#[from] rmp_serde::decode::Error),
   #[error("ruserf: failed to deliver query response, dropping")]
   QueryResponseDeliveryFailed,
+  #[error("ruserf: coordinates are disabled")]
+  CoordinatesDisabled,
 }
 
 pub struct ShowbizError<D: MergeDelegate, T: Transport>(
@@ -113,3 +115,56 @@ where
     Ok(())
   }
 }
+
+/// `JoinError` is returned when join is partially/totally failed.
+pub struct JoinError<D: MergeDelegate, T: Transport> {
+  pub(crate) joined: Vec<NodeId>,
+  pub(crate) errors: HashMap<Address, Error<D, T>>,
+  pub(crate) broadcast_error: Option<Error<D, T>>,
+}
+
+impl<D: MergeDelegate, T: Transport> JoinError<D, T> {
+  pub const fn broadcast_error(&self) -> Option<&Error<D, T>> {
+    self.broadcast_error.as_ref()
+  }
+
+  pub const fn errors(&self) -> &HashMap<Address, Error<D, T>> {
+    &self.errors
+  }
+
+  pub const fn joined(&self) -> &Vec<NodeId> {
+    &self.joined
+  }
+
+  pub fn num_joined(&self) -> usize {
+    self.joined.len()
+  }
+}
+
+impl<D: MergeDelegate, T: Transport> core::fmt::Debug for JoinError<D, T> {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    write!(f, "{}", self)
+  }
+}
+
+impl<D: MergeDelegate, T: Transport> core::fmt::Display for JoinError<D, T> {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    if !self.joined.is_empty() {
+      writeln!(f, "Successes: {:?}", self.joined)?;
+    }
+
+    if !self.errors.is_empty() {
+      writeln!(f, "Failures:")?;
+      for (address, err) in self.errors.iter() {
+        writeln!(f, "\t{}: {}", address, err)?;
+      }
+    }
+
+    if let Some(err) = &self.broadcast_error {
+      writeln!(f, "Broadcast Error: {err}")?;
+    }
+    Ok(())
+  }
+}
+
+impl<D: MergeDelegate, T: Transport> std::error::Error for JoinError<D, T> {}

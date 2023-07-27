@@ -24,8 +24,9 @@ use showbiz_core::{
 use crate::{
   broadcast::SerfBroadcast,
   clock::LamportClock,
+  coordinate::{Coordinate, CoordinateClient},
   delegate::{MergeDelegate, SerfDelegate},
-  error::Error,
+  error::{Error, JoinError},
   query::{QueryParam, QueryResponse},
   types::{encode_message, JoinMessage, MessageUserEvent, QueryFlag, QueryMessage},
   Options,
@@ -82,6 +83,9 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport> {
   /// Tags are deprecating 'Role', and instead it acts as a special key in this
   /// map.
   tags: ArcSwap<HashMap<String, String>>,
+
+  coord_client: CoordinateClient,
+  coord_cache: Arc<parking_lot::RwLock<HashMap<Name, Coordinate>>>,
 }
 
 /// Serf is a single node that is part of a single cluster that gets
@@ -297,19 +301,24 @@ where
     Ok(resp)
   }
 
-  /// Joins an existing Serf cluster. Returns the number of nodes
-  /// successfully contacted. The returned error will be non-nil only in the
-  /// case that no nodes could be contacted. If `ignore_old` is true, then any
+  /// Joins an existing Serf cluster. Returns the id of nodes
+  /// successfully contacted. If `ignore_old` is true, then any
   /// user messages sent prior to the join will be ignored.
-  // TODO: implement a JoinError
   pub async fn join(
     &self,
     existing: impl Iterator<Item = (Address, Name)>,
     ignore_old: bool,
-  ) -> (usize, Result<(), Error<D, T>>) {
+  ) -> Result<Vec<NodeId>, JoinError<D, T>> {
     // Do a quick state check
     if self.state().await != SerfState::Alive {
-      return (0, Err(Error::BadStatus));
+      return Err(JoinError {
+        joined: vec![],
+        errors: existing
+          .into_iter()
+          .map(|(addr, _)| (addr, Error::BadStatus))
+          .collect(),
+        broadcast_error: None,
+      });
     }
 
     // Hold the joinLock, this is to make eventJoinIgnore safe
@@ -323,32 +332,77 @@ where
     }
 
     // Have memberlist attempt to join
-    // match self.inner.memberlist.join(existing).await {
-    //   Ok(num) => {
-    //     // Start broadcasting the update
-    //     if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
-    //       return (num, Err(e));
-    //     }
-    //     Ok(num)
-    //   },
-    //   Err(e) => {
-    //     let num_joined = e.joined();
-    //     // If we joined any nodes, broadcast the join message
-    //     if e.joined() > 0 {
-    //       // Start broadcasting the update
-    //       if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
-    //         return Err(e);
-    //       }
-    //     } else {
-    //       Err()
-    //     }
-    //   }
-    // }
-    todo!()
+    match self.inner.memberlist.join(existing).await {
+      Ok(joined) => {
+        // Start broadcasting the update
+        if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
+          return Err(JoinError {
+            joined,
+            errors: Default::default(),
+            broadcast_error: Some(e),
+          });
+        }
+        Ok(joined)
+      }
+      Err(e) => {
+        let (joined, errors) = e.into();
+        // If we joined any nodes, broadcast the join message
+        if !joined.is_empty() {
+          // Start broadcasting the update
+          if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
+            return Err(JoinError {
+              joined,
+              errors: errors
+                .into_iter()
+                .map(|(addr, err)| (addr, err.into()))
+                .collect(),
+              broadcast_error: Some(e),
+            });
+          }
+
+          Err(JoinError {
+            joined,
+            errors: errors
+              .into_iter()
+              .map(|(addr, err)| (addr, err.into()))
+              .collect(),
+            broadcast_error: None,
+          })
+        } else {
+          Err(JoinError {
+            joined,
+            errors: errors
+              .into_iter()
+              .map(|(addr, err)| (addr, err.into()))
+              .collect(),
+            broadcast_error: None,
+          })
+        }
+      }
+    }
   }
 
   pub async fn leave(&self) -> Result<(), Error<D, T>> {
     Ok(())
+  }
+
+  /// Returns the network coordinate of the local node.
+  pub fn get_cooridate(&self) -> Result<Coordinate, Error<D, T>> {
+    if !self.inner.opts.disable_coordinates {
+      return Ok(self.inner.coord_client.get_coordinate());
+    }
+
+    Err(Error::CoordinatesDisabled)
+  }
+
+  /// Returns the network coordinate for the node with the given
+  /// name. This will only be valid if `disable_coordinates` is set to `false`.
+  pub fn get_cached_coordinate(&self, name: &Name) -> Result<Option<Coordinate>, Error<D, T>> {
+    if !self.inner.opts.disable_coordinates {
+      return Ok(self.inner.coord_cache.read().get(name).cloned());
+    }
+
+    Err(Error::CoordinatesDisabled)
   }
 }
 
@@ -524,7 +578,7 @@ impl<D: MergeDelegate, T: Transport> Serf<D, T> {
     if let Some(keyring) = self.inner.memberlist.keyring() {
       let encoded_keys = keyring
         .keys()
-        .map(|k| general_purpose::STANDARD.encode(&k))
+        .map(|k| general_purpose::STANDARD.encode(k))
         .collect::<Vec<_>>();
 
       #[cfg(unix)]

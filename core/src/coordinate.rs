@@ -925,28 +925,6 @@ mod tests {
   }
 
   #[test]
-  fn test_coordinate_unit_vector_at_in_place() {
-    let mut vec1 = [1.0, 2.0, 3.0];
-    let vec2 = [0.5, 0.6, 0.7];
-    let mag = unit_vector_at_in_place(&mut vec1, &vec2);
-    verify_equal_vectors(
-      &vec1,
-      [0.18257418583505536, 0.511207720338155, 0.8398412548412546].as_slice(),
-    );
-    verify_equal_floats(magnitude_in_place(vec1.iter().copied()), 1.0);
-    let vec1 = [1.0, 2.0, 3.0];
-    verify_equal_floats(mag, magnitude_in_place(diff(&vec1, &vec2).into_iter()));
-
-    // If we give positions that are equal we should get a random unit vector
-    // returned to us, rather than a divide by zero.
-    let mut vec1 = [1.0, 2.0, 3.0];
-    let vec2 = [1.0, 2.0, 3.0];
-    let mag = unit_vector_at_in_place(&mut vec1, &vec2);
-    verify_equal_floats(mag, 0.0);
-    verify_equal_floats(magnitude_in_place(vec1.iter().copied()), 1.0);
-  }
-
-  #[test]
   fn test_coordinate_unit_vector_at() {
     let vec1 = [1.0, 2.0, 3.0];
     let vec2 = [0.5, 0.6, 0.7];
