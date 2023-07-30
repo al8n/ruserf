@@ -114,11 +114,11 @@ pub(crate) enum FilterTypeRef<'a> {
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct JoinMessage {
   ltime: LamportTime,
-  node: Name,
+  node: NodeId,
 }
 
 impl JoinMessage {
-  pub fn new(ltime: LamportTime, node: Name) -> Self {
+  pub fn new(ltime: LamportTime, node: NodeId) -> Self {
     Self { ltime, node }
   }
 }
@@ -179,7 +179,7 @@ pub(crate) struct QueryMessage {
   /// Maximum time between delivery and response
   timeout: Duration,
   /// Query nqme
-  name: Name,
+  name: SmolStr,
   /// Query payload
   payload: Bytes,
 }

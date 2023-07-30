@@ -1,18 +1,38 @@
 use async_channel::Sender;
-use showbiz_core::{async_trait, broadcast::Broadcast, Message, Name, NodeId};
+use showbiz_core::{async_trait, broadcast::Broadcast, Message, NodeId};
+use smol_str::SmolStr;
+
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub(crate) enum BroadcastId {
+  Id(NodeId),
+  String(SmolStr),
+}
+
+impl From<NodeId> for BroadcastId {
+  fn from(value: NodeId) -> Self {
+    Self::Id(value)
+  }
+}
+
+impl From<SmolStr> for BroadcastId {
+  fn from(value: SmolStr) -> Self {
+    Self::String(value)
+  }
+}
 
 #[viewit::viewit]
 pub(crate) struct SerfBroadcast {
-  name: Name,
+  id: BroadcastId,
   msg: Message,
   notify_tx: Option<Sender<()>>,
 }
 
 #[cfg_attr(not(feature = "nightly"), async_trait::async_trait)]
 impl Broadcast for SerfBroadcast {
-  fn id(&self) -> &NodeId {
-    // &self.name
-    todo!()
+  type Id = BroadcastId;
+
+  fn id(&self) -> &Self::Id {
+    &self.id
   }
 
   fn invalidates(&self, _other: &Self) -> bool {

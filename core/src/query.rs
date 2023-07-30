@@ -359,9 +359,9 @@ where
       members
         .states
         .iter()
-        .filter_map(|(name, m)| {
+        .filter_map(|(id, m)| {
           if m.member.status.load(Ordering::SeqCst) != MemberStatus::Alive
-            || name == self.inner.memberlist.name()
+            || id == self.inner.memberlist.local_id()
           {
             None
           } else {

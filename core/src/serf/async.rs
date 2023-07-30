@@ -51,8 +51,8 @@ pub(crate) struct SerfQueryCore {
 }
 
 pub(crate) struct Members {
-  pub(crate) states: HashMap<Name, MemberState>,
-  recent_intents: HashMap<Name, NodeIntent>,
+  pub(crate) states: HashMap<NodeId, MemberState>,
+  recent_intents: HashMap<NodeId, NodeIntent>,
 }
 
 #[viewit::viewit]
@@ -224,7 +224,7 @@ where
       .inner
       .event_broadcasts
       .queue_broadcast(SerfBroadcast {
-        name,
+        id: name.into(),
         msg: raw,
         notify_tx: None,
       })
@@ -238,7 +238,7 @@ where
   /// and if not provided, a sane set of defaults will be used.
   pub async fn query(
     &self,
-    name: Name,
+    name: SmolStr,
     payload: Bytes,
     params: Option<QueryParam>,
   ) -> Result<QueryResponse, Error<D, T>> {
@@ -296,7 +296,7 @@ where
       .inner
       .broadcasts
       .queue_broadcast(SerfBroadcast {
-        name,
+        id: name.into(),
         msg: raw,
         notify_tx: None,
       })
@@ -487,7 +487,7 @@ impl<D: MergeDelegate, T: Transport> Serf<D, T> {
   async fn broadcast(
     &self,
     t: MessageType,
-    node: Name,
+    node: NodeId,
     msg: impl Serialize,
     notify_tx: Option<async_channel::Sender<()>>,
   ) -> Result<(), Error<D, T>> {
@@ -497,7 +497,7 @@ impl<D: MergeDelegate, T: Transport> Serf<D, T> {
       .inner
       .broadcasts
       .queue_broadcast(SerfBroadcast {
-        name: node,
+        id: node.into(),
         msg: raw,
         notify_tx,
       })
@@ -511,7 +511,7 @@ impl<D: MergeDelegate, T: Transport> Serf<D, T> {
   /// with the memberLock held.
   async fn broadcast_join(&self, ltime: LamportTime) -> Result<(), Error<D, T>> {
     // Construct message to update our lamport clock
-    let msg = JoinMessage::new(ltime, self.inner.opts.showbiz_options.name().clone());
+    let msg = JoinMessage::new(ltime, self.inner.memberlist.local_id().clone());
     self.inner.clock().witness(ltime);
 
     // Process update locally
@@ -628,8 +628,8 @@ pub struct Stats {
 }
 
 fn upsert_intent(
-  intents: &mut HashMap<Name, NodeIntent>,
-  node: &Name,
+  intents: &mut HashMap<NodeId, NodeIntent>,
+  node: &NodeId,
   t: MessageType,
   ltime: LamportTime,
   stamper: impl FnOnce() -> Instant,
