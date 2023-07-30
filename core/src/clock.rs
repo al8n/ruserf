@@ -1,11 +1,14 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+  atomic::{AtomicU64, Ordering},
+  Arc,
+};
 
 /// A lamport time is a simple u64 that represents a point in time.
 #[derive(
   Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 #[serde(transparent)]
-pub struct LamportTime(u64);
+pub struct LamportTime(pub(crate) u64);
 
 impl core::fmt::Display for LamportTime {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -26,6 +29,8 @@ impl From<LamportTime> for u64 {
 }
 
 impl LamportTime {
+  pub const ZERO: Self = Self(0);
+
   /// Creates a new lamport time from the given u64
   #[inline]
   pub const fn new(time: u64) -> Self {
@@ -36,8 +41,8 @@ impl LamportTime {
 /// A thread safe implementation of a lamport clock. It
 /// uses efficient atomic operations for all of its functions, falling back
 /// to a heavy lock only if there are enough CAS failures.
-#[derive(Debug)]
-pub struct LamportClock(AtomicU64);
+#[derive(Debug, Clone)]
+pub struct LamportClock(Arc<AtomicU64>);
 
 impl Default for LamportClock {
   fn default() -> Self {
@@ -48,8 +53,8 @@ impl Default for LamportClock {
 impl LamportClock {
   /// Creates a new lamport clock with the given initial value
   #[inline]
-  pub const fn new() -> Self {
-    Self(AtomicU64::new(0))
+  pub fn new() -> Self {
+    Self(Arc::new(AtomicU64::new(0)))
   }
 
   /// Return the current value of the lamport clock

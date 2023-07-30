@@ -1,8 +1,14 @@
 use std::collections::HashMap;
 
-use crate::{clock::LamportTime, error::VoidError, event::UserEvent};
+use either::Either;
+use smol_str::SmolStr;
 
-use super::*;
+use crate::{
+  clock::LamportTime,
+  event::{EventKind, UserEvent},
+};
+
+use super::{Coalescer, *};
 
 struct LatestUserEvents {
   ltime: LamportTime,
@@ -11,38 +17,65 @@ struct LatestUserEvents {
 
 #[repr(transparent)]
 pub(crate) struct UserEventCoalescer {
-  events: HashMap<String, LatestUserEvents>,
+  events: HashMap<SmolStr, LatestUserEvents>,
 }
 
 #[showbiz_core::async_trait::async_trait]
 impl Coalescer for UserEventCoalescer {
-  type Error = VoidError;
-  type Event = UserEvent;
-
-  fn handle(&self, event: &Self::Event) -> bool {
-    event.coalesce
+  fn name(&self) -> &'static str {
+    "user_event_coalescer"
   }
 
-  async fn coalesce(&mut self, event: Self::Event) -> Result<(), Self::Error> {
-    // match event {
-    //   Event::User(user) => {
-    //     let lteim = event.lteim();
-    //     let events = self.events.entry(user_id).or_default();
-    //     if lteim > events.lteim {
-    //       events.lteim = lteim;
-    //       events.events.clear();
-    //     }
-    //     events.events.push(event);
-    //   }
-    //   _ => unreachable!(),
-    // }
-    Ok(())
+  fn handle(&self, event: &Event) -> bool {
+    match &event.0 {
+      Either::Left(e) => matches!(e, EventKind::User(_)),
+      Either::Right(e) => matches!(&**e, EventKind::User(_)),
+    }
   }
 
-  async fn flush(&mut self, out_tx: Sender<Self::Event>) -> Result<(), Self::Error> {
+  fn coalesce(&mut self, event: Event) {
+    let event = match event.0 {
+      Either::Left(EventKind::User(e)) => e,
+      Either::Right(e) => match &*e {
+        EventKind::User(e) => e.clone(),
+        _ => unreachable!(),
+      },
+      Either::Left(_) => unreachable!(),
+    };
+
+    let ltime = *event.ltime();
+    match self.events.get_mut(event.name()) {
+      Some(latest) => {
+        if latest.ltime < ltime {
+          latest.events.clear();
+          latest.ltime = ltime;
+          latest.events.push(event);
+          return;
+        }
+
+        // If the the same age, save it
+        if latest.ltime == ltime {
+          latest.events.push(event);
+        }
+      }
+      None => {
+        self.events.insert(
+          event.name().clone(),
+          LatestUserEvents {
+            ltime,
+            events: vec![event],
+          },
+        );
+      }
+    }
+  }
+
+  async fn flush(&mut self, out_tx: &Sender<Event>) -> Result<(), super::ClosedOutChannel> {
     for (_, latest) in self.events.drain() {
       for event in latest.events {
-        let _ = out_tx.send(event).await;
+        if out_tx.send(Event::from(event)).await.is_err() {
+          return Err(super::ClosedOutChannel);
+        }
       }
     }
     Ok(())

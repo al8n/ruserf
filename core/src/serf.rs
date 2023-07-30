@@ -49,6 +49,7 @@ pub enum MemberStatus {
 
 /// A single member of the Serf cluster.
 #[viewit::viewit(vis_all = "pub(crate)")]
+#[derive(Debug)]
 pub struct Member {
   id: NodeId,
   tags: HashMap<String, String>,

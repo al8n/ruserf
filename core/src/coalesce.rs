@@ -1,25 +1,143 @@
-
 mod member;
 mod user;
 
-pub(crate) use member::*;
-pub(crate) use user::*;
+use std::time::Duration;
 
-use super::event::{EventType, Event, Events};
-#[cfg(feature = "async")]
-use async_channel::Sender;
+use agnostic::Runtime;
+use async_channel::{bounded, Receiver, Sender};
+use showbiz_core::{
+  futures_util::{self, FutureExt},
+  tracing,
+};
+
+use super::event::Event;
+
+pub(crate) struct ClosedOutChannel;
 
 #[cfg(feature = "async")]
 #[showbiz_core::async_trait::async_trait]
-pub(crate) trait Coalescer
-{
-  type Event: Event;
-  type Error: std::error::Error + Send + Sync + 'static;
+pub(crate) trait Coalescer: Send + Sync + 'static {
+  fn name(&self) -> &'static str;
 
-  fn handle(&self, event: &Self::Event) -> bool;
+  fn handle(&self, event: &Event) -> bool;
+
   /// Invoked to coalesce the given event
-  async fn coalesce(&mut self, event: Self::Event) -> Result<(), Self::Error>;
+  fn coalesce(&mut self, event: Event);
 
   /// Invoked to flush the coalesced events
-  async fn flush(&mut self, out_tx: Sender<Self::Event>) -> Result<(), Self::Error>;
+  async fn flush(&mut self, out_tx: &Sender<Event>) -> Result<(), ClosedOutChannel>;
+}
+
+/// Returns an event channel where the events are coalesced
+/// using the given coalescer.
+pub(crate) fn coalesced_event<R: Runtime>(
+  out_tx: Sender<Event>,
+  shutdown_tx: Receiver<()>,
+  c_period: Duration,
+  q_period: Duration,
+  c: impl Coalescer,
+) -> Sender<Event> {
+  let (in_tx, in_rx) = bounded(1024);
+  R::spawn_detach(coalesce_loop::<R>(
+    in_rx,
+    out_tx,
+    shutdown_tx,
+    c_period,
+    q_period,
+    c,
+  ));
+  in_tx
+}
+
+/// A simple long-running routine that manages the high-level
+/// flow of coalescing based on quiescence and a maximum quantum period.
+async fn coalesce_loop<R: Runtime>(
+  in_rx: Receiver<Event>,
+  out_tx: Sender<Event>,
+  shutdown_rx: Receiver<()>,
+  coalesce_peirod: Duration,
+  quiescent_period: Duration,
+  mut c: impl Coalescer,
+) {
+  let mut quiescent = None;
+  let mut quantum = None;
+  let mut shutdown = false;
+
+  loop {
+    futures_util::select! {
+      ev = in_rx.recv().fuse() => {
+        let Ok(ev) = ev else {
+          // if we receive an error, it means the channel is closed. We should return
+          return;
+        };
+
+        // Ignore any non handled events
+        if !c.handle(&ev) {
+          if let Err(e) = out_tx.send(ev).await {
+            tracing::error!(target = "ruserf", err=%e, "fail send event to out channel in {} coalesce thread", c.name());
+            return;
+          }
+          continue;
+        }
+
+        // Start a new quantum if we need to
+        // and restart the quiescent timer
+        if quantum.is_none() {
+          quantum = Some(R::sleep(coalesce_peirod));
+        }
+        quiescent = Some(R::sleep(quiescent_period));
+
+        // Coalesce the event
+        c.coalesce(ev);
+      }
+      _ = async {
+        if let Some(quantum) = quantum.take() {
+          quantum.await;
+
+        } else {
+          std::future::pending::<()>().await;
+        }
+      }.fuse() => {
+        // Flush the coalesced events
+        if c.flush(&out_tx).await.is_err() {
+          tracing::error!(target = "ruserf", err="closed channel", "fail send event to out channel in {} coalesce thread", c.name());
+          return;
+        }
+
+        // Restart ingestion if we are not done
+        if !shutdown {
+          quiescent = None;
+          quantum = None;
+          continue;
+        }
+
+        return;
+      }
+      _ = async {
+        if let Some(quiescent) = quiescent.take() {
+          quiescent.await;
+        } else {
+          std::future::pending::<()>().await;
+        }
+      }.fuse() => {
+        // Flush the coalesced events
+        if c.flush(&out_tx).await.is_err() {
+          tracing::error!(target = "ruserf", err="closed channel", "fail send event to out channel in {} coalesce thread", c.name());
+          return;
+        }
+
+        // Restart ingestion if we are not done
+        if !shutdown {
+          quantum = None;
+          quiescent = None;
+          continue;
+        }
+
+        return;
+      }
+      _ = shutdown_rx.recv().fuse() => {
+        shutdown = true;
+      }
+    }
+  }
 }

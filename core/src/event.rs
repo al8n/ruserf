@@ -1,56 +1,58 @@
 use std::sync::Arc;
 
+use either::Either;
 use showbiz_core::bytes::Bytes;
+use smol_str::SmolStr;
 
-use super::{
-  clock::LamportTime,
-  serf::Member,
-};
-
-pub trait Event: core::fmt::Display + Send + Sync + 'static {
-  type Type: Copy + Send + Sync + 'static;
-
-  fn event_type(&self) -> EventType<Self::Type>;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VoidEvent;
-
-impl core::fmt::Display for VoidEvent {
-  fn fmt(&self, _f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    Ok(())
-  }
-}
-
-impl Event for VoidEvent {
-  type Type = ();
-
-  fn event_type(&self) -> EventType<Self::Type> {
-    EventType::Custom(())
-  }
-}
+use super::{clock::LamportTime, serf::Member};
 
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]
-pub enum EventType<C>
-where
-  C: Copy + Send + Sync + 'static,
-{
+pub enum EventType {
   Member(MemberEventType),
   User,
   Query,
-  Custom(C),
 }
 
-pub enum Events<E: Event> {
+#[derive(Clone)]
+pub struct Event(pub(crate) Either<EventKind, Arc<EventKind>>);
+
+impl Event {
+  pub(crate) fn into_right(self) -> Self {
+    match self.0 {
+      Either::Left(e) => Self(Either::Right(Arc::new(e))),
+      Either::Right(e) => Self(Either::Right(e)),
+    }
+  }
+}
+
+impl From<MemberEvent> for Event {
+  fn from(value: MemberEvent) -> Self {
+    Self(Either::Left(EventKind::Member(value)))
+  }
+}
+
+impl From<UserEvent> for Event {
+  fn from(value: UserEvent) -> Self {
+    Self(Either::Left(EventKind::User(value)))
+  }
+}
+
+impl From<QueryEvent> for Event {
+  fn from(value: QueryEvent) -> Self {
+    Self(Either::Left(EventKind::Query(value)))
+  }
+}
+
+#[derive(Clone)]
+pub(crate) enum EventKind {
   Member(MemberEvent),
   User(UserEvent),
   Query(QueryEvent),
-  Custom(E),
 }
 
-impl<E: Event> Events<E> {
+impl EventKind {
   #[inline]
   pub const fn member(event: MemberEvent) -> Self {
     Self::Member(event)
@@ -67,40 +69,34 @@ impl<E: Event> Events<E> {
   }
 
   #[inline]
-  pub const fn custom(event: E) -> Self {
-    Self::Custom(event)
-  }
-
-  #[inline]
-  pub fn event_type(&self) -> EventType<E::Type> {
+  pub fn event_type(&self) -> EventType {
     match self {
       Self::Member(event) => EventType::Member(event.ty),
-      Self::User(event) => EventType::User,
-      Self::Query(event) => EventType::Query,
-      Self::Custom(event) => event.event_type(),
+      Self::User(_) => EventType::User,
+      Self::Query(_) => EventType::Query,
     }
   }
 }
 
-impl<E: Event> From<MemberEvent> for Events<E> {
+impl From<MemberEvent> for EventKind {
   fn from(event: MemberEvent) -> Self {
-    Event::Member(event)
+    Self::Member(event)
   }
 }
 
-impl<E: Event> From<UserEvent> for Events<E> {
+impl From<UserEvent> for EventKind {
   fn from(event: UserEvent) -> Self {
-    Event::User(event)
+    Self::User(event)
   }
 }
 
-impl<E: Event> From<QueryEvent> for Events<E> {
+impl From<QueryEvent> for EventKind {
   fn from(event: QueryEvent) -> Self {
-    Event::Query(event)
+    Self::Query(event)
   }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]
 pub enum MemberEventType {
@@ -130,9 +126,10 @@ impl core::fmt::Display for MemberEventType {
 
 /// MemberEvent is the struct used for member related events
 /// Because Serf coalesces events, an event may contain multiple members.
+#[derive(Debug, Clone)]
 pub struct MemberEvent {
-  ty: MemberEventType,
-  member: Vec<Arc<Member>>,
+  pub(crate) ty: MemberEventType,
+  pub(crate) members: Vec<Arc<Member>>,
 }
 
 impl core::fmt::Display for MemberEvent {
@@ -142,8 +139,8 @@ impl core::fmt::Display for MemberEvent {
 }
 
 impl MemberEvent {
-  pub fn new(ty: MemberEventType, member: Vec<Arc<Member>>) -> Self {
-    Self { ty, member }
+  pub fn new(ty: MemberEventType, members: Vec<Arc<Member>>) -> Self {
+    Self { ty, members }
   }
 
   pub fn ty(&self) -> MemberEventType {
@@ -151,24 +148,24 @@ impl MemberEvent {
   }
 
   pub fn members(&self) -> &[Arc<Member>] {
-    &self.member
+    &self.members
   }
 }
 
-impl Event for MemberEvent {
-  type Type = MemberEventType;
-
-  fn event_type(&self) -> EventType<Self::Type> {
-    EventType::Member(self.ty)
+impl From<MemberEvent> for (MemberEventType, Vec<Arc<Member>>) {
+  fn from(event: MemberEvent) -> Self {
+    (event.ty, event.members)
   }
 }
 
 /// UserEvent is the struct used for events that are triggered
 /// by the user and are not related to members
 
+#[viewit::viewit(vis_all = "pub(crate)", setters(prefix = "with"))]
+#[derive(Clone)]
 pub struct UserEvent {
   ltime: LamportTime,
-  name: String,
+  name: SmolStr,
   payload: Bytes,
   pub coalesce: bool,
 }
@@ -179,31 +176,17 @@ impl core::fmt::Display for UserEvent {
   }
 }
 
-impl Event for UserEvent {
-  type Type = ();
-
-  fn event_type(&self) -> EventType<Self::Type> {
-    EventType::User
-  }
-}
-
 /// Query is the struct used by EventQuery type events
+#[viewit::viewit(vis_all = "pub(crate)", setters(prefix = "with"))]
+#[derive(Debug, Clone)]
 pub struct QueryEvent {
   ltime: LamportTime,
-  name: String,
+  name: SmolStr,
   payload: Bytes,
 }
 
 impl core::fmt::Display for QueryEvent {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "query")
-  }
-}
-
-impl Event for QueryEvent {
-  type Type = ();
-
-  fn event_type(&self) -> EventType<Self::Type> {
-    EventType::Query
   }
 }

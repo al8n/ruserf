@@ -11,6 +11,7 @@ use rmp_serde::{
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use showbiz_core::{bytes::Bytes, security::SecretKey, Message, Name, NodeId};
+use smol_str::SmolStr;
 
 use crate::{clock::LamportTime, query::QueryResponse, UserEvents};
 
@@ -54,6 +55,7 @@ impl MessageType {
 }
 
 bitflags::bitflags! {
+  #[derive(PartialEq, Eq)]
   pub(crate) struct QueryFlag: u32 {
     /// Ack flag is used to force receiver to send an ack back
     const ACK = 1 << 0;
@@ -153,7 +155,7 @@ pub(crate) struct PushPull {
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct MessageUserEvent {
   ltime: LamportTime,
-  name: Name,
+  name: SmolStr,
   payload: Bytes,
   /// "Can Coalesce".
   cc: bool,
@@ -186,13 +188,13 @@ impl QueryMessage {
   /// checks if the ack flag is set
   #[inline]
   pub(crate) fn ack(&self) -> bool {
-    (QueryFlag { bits: self.flags } & QueryFlag::ACK) != QueryFlag::empty()
+    (QueryFlag::from_bits_retain(self.flags) & QueryFlag::ACK) != QueryFlag::empty()
   }
 
   /// checks if the no broadcast flag is set
   #[inline]
   pub(crate) fn no_broadcast(&self) -> bool {
-    (QueryFlag { bits: self.flags } & QueryFlag::NO_BROADCAST) != QueryFlag::empty()
+    (QueryFlag::from_bits_retain(self.flags) & QueryFlag::NO_BROADCAST) != QueryFlag::empty()
   }
 
   #[inline]
@@ -226,7 +228,7 @@ impl QueryResponseMessage {
   /// checks if the ack flag is set
   #[inline]
   pub(crate) fn ack(&self) -> bool {
-    (QueryFlag { bits: self.flags } & QueryFlag::ACK) != QueryFlag::empty()
+    (QueryFlag::from_bits_retain(self.flags) & QueryFlag::ACK) != QueryFlag::empty()
   }
 }
 

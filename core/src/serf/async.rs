@@ -20,6 +20,7 @@ use showbiz_core::{
   transport::Transport,
   Address, Name, Showbiz,
 };
+use smol_str::SmolStr;
 
 use crate::{
   broadcast::SerfBroadcast,
@@ -28,6 +29,7 @@ use crate::{
   delegate::{MergeDelegate, SerfDelegate},
   error::{Error, JoinError},
   query::{QueryParam, QueryResponse},
+  snapshot::SnapshotHandle,
   types::{encode_message, JoinMessage, MessageUserEvent, QueryFlag, QueryMessage},
   Options,
 };
@@ -83,6 +85,7 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport> {
   /// Tags are deprecating 'Role', and instead it acts as a special key in this
   /// map.
   tags: ArcSwap<HashMap<String, String>>,
+  snapshot: Option<SnapshotHandle>,
 
   coord_client: CoordinateClient,
   coord_cache: Arc<parking_lot::RwLock<HashMap<Name, Coordinate>>>,
@@ -176,7 +179,7 @@ where
   #[inline]
   pub async fn user_event(
     &self,
-    name: Name,
+    name: SmolStr,
     payload: Bytes,
     coalesce: bool,
   ) -> Result<(), Error<D, T>> {

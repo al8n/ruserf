@@ -4,12 +4,13 @@
 pub mod clock;
 pub mod coordinate;
 
-// mod coalesce;
+mod coalesce;
 mod delegate;
-// pub mod event;
 pub mod error;
+pub mod event;
 
 mod serf;
+mod snapshot;
 pub use serf::*;
 
 mod broadcast;
@@ -19,3 +20,6 @@ mod options;
 pub use options::*;
 
 mod query;
+
+// mod snapshot;
+// pub use snapshot::*;
