@@ -19,6 +19,7 @@ mod types;
 mod options;
 pub use options::*;
 
+mod internal_query;
 mod query;
 
 // mod snapshot;

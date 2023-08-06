@@ -309,17 +309,21 @@ where
           };
 
           // Check if we match this regex
-          if let Some(expr) = self.inner.tags.load().get(&filter.tag) {
-            match regex::Regex::new(&filter.expr) {
-              Ok(re) => {
-                if !re.is_match(expr) {
+          if let Some(tags) = &*self.inner.opts.tags.load() {
+            if let Some(expr) = tags.get(&filter.tag) {
+              match regex::Regex::new(&filter.expr) {
+                Ok(re) => {
+                  if !re.is_match(expr) {
+                    return false;
+                  }
+                }
+                Err(err) => {
+                  tracing::warn!(target = "ruserf", err=%err, "failed to compile filter regex ({})", filter.expr);
                   return false;
                 }
               }
-              Err(err) => {
-                tracing::warn!(target = "ruserf", err=%err, "failed to compile filter regex ({})", filter.expr);
-                return false;
-              }
+            } else {
+              return false;
             }
           } else {
             return false;

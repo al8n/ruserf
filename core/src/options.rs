@@ -1,13 +1,41 @@
-use std::{path::PathBuf, time::Duration};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
+use arc_swap::ArcSwapOption;
 use showbiz_core::{
   humantime_serde, transport::Transport, Options as ShowbizOptions, ProtocolVersion,
 };
+use smol_str::SmolStr;
+
+fn tags(
+  tags: &Arc<ArcSwapOption<HashMap<SmolStr, SmolStr>>>,
+) -> Option<Arc<HashMap<SmolStr, SmolStr>>> {
+  tags.load().as_ref().map(|tags| Arc::clone(&tags))
+}
 
 /// The configuration for creating a Serf instance.
 #[viewit::viewit(getters(vis_all = "pub"), setters(vis_all = "pub", prefix = "with"))]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Options<T: Transport> {
+  /// The tags for this role, if any. This is used to provide arbitrary
+  /// key/value metadata per-node. For example, a "role" tag may be used to
+  /// differentiate "load-balancer" from a "web" role as parts of the same cluster.
+  /// Tags are deprecating 'Role', and instead it acts as a special key in this
+  /// map.
+  #[viewit(
+    vis = "pub(crate)",
+    getter(
+      vis = "pub",
+      style = "ref",
+      result(
+        converter(style = "ref", fn = "tags",),
+        type = "Option<Arc<HashMap<SmolStr, SmolStr>>>",
+      )
+    ),
+    setter(skip)
+  )]
+  #[serde(with = "tags_serde")]
+  tags: Arc<ArcSwapOption<HashMap<SmolStr, SmolStr>>>,
+
   /// The protocol version to speak
   protocol_version: ProtocolVersion,
 
@@ -217,6 +245,10 @@ pub struct Options<T: Transport> {
   // /// An optional interface which when present allows
   // /// the application to cause reaping of a node to happen when it otherwise wouldn't
   // reconnect_timeout_override: ,
+  #[viewit(getter(style = "ref", const, attrs(cfg(feature = "metrics"))))]
+  #[cfg(feature = "metrics")]
+  #[serde(with = "showbiz_core::util::label_serde")]
+  metrics_labels: Arc<Vec<showbiz_core::metrics::Label>>,
 }
 
 impl<T: Transport> Default for Options<T> {
@@ -230,9 +262,12 @@ impl<T: Transport> Clone for Options<T> {
   #[inline]
   fn clone(&self) -> Self {
     Self {
+      #[cfg(feature = "metrics")]
+      metrics_labels: self.metrics_labels.clone(),
       showbiz_options: self.showbiz_options.clone(),
       keyring_file: self.keyring_file.clone(),
       snapshot_path: self.snapshot_path.clone(),
+      tags: self.tags.clone(),
       ..*self
     }
   }
@@ -242,6 +277,7 @@ impl<T: Transport> Options<T> {
   #[inline]
   pub fn new() -> Self {
     Self {
+      tags: Arc::new(ArcSwapOption::from_pointee(None)),
       protocol_version: ProtocolVersion::V0,
       broadcast_timeout: Duration::from_secs(5),
       leave_propagate_delay: Duration::from_secs(1),
@@ -271,6 +307,65 @@ impl<T: Transport> Options<T> {
       disable_coordinates: false,
       keyring_file: None,
       max_user_event_size: 512,
+      #[cfg(feature = "metrics")]
+      metrics_labels: Arc::new(Vec::new()),
     }
+  }
+
+  #[inline]
+  pub fn with_tags<K: Into<SmolStr>, V: Into<SmolStr>>(
+    self,
+    tags: impl Iterator<Item = (K, V)>,
+  ) -> Self {
+    self.tags.store(Some(Arc::new(
+      tags.map(|(k, v)| (k.into(), v.into())).collect(),
+    )));
+    self
+  }
+
+  #[inline]
+  pub(crate) fn set_tags(&self, tags: HashMap<SmolStr, SmolStr>) {
+    self.tags.store(Some(Arc::new(tags)));
+  }
+}
+
+mod tags_serde {
+  use std::{collections::HashMap, sync::Arc};
+
+  use arc_swap::ArcSwapOption;
+  use serde::{ser::SerializeMap, Deserialize, Deserializer, Serializer};
+  use smol_str::SmolStr;
+
+  pub fn serialize<S>(
+    tags: &Arc<ArcSwapOption<HashMap<SmolStr, SmolStr>>>,
+    serializer: S,
+  ) -> Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    match &*tags.load() {
+      Some(tags) => {
+        if !tags.is_empty() {
+          let mut ser = serializer.serialize_map(Some(tags.len()))?;
+          for (k, v) in tags.iter() {
+            ser.serialize_entry(k, v)?;
+          }
+          ser.end()
+        } else {
+          serializer.serialize_unit()
+        }
+      }
+      None => serializer.serialize_unit(),
+    }
+  }
+
+  pub fn deserialize<'de, D>(
+    deserializer: D,
+  ) -> Result<Arc<ArcSwapOption<HashMap<SmolStr, SmolStr>>>, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    HashMap::<SmolStr, SmolStr>::deserialize(deserializer)
+      .map(|map| Arc::new(ArcSwapOption::from_pointee(Some(map))))
   }
 }

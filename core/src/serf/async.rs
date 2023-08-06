@@ -15,19 +15,22 @@ use async_lock::{Mutex, RwLock};
 use showbiz_core::{
   bytes::{BufMut, BytesMut},
   futures_util::Stream,
+  metrics,
   queue::{NodeCalculator, TransmitLimitedQueue},
   tracing,
   transport::Transport,
-  Address, Name, Showbiz,
+  Address, Name, Showbiz, META_MAX_SIZE,
 };
 use smol_str::SmolStr;
 
 use crate::{
   broadcast::SerfBroadcast,
   clock::LamportClock,
+  coalesce::{coalesced_event, MemberEventCoalescer, UserEventCoalescer},
   coordinate::{Coordinate, CoordinateClient},
   delegate::{MergeDelegate, SerfDelegate},
   error::{Error, JoinError},
+  event::Event,
   query::{QueryParam, QueryResponse},
   snapshot::SnapshotHandle,
   types::{encode_message, JoinMessage, MessageUserEvent, QueryFlag, QueryMessage},
@@ -35,6 +38,11 @@ use crate::{
 };
 
 const MAGIC_BYTE: u8 = 255;
+/// Maximum 128 KB snapshot
+const SNAPSHOT_SIZE_LIMIT: usize = 128 * 1024;
+
+/// Maximum 9KB for event name and payload
+const USER_EVENT_SIZE_LIMIT: usize = 9 * 1024;
 
 pub(crate) struct SerfNodeCalculator {
   num_nodes: Arc<AtomicU32>,
@@ -62,7 +70,7 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport> {
   query_clock: LamportClock,
 
   broadcasts: TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>,
-  // opts: Options,
+
   memberlist: Showbiz<SerfDelegate<D, T>, T>,
   members: RwLock<Members>,
 
@@ -79,12 +87,6 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport> {
 
   join_lock: Mutex<()>,
 
-  /// The tags for this role, if any. This is used to provide arbitrary
-  /// key/value metadata per-node. For example, a "role" tag may be used to
-  /// differentiate "load-balancer" from a "web" role as parts of the same cluster.
-  /// Tags are deprecating 'Role', and instead it acts as a special key in this
-  /// map.
-  tags: ArcSwap<HashMap<String, String>>,
   snapshot: Option<SnapshotHandle>,
 
   coord_client: CoordinateClient,
@@ -117,6 +119,69 @@ where
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
+  pub async fn new(opts: Options<T>) -> Result<Self, Error<D, T>> {
+    Self::with_event_in(None, opts).await
+  }
+
+  pub async fn with_event(
+    ev: async_channel::Sender<Event<D, T>>,
+    opts: Options<T>,
+  ) -> Result<Self, Error<D, T>> {
+    Self::with_event_in(Some(ev), opts).await
+  }
+
+  async fn with_event_in(
+    ev: Option<async_channel::Sender<Event<D, T>>>,
+    opts: Options<T>,
+  ) -> Result<Self, Error<D, T>> {
+    if opts.max_user_event_size > USER_EVENT_SIZE_LIMIT {
+      return Err(Error::UserEventLimitTooLarge(USER_EVENT_SIZE_LIMIT));
+    }
+
+    // Check that the meta data length is okay
+    if let Some(tags) = &*opts.tags.load() {
+      let encoded_tags = encode_tags(&tags)?;
+      if encoded_tags.len() > META_MAX_SIZE {
+        return Err(Error::TagsTooLarge(encoded_tags.len()));
+      }
+    }
+
+    let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
+
+    if let Some(mut event_tx) = ev {
+      // Check if serf member event coalescing is enabled
+      if opts.coalesce_period > Duration::ZERO && opts.quiescent_period > Duration::ZERO {
+        let c = MemberEventCoalescer::new();
+
+        event_tx = coalesced_event(
+          event_tx,
+          shutdown_rx.clone(),
+          opts.coalesce_period,
+          opts.quiescent_period,
+          c,
+        );
+      }
+
+      // Check if user event coalescing is enabled
+      if opts.user_coalesce_period > Duration::ZERO && opts.user_quiescent_period > Duration::ZERO {
+        let c = UserEventCoalescer::new();
+        event_tx = coalesced_event(
+          event_tx,
+          shutdown_rx.clone(),
+          opts.user_coalesce_period,
+          opts.user_quiescent_period,
+          c,
+        );
+      }
+
+      // Listen for internal Serf queries. This is setup before the snapshotter, since
+      // we want to capture the query-time, but the internal listener does not passthrough
+      // the queries
+    }
+    // Ok()
+    todo!()
+  }
+
   /// A predicate that determines whether or not encryption
   /// is enabled, which can be possible in one of 2 cases:
   ///   - Single encryption key passed at agent start (no persistence)
@@ -156,13 +221,21 @@ where
   /// the local node. This will propagate the change to the rest of
   /// the cluster. Blocks until a the message is broadcast out.
   #[inline]
-  pub async fn set_tags(&self, tags: HashMap<String, String>) -> Result<(), Error<D, T>> {
+  pub async fn set_tags(
+    &self,
+    tags: impl Iterator<Item = (SmolStr, SmolStr)>,
+  ) -> Result<(), Error<D, T>> {
+    let tags = tags.collect();
     // Check that the meta data length is okay
-    if self.encode_tags(&tags)?.len() > showbiz_core::META_MAX_SIZE {
+    if encode_tags(&tags)?.len() > showbiz_core::META_MAX_SIZE {
       return Err(Error::TagsTooLarge(showbiz_core::META_MAX_SIZE));
     }
     // update the config
-    self.inner.tags.store(Arc::new(tags));
+    if !tags.is_empty() {
+      self.inner.opts.tags.store(Some(Arc::new(tags)));
+    } else {
+      self.inner.opts.tags.store(None);
+    }
 
     // trigger a memberlist update
     self
@@ -529,47 +602,6 @@ impl<D: MergeDelegate, T: Transport> Serf<D, T> {
     Ok(())
   }
 
-  /// Used to encode a tag map
-  fn encode_tags(&self, tag: &HashMap<String, String>) -> Result<Bytes, Error<D, T>> {
-    struct EncodeHelper(BytesMut);
-
-    impl std::io::Write for EncodeHelper {
-      fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.put_slice(buf);
-        Ok(buf.len())
-      }
-
-      fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-      }
-    }
-
-    let mut buf = EncodeHelper(BytesMut::with_capacity(128));
-    // Use a magic byte prefix and msgpack encode the tags
-    buf.0.put_u8(MAGIC_BYTE);
-    match tag.serialize(&mut rmp_serde::Serializer::new(&mut buf)) {
-      Ok(_) => Ok(buf.0.freeze()),
-      Err(e) => {
-        tracing::error!(target = "reserf", err=%e, "failed to encode tags");
-        Err(Error::Encode(e))
-      }
-    }
-  }
-
-  /// Used to decode a tag map
-  fn decode_tags(&self, src: &[u8]) -> HashMap<String, String> {
-    // Decode the tags
-    let r = std::io::Cursor::new(&src[1..]);
-    let mut de = rmp_serde::Deserializer::new(r);
-    match HashMap::<String, String>::deserialize(&mut de) {
-      Ok(tags) => tags,
-      Err(e) => {
-        tracing::error!(target = "reserf", err=%e, "failed to decode tags");
-        HashMap::new()
-      }
-    }
-  }
-
   /// Serialize the current keyring and save it to a file.
   fn write_keyring_file(&self) -> std::io::Result<()> {
     use base64::{engine::general_purpose, Engine as _};
@@ -653,6 +685,49 @@ fn upsert_intent(
         ltime,
       });
       true
+    }
+  }
+}
+
+/// Used to encode a tag map
+fn encode_tags<D: MergeDelegate, T: Transport>(
+  tag: &HashMap<SmolStr, SmolStr>,
+) -> Result<Bytes, Error<D, T>> {
+  struct EncodeHelper(BytesMut);
+
+  impl std::io::Write for EncodeHelper {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+      self.0.put_slice(buf);
+      Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+      Ok(())
+    }
+  }
+
+  let mut buf = EncodeHelper(BytesMut::with_capacity(128));
+  // Use a magic byte prefix and msgpack encode the tags
+  buf.0.put_u8(MAGIC_BYTE);
+  match tag.serialize(&mut rmp_serde::Serializer::new(&mut buf)) {
+    Ok(_) => Ok(buf.0.freeze()),
+    Err(e) => {
+      tracing::error!(target = "reserf", err=%e, "failed to encode tags");
+      Err(Error::Encode(e))
+    }
+  }
+}
+
+/// Used to decode a tag map
+fn decode_tags(src: &[u8]) -> HashMap<SmolStr, SmolStr> {
+  // Decode the tags
+  let r = std::io::Cursor::new(&src[1..]);
+  let mut de = rmp_serde::Deserializer::new(r);
+  match HashMap::<SmolStr, SmolStr>::deserialize(&mut de) {
+    Ok(tags) => tags,
+    Err(e) => {
+      tracing::error!(target = "reserf", err=%e, "failed to decode tags");
+      HashMap::new()
     }
   }
 }

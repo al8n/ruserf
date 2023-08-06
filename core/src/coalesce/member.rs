@@ -1,10 +1,11 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
 use async_channel::Sender;
 use either::Either;
-use showbiz_core::NodeId;
+use showbiz_core::{transport::Transport, NodeId};
 
 use crate::{
+  delegate::MergeDelegate,
   event::{Event, EventKind, MemberEvent, MemberEventType},
   Member,
 };
@@ -16,25 +17,44 @@ pub(crate) struct CoalesceEvent {
   member: Arc<Member>,
 }
 
-pub(crate) struct MemberEventCoalescer {
+#[derive(Default)]
+pub(crate) struct MemberEventCoalescer<D, T> {
   last_events: HashMap<NodeId, MemberEventType>,
   latest_events: HashMap<NodeId, CoalesceEvent>,
+  _m: PhantomData<(D, T)>,
+}
+
+impl<D, T> MemberEventCoalescer<D, T> {
+  pub(crate) fn new() -> Self {
+    Self {
+      last_events: HashMap::new(),
+      latest_events: HashMap::new(),
+      _m: PhantomData,
+    }
+  }
 }
 
 #[showbiz_core::async_trait::async_trait]
-impl Coalescer for MemberEventCoalescer {
+impl<D, T> Coalescer for MemberEventCoalescer<D, T>
+where
+  D: MergeDelegate,
+  T: Transport,
+{
+  type Delegate = D;
+  type Transport = T;
+
   fn name(&self) -> &'static str {
     "member_event_coalescer"
   }
 
-  fn handle(&self, event: &Event) -> bool {
+  fn handle(&self, event: &Event<Self::Delegate, Self::Transport>) -> bool {
     match &event.0 {
       Either::Left(e) => matches!(e, EventKind::Member(_)),
       Either::Right(e) => matches!(&**e, EventKind::Member(_)),
     }
   }
 
-  fn coalesce(&mut self, event: Event) {
+  fn coalesce(&mut self, event: Event<Self::Delegate, Self::Transport>) {
     match event.0 {
       Either::Left(ev) => {
         let EventKind::Member(event) = ev else {
@@ -68,7 +88,10 @@ impl Coalescer for MemberEventCoalescer {
     }
   }
 
-  async fn flush(&mut self, out_tx: &Sender<Event>) -> Result<(), super::ClosedOutChannel> {
+  async fn flush(
+    &mut self,
+    out_tx: &Sender<Event<Self::Delegate, Self::Transport>>,
+  ) -> Result<(), super::ClosedOutChannel> {
     let mut events: HashMap<MemberEventType, MemberEvent> =
       HashMap::with_capacity(self.latest_events.len());
     // Coalesce the various events we got into a single set of events.

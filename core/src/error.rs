@@ -22,6 +22,8 @@ impl std::error::Error for VoidError {}
 pub enum Error<D: MergeDelegate, T: Transport> {
   #[error("ruserf: {0}")]
   Showbiz(#[from] ShowbizError<D, T>),
+  #[error("ruserf: user event size limit exceeds limit of {0} bytes")]
+  UserEventLimitTooLarge(usize),
   #[error("ruserf: user event exceeds sane limit of {0} bytes before encoding")]
   UserEventTooLarge(usize),
   #[error("ruserf: can't join after leave or shutdown")]
@@ -30,6 +32,12 @@ pub enum Error<D: MergeDelegate, T: Transport> {
   RawUserEventTooLarge(usize),
   #[error("ruserf: query exceeds limit of {0} bytes")]
   QueryTooLarge(usize),
+  #[error("ruserf: query response is past the deadline")]
+  QueryTimeout,
+  #[error("ruserf: query response ({got} bytes) exceeds limit of {limit} bytes")]
+  QueryResponseTooLarge { limit: usize, got: usize },
+  #[error("ruserf: query response already sent")]
+  QueryAlreadyResponsed,
   #[error("ruserf: encoded length of tags exceeds limit of {0} bytes")]
   TagsTooLarge(usize),
   #[error("ruserf: relayed response exceeds limit of {0} bytes")]

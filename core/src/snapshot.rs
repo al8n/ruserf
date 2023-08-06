@@ -19,11 +19,14 @@ use rand::seq::SliceRandom;
 use showbiz_core::{
   bytes::{BufMut, BytesMut},
   futures_util::{self, FutureExt},
-  metrics, tracing, Name, NodeId,
+  metrics, tracing,
+  transport::Transport,
+  Name, NodeId,
 };
 
 use crate::{
   clock::{LamportClock, LamportTime},
+  delegate::MergeDelegate,
   event::{Event, EventKind, MemberEvent, MemberEventType, QueryEvent, UserEvent},
 };
 
@@ -373,11 +376,11 @@ impl SnapshotHandle {
 
 /// Responsible for ingesting events and persisting
 /// them to disk, and providing a recovery mechanism at start time.
-pub(crate) struct Snapshot<R: Runtime> {
+pub(crate) struct Snapshot<D: MergeDelegate, T: Transport> {
   alive_nodes: HashSet<NodeId>,
   clock: LamportClock,
   fh: Option<BufWriter<File>>,
-  in_rx: Receiver<Event>,
+  in_rx: Receiver<Event<D, T>>,
   last_flush: Instant,
   last_clock: LamportTime,
   last_event_clock: LamportTime,
@@ -388,29 +391,27 @@ pub(crate) struct Snapshot<R: Runtime> {
   path: PathBuf,
   offset: u64,
   rejoin_after_leave: bool,
-  stream_rx: Receiver<Event>,
+  stream_rx: Receiver<Event<D, T>>,
   shutdown_rx: Receiver<()>,
   wait_tx: Sender<()>,
   last_attempted_compaction: Instant,
-  _m: std::marker::PhantomData<R>,
   #[cfg(feature = "metrics")]
   metric_labels: Arc<Vec<metrics::Label>>,
 }
 
-impl<R> Snapshot<R>
+impl<D: MergeDelegate, T: Transport> Snapshot<D, T>
 where
-  R: Runtime,
-  <R::Interval as futures_util::Stream>::Item: Send,
+  <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
 {
   pub(crate) fn open<P: AsRef<std::path::Path>>(
     path: P,
     min_compact_size: u64,
     rejoin_after_leave: bool,
     clock: LamportClock,
-    out_tx: Sender<Event>,
+    out_tx: Sender<Event<D, T>>,
     shutdown_rx: Receiver<()>,
     #[cfg(feature = "metrics")] metric_labels: Arc<Vec<metrics::Label>>,
-  ) -> Result<(Sender<Event>, Vec<NodeId>, SnapshotHandle), SnapshotError> {
+  ) -> Result<(Sender<Event<D, T>>, Vec<NodeId>, SnapshotHandle), SnapshotError> {
     let (in_tx, in_rx) = async_channel::bounded(EVENT_CH_SIZE);
     let (stream_tx, stream_rx) = async_channel::bounded(EVENT_CH_SIZE);
     let (leave_tx, leave_rx) = async_channel::bounded(1);
@@ -445,7 +446,6 @@ where
       shutdown_rx: shutdown_rx.clone(),
       wait_tx,
       last_attempted_compaction: Instant::now(),
-      _m: std::marker::PhantomData,
       #[cfg(feature = "metrics")]
       metric_labels,
     };
@@ -454,13 +454,13 @@ where
     alive_nodes.shuffle(&mut rand::thread_rng());
 
     // Start handling new commands
-    R::spawn_detach(Self::tee_stream(
+    <T::Runtime as Runtime>::spawn_detach(Self::tee_stream(
       in_rx,
       stream_tx,
       out_tx,
       shutdown_rx.clone(),
     ));
-    R::spawn_detach(this.stream());
+    <T::Runtime as Runtime>::spawn_detach(this.stream());
 
     Ok((
       in_tx,
@@ -476,9 +476,9 @@ where
   /// A long running routine that is used to copy events
   /// to the output channel and the internal event handler.
   async fn tee_stream(
-    in_rx: Receiver<Event>,
-    stream_tx: Sender<Event>,
-    out_tx: Sender<Event>,
+    in_rx: Receiver<Event<D, T>>,
+    stream_tx: Sender<Event<D, T>>,
+    out_tx: Sender<Event<D, T>>,
     shutdown_rx: Receiver<()>,
   ) {
     macro_rules! flush_event {
@@ -541,7 +541,7 @@ where
 
   /// Long running routine that is used to handle events
   async fn stream(mut self) {
-    let mut clock_ticker = R::interval(CLOCK_UPDATE_INTERVAL);
+    let mut clock_ticker = <T::Runtime as Runtime>::interval(CLOCK_UPDATE_INTERVAL);
 
     // flushEvent is used to handle writing out an event
     macro_rules! flush_event {
@@ -556,11 +556,13 @@ where
             EventKind::Member(e) => $this.process_member_event(e),
             EventKind::User(e) => $this.process_user_event(e),
             EventKind::Query(e) => $this.process_query_event(e),
+            EventKind::InternalQuery { query: e, .. } => $this.process_query_event(e),
           },
           Either::Right(e) => match &*e {
             EventKind::Member(e) => $this.process_member_event(e),
             EventKind::User(e) => $this.process_user_event(e),
             EventKind::Query(e) => $this.process_query_event(e),
+            EventKind::InternalQuery { query: e, .. } => $this.process_query_event(e),
           },
         }
       }};
@@ -599,7 +601,7 @@ where
         }
         _ = self.shutdown_rx.recv().fuse() => {
           // Setup a timeout
-          let flush_timeout = R::sleep(SHUTDOWN_FLUSH_TIMEOUT);
+          let flush_timeout = <T::Runtime as Runtime>::sleep(SHUTDOWN_FLUSH_TIMEOUT);
           futures_util::pin_mut!(flush_timeout);
 
           // snapshot the clock
@@ -654,7 +656,7 @@ where
   }
 
   /// Used to handle a single query event
-  fn process_query_event(&mut self, e: &QueryEvent) {
+  fn process_query_event(&mut self, e: &QueryEvent<D, T>) {
     // Ignore old clocks
     let ltime = *e.ltime();
     if ltime <= self.last_event_clock {

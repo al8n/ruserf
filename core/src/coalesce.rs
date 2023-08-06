@@ -1,5 +1,7 @@
 mod member;
+pub(crate) use member::*;
 mod user;
+pub(crate) use user::*;
 
 use std::time::Duration;
 
@@ -8,7 +10,10 @@ use async_channel::{bounded, Receiver, Sender};
 use showbiz_core::{
   futures_util::{self, FutureExt},
   tracing,
+  transport::Transport,
 };
+
+use crate::delegate::MergeDelegate;
 
 use super::event::Event;
 
@@ -17,31 +22,37 @@ pub(crate) struct ClosedOutChannel;
 #[cfg(feature = "async")]
 #[showbiz_core::async_trait::async_trait]
 pub(crate) trait Coalescer: Send + Sync + 'static {
+  type Delegate: MergeDelegate;
+  type Transport: Transport;
+
   fn name(&self) -> &'static str;
 
-  fn handle(&self, event: &Event) -> bool;
+  fn handle(&self, event: &Event<Self::Delegate, Self::Transport>) -> bool;
 
   /// Invoked to coalesce the given event
-  fn coalesce(&mut self, event: Event);
+  fn coalesce(&mut self, event: Event<Self::Delegate, Self::Transport>);
 
   /// Invoked to flush the coalesced events
-  async fn flush(&mut self, out_tx: &Sender<Event>) -> Result<(), ClosedOutChannel>;
+  async fn flush(
+    &mut self,
+    out_tx: &Sender<Event<Self::Delegate, Self::Transport>>,
+  ) -> Result<(), ClosedOutChannel>;
 }
 
 /// Returns an event channel where the events are coalesced
 /// using the given coalescer.
-pub(crate) fn coalesced_event<R: Runtime>(
-  out_tx: Sender<Event>,
-  shutdown_tx: Receiver<()>,
+pub(crate) fn coalesced_event<C: Coalescer>(
+  out_tx: Sender<Event<C::Delegate, C::Transport>>,
+  shutdown_rx: Receiver<()>,
   c_period: Duration,
   q_period: Duration,
-  c: impl Coalescer,
-) -> Sender<Event> {
+  c: C,
+) -> Sender<Event<C::Delegate, C::Transport>> {
   let (in_tx, in_rx) = bounded(1024);
-  R::spawn_detach(coalesce_loop::<R>(
+  <<C::Transport as Transport>::Runtime as Runtime>::spawn_detach(coalesce_loop::<C>(
     in_rx,
     out_tx,
-    shutdown_tx,
+    shutdown_rx,
     c_period,
     q_period,
     c,
@@ -51,13 +62,13 @@ pub(crate) fn coalesced_event<R: Runtime>(
 
 /// A simple long-running routine that manages the high-level
 /// flow of coalescing based on quiescence and a maximum quantum period.
-async fn coalesce_loop<R: Runtime>(
-  in_rx: Receiver<Event>,
-  out_tx: Sender<Event>,
+async fn coalesce_loop<C: Coalescer>(
+  in_rx: Receiver<Event<C::Delegate, C::Transport>>,
+  out_tx: Sender<Event<C::Delegate, C::Transport>>,
   shutdown_rx: Receiver<()>,
   coalesce_peirod: Duration,
   quiescent_period: Duration,
-  mut c: impl Coalescer,
+  mut c: C,
 ) {
   let mut quiescent = None;
   let mut quantum = None;
@@ -83,9 +94,9 @@ async fn coalesce_loop<R: Runtime>(
         // Start a new quantum if we need to
         // and restart the quiescent timer
         if quantum.is_none() {
-          quantum = Some(R::sleep(coalesce_peirod));
+          quantum = Some(<<C::Transport as Transport>::Runtime as Runtime>::sleep(coalesce_peirod));
         }
-        quiescent = Some(R::sleep(quiescent_period));
+        quiescent = Some(<<C::Transport as Transport>::Runtime as Runtime>::sleep(quiescent_period));
 
         // Coalesce the event
         c.coalesce(ev);

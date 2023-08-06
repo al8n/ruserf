@@ -243,8 +243,8 @@ pub(crate) struct RelayHeader {
 #[viewit::viewit]
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Tag {
-  tag: String,
-  expr: String,
+  tag: SmolStr,
+  expr: SmolStr,
 }
 
 #[viewit::viewit]

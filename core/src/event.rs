@@ -1,8 +1,20 @@
-use std::sync::Arc;
+use std::{
+  sync::Arc,
+  time::{Duration, Instant},
+};
 
+use agnostic::Runtime;
 use either::Either;
-use showbiz_core::bytes::Bytes;
+use parking_lot::Mutex;
+use showbiz_core::{
+  bytes::Bytes,
+  futures_util::{Future, FutureExt, Stream},
+  transport::Transport,
+  Message, NodeId, Showbiz,
+};
 use smol_str::SmolStr;
+
+use crate::{delegate::MergeDelegate, error::Error, types::QueryResponseMessage, Serf};
 
 use super::{clock::LamportTime, serf::Member};
 
@@ -15,44 +27,87 @@ pub enum EventType {
   Query,
 }
 
-#[derive(Clone)]
-pub struct Event(pub(crate) Either<EventKind, Arc<EventKind>>);
+pub struct Event<D: MergeDelegate, T: Transport>(
+  pub(crate) Either<EventKind<D, T>, Arc<EventKind<D, T>>>,
+);
 
-impl Event {
+impl<D, T> Clone for Event<D, T>
+where
+  D: MergeDelegate,
+  T: Transport,
+{
+  fn clone(&self) -> Self {
+    Self(self.0.clone())
+  }
+}
+
+impl<D: MergeDelegate, T: Transport> Event<D, T> {
   pub(crate) fn into_right(self) -> Self {
     match self.0 {
       Either::Left(e) => Self(Either::Right(Arc::new(e))),
       Either::Right(e) => Self(Either::Right(e)),
     }
   }
+
+  pub(crate) fn kind(&self) -> &EventKind<D, T> {
+    match &self.0 {
+      Either::Left(e) => e,
+      Either::Right(e) => &**e,
+    }
+  }
+
+  pub(crate) fn is_internal_query(&self) -> bool {
+    matches!(self.kind(), EventKind::InternalQuery { .. })
+  }
 }
 
-impl From<MemberEvent> for Event {
+impl<D: MergeDelegate, T: Transport> From<MemberEvent> for Event<D, T> {
   fn from(value: MemberEvent) -> Self {
     Self(Either::Left(EventKind::Member(value)))
   }
 }
 
-impl From<UserEvent> for Event {
+impl<D: MergeDelegate, T: Transport> From<UserEvent> for Event<D, T> {
   fn from(value: UserEvent) -> Self {
     Self(Either::Left(EventKind::User(value)))
   }
 }
 
-impl From<QueryEvent> for Event {
-  fn from(value: QueryEvent) -> Self {
+impl<D: MergeDelegate, T: Transport> From<QueryEvent<D, T>> for Event<D, T> {
+  fn from(value: QueryEvent<D, T>) -> Self {
     Self(Either::Left(EventKind::Query(value)))
   }
 }
 
-#[derive(Clone)]
-pub(crate) enum EventKind {
+pub(crate) enum EventKind<D: MergeDelegate, T: Transport> {
   Member(MemberEvent),
   User(UserEvent),
-  Query(QueryEvent),
+  Query(QueryEvent<D, T>),
+  InternalQuery {
+    ty: InternalQueryEventType,
+    query: QueryEvent<D, T>,
+  },
 }
 
-impl EventKind {
+impl<D, T> Clone for EventKind<D, T>
+where
+  D: MergeDelegate,
+  T: Transport,
+{
+  fn clone(&self) -> Self {
+    match self {
+      Self::Member(e) => Self::Member(e.clone()),
+      Self::User(e) => Self::User(e.clone()),
+      Self::Query(e) => Self::Query(e.clone()),
+      Self::InternalQuery { ty, query } => Self::InternalQuery {
+        ty: *ty,
+        query: query.clone(),
+      },
+    }
+  }
+}
+
+impl<D: MergeDelegate, T: Transport> EventKind<D, T> {
   #[inline]
   pub const fn member(event: MemberEvent) -> Self {
     Self::Member(event)
@@ -64,34 +119,35 @@ impl EventKind {
   }
 
   #[inline]
-  pub const fn query(event: QueryEvent) -> Self {
+  pub const fn query(event: QueryEvent<D, T>) -> Self {
     Self::Query(event)
   }
 
-  #[inline]
-  pub fn event_type(&self) -> EventType {
-    match self {
-      Self::Member(event) => EventType::Member(event.ty),
-      Self::User(_) => EventType::User,
-      Self::Query(_) => EventType::Query,
-    }
-  }
+  // #[inline]
+  // pub fn event_type(&self) -> EventType {
+  //   match self {
+  //     Self::Member(event) => EventType::Member(event.ty),
+  //     Self::User(_) => EventType::User,
+  //     Self::Query(_) => EventType::Query,
+  //     Self::InternalQuery { .. } => unreachable!(),
+  //   }
+  // }
 }
 
-impl From<MemberEvent> for EventKind {
+impl<D: MergeDelegate, T: Transport> From<MemberEvent> for EventKind<D, T> {
   fn from(event: MemberEvent) -> Self {
     Self::Member(event)
   }
 }
 
-impl From<UserEvent> for EventKind {
+impl<D: MergeDelegate, T: Transport> From<UserEvent> for EventKind<D, T> {
   fn from(event: UserEvent) -> Self {
     Self::User(event)
   }
 }
 
-impl From<QueryEvent> for EventKind {
-  fn from(event: QueryEvent) -> Self {
+impl<D: MergeDelegate, T: Transport> From<QueryEvent<D, T>> for EventKind<D, T> {
+  fn from(event: QueryEvent<D, T>) -> Self {
     Self::Query(event)
   }
 }
@@ -176,17 +232,131 @@ impl core::fmt::Display for UserEvent {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]
+pub(crate) enum InternalQueryEventType {
+  Ping,
+  Conflict,
+  InstallKey,
+  UseKey,
+  RemoveKey,
+  ListKey,
+}
+
+pub(crate) struct QueryContext<D, T>
+where
+  D: MergeDelegate,
+  T: Transport,
+{
+  query_timeout: Duration,
+  span: Mutex<Option<Instant>>,
+  this: Serf<D, T>,
+}
+
 /// Query is the struct used by EventQuery type events
 #[viewit::viewit(vis_all = "pub(crate)", setters(prefix = "with"))]
-#[derive(Debug, Clone)]
-pub struct QueryEvent {
+pub struct QueryEvent<D: MergeDelegate, T: Transport> {
   ltime: LamportTime,
   name: SmolStr,
   payload: Bytes,
+
+  #[viewit(getter(skip), setter(skip))]
+  ctx: Arc<QueryContext<D, T>>,
+  id: u32,
+  /// source node
+  from: NodeId,
+  /// Number of duplicate responses to relay back to sender
+  relay_factor: u8,
 }
 
-impl core::fmt::Display for QueryEvent {
+impl<D, T> Clone for QueryEvent<D, T>
+where
+  D: MergeDelegate,
+  T: Transport,
+{
+  fn clone(&self) -> Self {
+    Self {
+      ltime: self.ltime,
+      name: self.name.clone(),
+      payload: self.payload.clone(),
+      ctx: self.ctx.clone(),
+      id: self.id,
+      from: self.from.clone(),
+      relay_factor: self.relay_factor,
+    }
+  }
+}
+
+impl<D, T> core::fmt::Display for QueryEvent<D, T>
+where
+  D: MergeDelegate,
+  T: Transport,
+{
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "query")
+  }
+}
+
+impl<D, T> QueryEvent<D, T>
+where
+  D: MergeDelegate,
+  T: Transport,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+{
+  pub(crate) fn create_response(&self, buf: Bytes) -> QueryResponseMessage {
+    QueryResponseMessage {
+      ltime: self.ltime,
+      id: self.id,
+      from: self.ctx.this.inner.memberlist.local_id().clone(),
+      flags: 0,
+      payload: buf,
+    }
+  }
+
+  fn check_response_size(&self, resp: &[u8]) -> Result<(), Error<D, T>> {
+    let resp_len = resp.len();
+    if resp_len > self.ctx.this.inner.opts.query_response_size_limit {
+      Err(Error::QueryResponseTooLarge {
+        limit: self.ctx.this.inner.opts.query_response_size_limit,
+        got: resp_len,
+      })
+    } else {
+      Ok(())
+    }
+  }
+
+  pub(crate) async fn respond_with_message_and_response(
+    &self,
+    raw: Message,
+    resp: QueryResponseMessage,
+  ) -> Result<(), Error<D, T>> {
+    self.check_response_size(raw.as_slice())?;
+
+    let mut mu = self.ctx.span.lock();
+
+    if let Some(span) = *mu {
+      // Ensure we aren't past our response deadline
+      if span.elapsed() > self.ctx.query_timeout {
+        return Err(Error::QueryTimeout);
+      }
+
+      // Send the response directly to the originator
+      self.ctx.this.inner.memberlist.send(&self.from, raw).await?;
+
+      // Relay the response through up to relayFactor other nodes
+      self
+        .ctx
+        .this
+        .relay_response(self.relay_factor, self.from.clone(), resp)
+        .await?;
+
+      // Clear the deadline, responses sent
+      *mu = None;
+      Ok(())
+    } else {
+      Err(Error::QueryAlreadyResponsed)
+    }
   }
 }
