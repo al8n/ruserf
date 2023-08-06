@@ -235,7 +235,7 @@ impl QueryResponse {
 
 /// Used to represent a single response from a node
 #[viewit::viewit]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct NodeResponse {
   from: NodeId,
   payload: Bytes,

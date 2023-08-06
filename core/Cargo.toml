@@ -25,7 +25,7 @@ base64 = "0.21"
 bitflags = "2.3"
 either = "1.9"
 pin-project-lite = "0.2"
-parking_lot = "0.12"
+parking_lot = { version = "0.12", features = ["send_guard"] }
 rand = "0.8"
 regex = "1.7"
 rmp-serde = { version = "1.1" }

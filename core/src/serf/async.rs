@@ -27,12 +27,13 @@ use crate::{
   broadcast::SerfBroadcast,
   clock::LamportClock,
   coalesce::{coalesced_event, MemberEventCoalescer, UserEventCoalescer},
-  coordinate::{Coordinate, CoordinateClient},
+  coordinate::{Coordinate, CoordinateClient, CoordinateOptions},
   delegate::{MergeDelegate, SerfDelegate},
   error::{Error, JoinError},
   event::Event,
+  internal_query::SerfQueries,
   query::{QueryParam, QueryResponse},
-  snapshot::SnapshotHandle,
+  snapshot::{open_and_replay_snapshot, SnapshotHandle},
   types::{encode_message, JoinMessage, MessageUserEvent, QueryFlag, QueryMessage},
   Options,
 };
@@ -148,7 +149,7 @@ where
 
     let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
 
-    if let Some(mut event_tx) = ev {
+    let event_tx = ev.map(|mut event_tx| {
       // Check if serf member event coalescing is enabled
       if opts.coalesce_period > Duration::ZERO && opts.quiescent_period > Duration::ZERO {
         let c = MemberEventCoalescer::new();
@@ -177,7 +178,26 @@ where
       // Listen for internal Serf queries. This is setup before the snapshotter, since
       // we want to capture the query-time, but the internal listener does not passthrough
       // the queries
+      SerfQueries::new(event_tx, shutdown_rx.clone())
+    });
+
+    // Try access the snapshot
+    if let Some(sp) = opts.snapshot_path.as_ref() {
+      let snapshot = open_and_replay_snapshot(sp, opts.rejoin_after_leave)?;
     }
+
+    // Set up network coordinate client.
+    let coord = (!opts.disable_coordinates).then_some({
+      let mut coordinate_opts = CoordinateOptions::default();
+      //TODO:  setup metrics
+      // coordinate_opts.
+      CoordinateClient::with_options(coordinate_opts)
+    });
+
+    let broadcast = TransmitLimitedQueue::new(calc, opts.showbiz_options.retransmit_mult);
+    let event_broadcast = TransmitLimitedQueue::new(calc, opts.showbiz_options.retransmit_mult);
+    let query_broadcast = TransmitLimitedQueue::new(calc, opts.showbiz_options.retransmit_mult);
+
     // Ok()
     todo!()
   }
@@ -603,7 +623,7 @@ impl<D: MergeDelegate, T: Transport> Serf<D, T> {
   }
 
   /// Serialize the current keyring and save it to a file.
-  fn write_keyring_file(&self) -> std::io::Result<()> {
+  pub(crate) fn write_keyring_file(&self) -> std::io::Result<()> {
     use base64::{engine::general_purpose, Engine as _};
 
     let Some(path) = self.inner.opts.keyring_file() else {

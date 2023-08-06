@@ -5,6 +5,7 @@ pub mod clock;
 pub mod coordinate;
 
 mod coalesce;
+mod codec;
 mod delegate;
 pub mod error;
 pub mod event;
@@ -14,6 +15,8 @@ mod snapshot;
 pub use serf::*;
 
 mod broadcast;
+mod key_manager;
+pub use key_manager::*;
 mod types;
 
 mod options;

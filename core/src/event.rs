@@ -4,8 +4,8 @@ use std::{
 };
 
 use agnostic::Runtime;
+use async_lock::Mutex;
 use either::Either;
-use parking_lot::Mutex;
 use showbiz_core::{
   bytes::Bytes,
   futures_util::{Future, FutureExt, Stream},
@@ -14,7 +14,12 @@ use showbiz_core::{
 };
 use smol_str::SmolStr;
 
-use crate::{delegate::MergeDelegate, error::Error, types::QueryResponseMessage, Serf};
+use crate::{
+  delegate::MergeDelegate,
+  error::Error,
+  types::{encode_message, MessageType, QueryResponseMessage},
+  Serf,
+};
 
 use super::{clock::LamportTime, serf::Member};
 
@@ -244,11 +249,21 @@ pub(crate) enum InternalQueryEventType {
   ListKey,
 }
 
-pub(crate) struct QueryContext<D, T>
-where
-  D: MergeDelegate,
-  T: Transport,
-{
+impl InternalQueryEventType {
+  pub(crate) const fn as_str(&self) -> &'static str {
+    match self {
+      InternalQueryEventType::Ping => "ruserf-ping",
+      InternalQueryEventType::Conflict => "ruserf-conflict",
+      InternalQueryEventType::InstallKey => "ruserf-install-key",
+      InternalQueryEventType::UseKey => "ruserf-use-key",
+      InternalQueryEventType::RemoveKey => "ruserf-remove-key",
+      InternalQueryEventType::ListKey => "ruserf-list-keys",
+    }
+  }
+}
+
+#[viewit::viewit]
+pub(crate) struct QueryContext<D: MergeDelegate, T: Transport> {
   query_timeout: Duration,
   span: Mutex<Option<Instant>>,
   this: Serf<D, T>,
@@ -268,6 +283,16 @@ pub struct QueryEvent<D: MergeDelegate, T: Transport> {
   from: NodeId,
   /// Number of duplicate responses to relay back to sender
   relay_factor: u8,
+}
+
+impl<D, T> AsRef<QueryEvent<D, T>> for QueryEvent<D, T>
+where
+  D: MergeDelegate,
+  T: Transport,
+{
+  fn as_ref(&self) -> &QueryEvent<D, T> {
+    self
+  }
 }
 
 impl<D, T> Clone for QueryEvent<D, T>
@@ -315,7 +340,7 @@ where
     }
   }
 
-  fn check_response_size(&self, resp: &[u8]) -> Result<(), Error<D, T>> {
+  pub(crate) fn check_response_size(&self, resp: &[u8]) -> Result<(), Error<D, T>> {
     let resp_len = resp.len();
     if resp_len > self.ctx.this.inner.opts.query_response_size_limit {
       Err(Error::QueryResponseTooLarge {
@@ -334,7 +359,7 @@ where
   ) -> Result<(), Error<D, T>> {
     self.check_response_size(raw.as_slice())?;
 
-    let mut mu = self.ctx.span.lock();
+    let mut mu = self.ctx.span.lock().await;
 
     if let Some(span) = *mu {
       // Ensure we aren't past our response deadline
@@ -357,6 +382,17 @@ where
       Ok(())
     } else {
       Err(Error::QueryAlreadyResponsed)
+    }
+  }
+
+  /// Used to send a response to the user query
+  pub async fn respond(&self, msg: Bytes) -> Result<(), Error<D, T>> {
+    let resp = self.create_response(msg);
+
+    // Encode response
+    match encode_message(MessageType::QueryResponse, &resp) {
+      Ok(raw) => self.respond_with_message_and_response(raw, resp).await,
+      Err(e) => Err(Error::Encode(e)),
     }
   }
 }

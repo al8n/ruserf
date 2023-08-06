@@ -4,6 +4,7 @@ use showbiz_core::{transport::Transport, Address, NodeId};
 
 use crate::{
   delegate::{MergeDelegate, SerfDelegate},
+  snapshot::SnapshotError,
   Member,
 };
 
@@ -38,6 +39,8 @@ pub enum Error<D: MergeDelegate, T: Transport> {
   QueryResponseTooLarge { limit: usize, got: usize },
   #[error("ruserf: query response already sent")]
   QueryAlreadyResponsed,
+  #[error("ruserf: failed to truncate response so that it fits into message")]
+  FailTruncateResponse,
   #[error("ruserf: encoded length of tags exceeds limit of {0} bytes")]
   TagsTooLarge(usize),
   #[error("ruserf: relayed response exceeds limit of {0} bytes")]
@@ -52,6 +55,8 @@ pub enum Error<D: MergeDelegate, T: Transport> {
   QueryResponseDeliveryFailed,
   #[error("ruserf: coordinates are disabled")]
   CoordinatesDisabled,
+  #[error("ruserf: {0}")]
+  Snapshot(#[from] SnapshotError),
 }
 
 pub struct ShowbizError<D: MergeDelegate, T: Transport>(

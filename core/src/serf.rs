@@ -7,6 +7,7 @@ use atomic::Atomic;
 pub use r#async::*;
 use serde::{Deserialize, Serialize};
 use showbiz_core::{bytes::Bytes, DelegateVersion, NodeId, ProtocolVersion};
+use smol_str::SmolStr;
 
 use crate::{clock::LamportTime, types::MessageType};
 
@@ -47,12 +48,24 @@ pub enum MemberStatus {
   Failed,
 }
 
+fn serialize_atomic_member_status<S>(
+  status: &Atomic<MemberStatus>,
+  serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+  S: serde::ser::Serializer,
+{
+  let status = status.load(atomic::Ordering::Relaxed);
+  serializer.serialize_u8(status as u8)
+}
+
 /// A single member of the Serf cluster.
 #[viewit::viewit(vis_all = "pub(crate)")]
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct Member {
   id: NodeId,
-  tags: HashMap<String, String>,
+  tags: Arc<HashMap<SmolStr, SmolStr>>,
+  #[serde(serialize_with = "serialize_atomic_member_status")]
   status: Atomic<MemberStatus>,
   protocol_version: ProtocolVersion,
   delegate_version: DelegateVersion,
