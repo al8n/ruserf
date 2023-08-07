@@ -9,7 +9,7 @@ use smol_str::SmolStr;
 fn tags(
   tags: &Arc<ArcSwapOption<HashMap<SmolStr, SmolStr>>>,
 ) -> Option<Arc<HashMap<SmolStr, SmolStr>>> {
-  tags.load().as_ref().map(|tags| Arc::clone(&tags))
+  tags.load().as_ref().map(Arc::clone)
 }
 
 /// The configuration for creating a Serf instance.
@@ -245,10 +245,6 @@ pub struct Options<T: Transport> {
   // /// An optional interface which when present allows
   // /// the application to cause reaping of a node to happen when it otherwise wouldn't
   // reconnect_timeout_override: ,
-  #[viewit(getter(style = "ref", const, attrs(cfg(feature = "metrics"))))]
-  #[cfg(feature = "metrics")]
-  #[serde(with = "showbiz_core::util::label_serde")]
-  metrics_labels: Arc<Vec<showbiz_core::metrics::Label>>,
 }
 
 impl<T: Transport> Default for Options<T> {
@@ -262,8 +258,6 @@ impl<T: Transport> Clone for Options<T> {
   #[inline]
   fn clone(&self) -> Self {
     Self {
-      #[cfg(feature = "metrics")]
-      metrics_labels: self.metrics_labels.clone(),
       showbiz_options: self.showbiz_options.clone(),
       keyring_file: self.keyring_file.clone(),
       snapshot_path: self.snapshot_path.clone(),
@@ -307,8 +301,6 @@ impl<T: Transport> Options<T> {
       disable_coordinates: false,
       keyring_file: None,
       max_user_event_size: 512,
-      #[cfg(feature = "metrics")]
-      metrics_labels: Arc::new(Vec::new()),
     }
   }
 

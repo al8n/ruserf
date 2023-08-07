@@ -20,9 +20,9 @@ impl std::fmt::Display for VoidError {
 impl std::error::Error for VoidError {}
 
 #[derive(thiserror::Error)]
-pub enum Error<D: MergeDelegate, T: Transport> {
+pub enum Error<T: Transport, D: MergeDelegate> {
   #[error("ruserf: {0}")]
-  Showbiz(#[from] ShowbizError<D, T>),
+  Showbiz(#[from] ShowbizError<T, D>),
   #[error("ruserf: user event size limit exceeds limit of {0} bytes")]
   UserEventLimitTooLarge(usize),
   #[error("ruserf: user event exceeds sane limit of {0} bytes before encoding")]
@@ -46,7 +46,7 @@ pub enum Error<D: MergeDelegate, T: Transport> {
   #[error("ruserf: relayed response exceeds limit of {0} bytes")]
   RelayedResponseTooLarge(usize),
   #[error("ruserf: relay error\n{0}")]
-  Relay(RelayError<D, T>),
+  Relay(RelayError<T, D>),
   #[error("ruserf: encode error: {0}")]
   Encode(#[from] rmp_serde::encode::Error),
   #[error("ruserf: decode error: {0}")]
@@ -59,37 +59,37 @@ pub enum Error<D: MergeDelegate, T: Transport> {
   Snapshot(#[from] SnapshotError),
 }
 
-pub struct ShowbizError<D: MergeDelegate, T: Transport>(
-  showbiz_core::error::Error<SerfDelegate<D, T>, T>,
+pub struct ShowbizError<T: Transport, D: MergeDelegate>(
+  showbiz_core::error::Error<T, SerfDelegate<T, D>>,
 );
 
-impl<D: MergeDelegate, T: Transport> From<showbiz_core::error::Error<SerfDelegate<D, T>, T>>
-  for ShowbizError<D, T>
+impl<D: MergeDelegate, T: Transport> From<showbiz_core::error::Error<T, SerfDelegate<T, D>>>
+  for ShowbizError<T, D>
 {
-  fn from(value: showbiz_core::error::Error<SerfDelegate<D, T>, T>) -> Self {
+  fn from(value: showbiz_core::error::Error<T, SerfDelegate<T, D>>) -> Self {
     Self(value)
   }
 }
 
-impl<D: MergeDelegate, T: Transport> core::fmt::Display for ShowbizError<D, T> {
+impl<D: MergeDelegate, T: Transport> core::fmt::Display for ShowbizError<T, D> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "{}", self.0)
   }
 }
 
-impl<D: MergeDelegate, T: Transport> From<showbiz_core::error::Error<SerfDelegate<D, T>, T>>
-  for Error<D, T>
+impl<D: MergeDelegate, T: Transport> From<showbiz_core::error::Error<T, SerfDelegate<T, D>>>
+  for Error<T, D>
 {
-  fn from(value: showbiz_core::error::Error<SerfDelegate<D, T>, T>) -> Self {
+  fn from(value: showbiz_core::error::Error<T, SerfDelegate<T, D>>) -> Self {
     Self::Showbiz(ShowbizError(value))
   }
 }
 
-pub struct RelayError<D: MergeDelegate, T: Transport>(
+pub struct RelayError<T: Transport, D: MergeDelegate>(
   #[allow(clippy::type_complexity)]
   Vec<(
     Arc<Member>,
-    showbiz_core::error::Error<SerfDelegate<D, T>, T>,
+    showbiz_core::error::Error<T, SerfDelegate<T, D>>,
   )>,
 );
 
@@ -97,21 +97,21 @@ impl<D: MergeDelegate, T: Transport>
   From<
     Vec<(
       Arc<Member>,
-      showbiz_core::error::Error<SerfDelegate<D, T>, T>,
+      showbiz_core::error::Error<T, SerfDelegate<T, D>>,
     )>,
-  > for RelayError<D, T>
+  > for RelayError<T, D>
 {
   fn from(
     value: Vec<(
       Arc<Member>,
-      showbiz_core::error::Error<SerfDelegate<D, T>, T>,
+      showbiz_core::error::Error<T, SerfDelegate<T, D>>,
     )>,
   ) -> Self {
     Self(value)
   }
 }
 
-impl<D, T> core::fmt::Display for RelayError<D, T>
+impl<D, T> core::fmt::Display for RelayError<T, D>
 where
   D: MergeDelegate,
   T: Transport,
@@ -130,18 +130,18 @@ where
 }
 
 /// `JoinError` is returned when join is partially/totally failed.
-pub struct JoinError<D: MergeDelegate, T: Transport> {
+pub struct JoinError<T: Transport, D: MergeDelegate> {
   pub(crate) joined: Vec<NodeId>,
-  pub(crate) errors: HashMap<Address, Error<D, T>>,
-  pub(crate) broadcast_error: Option<Error<D, T>>,
+  pub(crate) errors: HashMap<Address, Error<T, D>>,
+  pub(crate) broadcast_error: Option<Error<T, D>>,
 }
 
-impl<D: MergeDelegate, T: Transport> JoinError<D, T> {
-  pub const fn broadcast_error(&self) -> Option<&Error<D, T>> {
+impl<D: MergeDelegate, T: Transport> JoinError<T, D> {
+  pub const fn broadcast_error(&self) -> Option<&Error<T, D>> {
     self.broadcast_error.as_ref()
   }
 
-  pub const fn errors(&self) -> &HashMap<Address, Error<D, T>> {
+  pub const fn errors(&self) -> &HashMap<Address, Error<T, D>> {
     &self.errors
   }
 
@@ -154,13 +154,13 @@ impl<D: MergeDelegate, T: Transport> JoinError<D, T> {
   }
 }
 
-impl<D: MergeDelegate, T: Transport> core::fmt::Debug for JoinError<D, T> {
+impl<D: MergeDelegate, T: Transport> core::fmt::Debug for JoinError<T, D> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "{}", self)
   }
 }
 
-impl<D: MergeDelegate, T: Transport> core::fmt::Display for JoinError<D, T> {
+impl<D: MergeDelegate, T: Transport> core::fmt::Display for JoinError<T, D> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     if !self.joined.is_empty() {
       writeln!(f, "Successes: {:?}", self.joined)?;
@@ -180,4 +180,4 @@ impl<D: MergeDelegate, T: Transport> core::fmt::Display for JoinError<D, T> {
   }
 }
 
-impl<D: MergeDelegate, T: Transport> std::error::Error for JoinError<D, T> {}
+impl<D: MergeDelegate, T: Transport> std::error::Error for JoinError<T, D> {}

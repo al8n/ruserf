@@ -1,6 +1,9 @@
 use std::{
   collections::HashMap,
-  sync::atomic::{AtomicUsize, Ordering},
+  sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+  },
   time::Duration,
 };
 
@@ -48,7 +51,7 @@ pub enum CoordinateError {
 ///     host-based network coordinate systems." Networking, IEEE/ACM Transactions
 ///     on 18.1 (2010): 27-40.
 #[viewit::viewit]
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CoordinateOptions {
   /// The dimensionality of the coordinate system. As discussed in [2], more
   /// dimensions improves the accuracy of the estimates up to a point. Per [2]
@@ -88,6 +91,10 @@ pub struct CoordinateOptions {
   /// A tuning factor that sets how much gravity has an effect
   /// to try to re-center coordinates. See [2] for more details.
   gravity_rho: f64,
+
+  #[cfg(feature = "metrics")]
+  #[serde(with = "showbiz_core::util::label_serde")]
+  metric_labels: Arc<Vec<showbiz_core::metrics::Label>>,
 }
 
 impl Default for CoordinateOptions {
@@ -100,7 +107,7 @@ impl CoordinateOptions {
   /// Returns a `CoordinateOptions` that has some default values suitable for
   /// basic testing of the algorithm, but not tuned to any particular type of cluster.
   #[inline]
-  pub const fn new() -> Self {
+  pub fn new() -> Self {
     Self {
       dimensionality: DEFAULT_DIMENSIONALITY,
       vivaldi_error_max: 1.5,
@@ -110,6 +117,7 @@ impl CoordinateOptions {
       height_min: 10.0e-6,
       latency_filter_size: 3,
       gravity_rho: 150.0,
+      metric_labels: Arc::new(Vec::new()),
     }
   }
 }
@@ -275,8 +283,8 @@ impl CoordinateClient {
     samples.resize(opts.adjustment_window_size, 0.0);
     Self {
       inner: RwLock::new(CoordinateClientInner {
-        coord: Coordinate::with_options(opts),
-        origin: Coordinate::with_options(opts),
+        coord: Coordinate::with_options(opts.clone()),
+        origin: Coordinate::with_options(opts.clone()),
         opts,
         adjustment_index: 0,
         adjustment_samples: samples,
@@ -348,7 +356,7 @@ impl CoordinateClient {
 
     if !l.coord.is_valid() {
       self.stats.fetch_add(1, Ordering::Acquire);
-      l.coord = Coordinate::with_options(l.opts);
+      l.coord = Coordinate::with_options(l.opts.clone());
     }
 
     Ok(l.coord.clone())
@@ -602,14 +610,14 @@ mod tests {
   fn test_client_update() {
     let cfg = CoordinateOptions::default().set_dimensionality(3);
 
-    let client = CoordinateClient::with_options(cfg);
+    let client = CoordinateClient::with_options(cfg.clone());
 
     let c = client.get_coordinate();
     verify_equal_vectors(&c.vec, [0.0, 0.0, 0.0].as_slice());
 
     // Place a node right above the client and observe an RTT longer than the
     // client expects, given its distance.
-    let mut other = Coordinate::with_options(cfg);
+    let mut other = Coordinate::with_options(cfg.clone());
     other.vec[2] = 0.001;
 
     let rtt = Duration::from_nanos((2.0 * other.vec[2] * 1.0e9) as u64);
@@ -631,7 +639,7 @@ mod tests {
   fn test_client_invalid_in_ping_values() {
     let cfg = CoordinateOptions::default().set_dimensionality(3);
 
-    let client = CoordinateClient::with_options(cfg);
+    let client = CoordinateClient::with_options(cfg.clone());
 
     // Place another node
     let mut other = Coordinate::with_options(cfg);
@@ -660,7 +668,7 @@ mod tests {
       .set_dimensionality(3)
       .set_height_min(0f64);
 
-    let client = CoordinateClient::with_options(cfg);
+    let client = CoordinateClient::with_options(cfg.clone());
 
     // Fiddle a raw coordinate to put it a specific number of seconds away.
     let mut other = Coordinate::with_options(cfg);
@@ -753,10 +761,10 @@ mod tests {
   fn test_client_nan_defense() {
     let cfg = CoordinateOptions::default().set_dimensionality(3);
 
-    let client = CoordinateClient::with_options(cfg);
+    let client = CoordinateClient::with_options(cfg.clone());
 
     // Block a bad coordinate from coming in.
-    let mut other = Coordinate::with_options(cfg);
+    let mut other = Coordinate::with_options(cfg.clone());
     other.vec[0] = f64::NAN;
     assert!(!other.is_valid());
 
@@ -788,7 +796,7 @@ mod tests {
   #[test]
   fn test_coordinate_new() {
     let opts = CoordinateOptions::default();
-    let c = Coordinate::with_options(opts);
+    let c = Coordinate::with_options(opts.clone());
     assert_eq!(opts.dimensionality, c.vec.len());
   }
 
@@ -813,8 +821,8 @@ mod tests {
   fn test_coordinate_is_compatible_with() {
     let cfg = CoordinateOptions::default().set_dimensionality(3);
 
-    let c1 = Coordinate::with_options(cfg);
-    let c2 = Coordinate::with_options(cfg);
+    let c1 = Coordinate::with_options(cfg.clone());
+    let c2 = Coordinate::with_options(cfg.clone());
     let cfg = cfg.set_dimensionality(2);
     let alien = Coordinate::with_options(cfg);
 
@@ -831,11 +839,11 @@ mod tests {
       .set_dimensionality(3)
       .set_height_min(0f64);
 
-    let origin = Coordinate::with_options(cfg);
+    let origin = Coordinate::with_options(cfg.clone());
 
     // This proves that we normalize, get the direction right, and apply the
     // force multiplier correctly.
-    let mut above = Coordinate::with_options(cfg);
+    let mut above = Coordinate::with_options(cfg.clone());
     above.vec[0] = 0.0;
     above.vec[1] = 0.0;
     above.vec[2] = 2.9;
@@ -845,7 +853,7 @@ mod tests {
 
     // Scoot a point not starting at the origin to make sure there's nothing
     // special there.
-    let mut right = Coordinate::with_options(cfg);
+    let mut right = Coordinate::with_options(cfg.clone());
     right.vec[0] = 3.4;
     right.vec[1] = 0.0;
     right.vec[2] = -5.3;
@@ -860,7 +868,7 @@ mod tests {
 
     // Enable a minimum height and make sure that gets factored in properly.
     let cfg = cfg.set_height_min(10.0e-6);
-    let origin = Coordinate::with_options(cfg);
+    let origin = Coordinate::with_options(cfg.clone());
     let c = origin.apply_force(cfg.height_min, 5.3, &above);
     verify_equal_vectors(&c.vec, [0.0, 0.0, -5.3].as_slice());
     verify_equal_floats(c.height, cfg.height_min + 5.3 * cfg.height_min / 2.9);

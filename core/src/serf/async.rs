@@ -1,7 +1,7 @@
 use std::{
   future::Future,
   sync::{
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicBool, Ordering},
     Arc,
   },
   time::Duration,
@@ -10,12 +10,10 @@ use std::{
 use super::*;
 
 use agnostic::Runtime;
-use arc_swap::{ArcSwap, ArcSwapOption};
 use async_lock::{Mutex, RwLock};
 use showbiz_core::{
   bytes::{BufMut, BytesMut},
   futures_util::Stream,
-  metrics,
   queue::{NodeCalculator, TransmitLimitedQueue},
   tracing,
   transport::Transport,
@@ -28,40 +26,58 @@ use crate::{
   clock::LamportClock,
   coalesce::{coalesced_event, MemberEventCoalescer, UserEventCoalescer},
   coordinate::{Coordinate, CoordinateClient, CoordinateOptions},
-  delegate::{MergeDelegate, SerfDelegate},
+  delegate::{DefaultMergeDelegate, MergeDelegate, SerfDelegate},
   error::{Error, JoinError},
   event::Event,
   internal_query::SerfQueries,
   query::{QueryParam, QueryResponse},
-  snapshot::{open_and_replay_snapshot, SnapshotHandle},
+  snapshot::{open_and_replay_snapshot, Snapshot, SnapshotHandle},
   types::{encode_message, JoinMessage, MessageUserEvent, QueryFlag, QueryMessage},
-  Options,
+  KeyManager, Options,
 };
 
 const MAGIC_BYTE: u8 = 255;
+
 /// Maximum 128 KB snapshot
-const SNAPSHOT_SIZE_LIMIT: usize = 128 * 1024;
+const SNAPSHOT_SIZE_LIMIT: u64 = 128 * 1024;
 
 /// Maximum 9KB for event name and payload
 const USER_EVENT_SIZE_LIMIT: usize = 9 * 1024;
 
+#[derive(Clone)]
 pub(crate) struct SerfNodeCalculator {
-  num_nodes: Arc<AtomicU32>,
+  members: Arc<RwLock<Members>>,
 }
 
-impl NodeCalculator for SerfNodeCalculator {
-  fn num_nodes(&self) -> usize {
-    self.num_nodes.load(Ordering::SeqCst) as usize
+impl SerfNodeCalculator {
+  pub(crate) fn new(members: Arc<RwLock<Members>>) -> Self {
+    Self { members }
   }
 }
 
-pub(crate) struct SerfQueryCore {
-  responses: Arc<RwLock<HashMap<LamportTime, QueryResponse>>>,
+#[showbiz_core::async_trait::async_trait]
+impl NodeCalculator for SerfNodeCalculator {
+  async fn num_nodes(&self) -> usize {
+    self.members.read().await.states.len()
+  }
 }
 
+#[derive(Default)]
+pub(crate) struct QueryCore {
+  responses: HashMap<LamportTime, QueryResponse>,
+  query_min_time: LamportTime,
+  buffer: Vec<Option<QueryResponse>>,
+}
+
+#[derive(Default)]
 pub(crate) struct Members {
   pub(crate) states: HashMap<NodeId, MemberState>,
   recent_intents: HashMap<NodeId, NodeIntent>,
+}
+
+pub(crate) struct EventCore {
+  event_min_time: LamportTime,
+  event_buffer: Vec<Option<UserEvents>>,
 }
 
 #[viewit::viewit]
@@ -71,16 +87,16 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport> {
   query_clock: LamportClock,
 
   broadcasts: TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>,
+  memberlist: Showbiz<T, SerfDelegate<T, D>>,
+  members: Arc<RwLock<Members>>,
 
-  memberlist: Showbiz<SerfDelegate<D, T>, T>,
-  members: RwLock<Members>,
-
-  merge_delegate: Option<D>,
-
+  event_tx: Option<async_channel::Sender<Event<T, D>>>,
   event_broadcasts: TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>,
   event_join_ignore: AtomicBool,
+  event_core: RwLock<EventCore>,
 
-  query_core: SerfQueryCore,
+  query_broadcasts: TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>,
+  query_core: Arc<RwLock<QueryCore>>,
 
   opts: Options<T>,
 
@@ -89,8 +105,11 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport> {
   join_lock: Mutex<()>,
 
   snapshot: Option<SnapshotHandle>,
+  key_manager: KeyManager<T, D>,
 
-  coord_client: CoordinateClient,
+  shutdown_tx: async_channel::Sender<()>,
+
+  coord_client: Option<CoordinateClient>,
   coord_cache: Arc<parking_lot::RwLock<HashMap<Name, Coordinate>>>,
 }
 
@@ -100,11 +119,11 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport> {
 ///
 /// All functions on the Serf structure are safe to call concurrently.
 #[repr(transparent)]
-pub struct Serf<D: MergeDelegate, T: Transport> {
+pub struct Serf<T: Transport, D: MergeDelegate = DefaultMergeDelegate> {
   pub(crate) inner: Arc<SerfCore<D, T>>,
 }
 
-impl<D: MergeDelegate, T: Transport> Clone for Serf<D, T> {
+impl<T: Transport, D: MergeDelegate> Clone for Serf<T, D> {
   fn clone(&self) -> Self {
     Self {
       inner: self.inner.clone(),
@@ -112,36 +131,56 @@ impl<D: MergeDelegate, T: Transport> Clone for Serf<D, T> {
   }
 }
 
+impl<T> Serf<T>
+where
+  T: Transport,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
+  pub async fn new(opts: Options<T>) -> Result<Self, Error<T, DefaultMergeDelegate>> {
+    Self::new_in(None, None, opts).await
+  }
+
+  pub async fn with_event_sender(
+    ev: async_channel::Sender<Event<T, DefaultMergeDelegate>>,
+    opts: Options<T>,
+  ) -> Result<Self, Error<T, DefaultMergeDelegate>> {
+    Self::new_in(Some(ev), None, opts).await
+  }
+}
+
 // ------------------------------------Public methods------------------------------------
-impl<D, T> Serf<D, T>
+impl<T, D> Serf<T, D>
 where
   D: MergeDelegate,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  pub async fn new(opts: Options<T>) -> Result<Self, Error<D, T>> {
-    Self::with_event_in(None, opts).await
+  pub async fn with_delegate(delegate: D, opts: Options<T>) -> Result<Self, Error<T, D>> {
+    Self::new_in(None, Some(delegate), opts).await
   }
 
-  pub async fn with_event(
-    ev: async_channel::Sender<Event<D, T>>,
+  pub async fn with_event_sender_and_delegate(
+    ev: async_channel::Sender<Event<T, D>>,
+    delegate: D,
     opts: Options<T>,
-  ) -> Result<Self, Error<D, T>> {
-    Self::with_event_in(Some(ev), opts).await
+  ) -> Result<Self, Error<T, D>> {
+    Self::new_in(Some(ev), Some(delegate), opts).await
   }
 
-  async fn with_event_in(
-    ev: Option<async_channel::Sender<Event<D, T>>>,
+  async fn new_in(
+    ev: Option<async_channel::Sender<Event<T, D>>>,
+    delegate: Option<D>,
     opts: Options<T>,
-  ) -> Result<Self, Error<D, T>> {
+  ) -> Result<Self, Error<T, D>> {
     if opts.max_user_event_size > USER_EVENT_SIZE_LIMIT {
       return Err(Error::UserEventLimitTooLarge(USER_EVENT_SIZE_LIMIT));
     }
 
     // Check that the meta data length is okay
     if let Some(tags) = &*opts.tags.load() {
-      let encoded_tags = encode_tags(&tags)?;
+      let encoded_tags = encode_tags(tags)?;
       if encoded_tags.len() > META_MAX_SIZE {
         return Err(Error::TagsTooLarge(encoded_tags.len()));
       }
@@ -181,25 +220,151 @@ where
       SerfQueries::new(event_tx, shutdown_rx.clone())
     });
 
+    let clock = LamportClock::new();
+    let event_clock = LamportClock::new();
+    let query_clock = LamportClock::new();
+    let mut event_min_time = LamportTime::ZERO;
+    let mut query_min_time = LamportTime::ZERO;
+
     // Try access the snapshot
-    if let Some(sp) = opts.snapshot_path.as_ref() {
-      let snapshot = open_and_replay_snapshot(sp, opts.rejoin_after_leave)?;
-    }
+    let (old_clock, old_event_clock, old_query_clock, event_tx, alive_nodes, handle) =
+      if let Some(sp) = opts.snapshot_path.as_ref() {
+        let rs = open_and_replay_snapshot(sp, opts.rejoin_after_leave)?;
+        let old_clock = rs.last_clock;
+        let old_event_clock = rs.last_event_clock;
+        let old_query_clock = rs.last_query_clock;
+        let (event_tx, alive_nodes, handle) = Snapshot::from_replay_result(
+          rs,
+          SNAPSHOT_SIZE_LIMIT,
+          opts.rejoin_after_leave,
+          clock.clone(),
+          event_tx,
+          shutdown_rx,
+          #[cfg(feature = "metrics")]
+          opts.showbiz_options.metric_labels().clone(),
+        )?;
+        event_min_time = old_event_clock + LamportTime::new(1);
+        query_min_time = old_query_clock + LamportTime::new(1);
+        (
+          old_clock,
+          old_event_clock,
+          old_query_clock,
+          Some(event_tx),
+          alive_nodes,
+          Some(handle),
+        )
+      } else {
+        (
+          LamportTime::new(0),
+          LamportTime::new(0),
+          LamportTime::new(0),
+          event_tx,
+          vec![],
+          None,
+        )
+      };
 
     // Set up network coordinate client.
     let coord = (!opts.disable_coordinates).then_some({
-      let mut coordinate_opts = CoordinateOptions::default();
-      //TODO:  setup metrics
-      // coordinate_opts.
-      CoordinateClient::with_options(coordinate_opts)
+      CoordinateClient::with_options(CoordinateOptions {
+        #[cfg(feature = "metrics")]
+        metric_labels: opts.showbiz_options.metric_labels().clone(),
+        ..Default::default()
+      })
     });
+    let members = Arc::new(RwLock::new(Members::default()));
 
-    let broadcast = TransmitLimitedQueue::new(calc, opts.showbiz_options.retransmit_mult);
-    let event_broadcast = TransmitLimitedQueue::new(calc, opts.showbiz_options.retransmit_mult);
-    let query_broadcast = TransmitLimitedQueue::new(calc, opts.showbiz_options.retransmit_mult);
+    // Setup the various broadcast queues, which we use to send our own
+    // custom broadcasts along the gossip channel.
+    let nc = SerfNodeCalculator::new(members.clone());
+    let broadcasts = TransmitLimitedQueue::<SerfBroadcast, _>::new(
+      nc.clone(),
+      opts.showbiz_options.retransmit_mult,
+    );
+    let event_broadcasts = TransmitLimitedQueue::<SerfBroadcast, _>::new(
+      nc.clone(),
+      opts.showbiz_options.retransmit_mult,
+    );
+    let query_broadcasts =
+      TransmitLimitedQueue::<SerfBroadcast, _>::new(nc, opts.showbiz_options.retransmit_mult);
 
-    // Ok()
-    todo!()
+    // Create a buffer for events and queries
+    let event_buffer = Vec::with_capacity(opts.event_buffer_size);
+    let query_buffer = Vec::with_capacity(opts.query_buffer_size);
+
+    // Ensure our lamport clock is at least 1, so that the default
+    // join LTime of 0 does not cause issues
+    clock.increment();
+    event_clock.increment();
+    query_clock.increment();
+
+    // Restore the clock from snap if we have one
+    clock.witness(old_clock);
+    event_clock.witness(old_event_clock);
+    query_clock.witness(old_query_clock);
+
+    // Modify the memberlist configuration with keys that we set
+    // #[cfg(feature = "metrics")]
+    // {
+    //   opts = opts
+    //     .showbiz_options
+    //     .with_metric_labels(opts.metric_labels.clone());
+    // }
+
+    // Create the underlying memberlist that will manage membership
+    // and failure detection for the Serf instance.
+    let memberlist =
+      Showbiz::with_delegate(SerfDelegate::new(delegate), opts.showbiz_options.clone()).await?;
+    let c = SerfCore {
+      clock,
+      event_clock,
+      query_clock,
+      broadcasts,
+      memberlist,
+      members,
+      event_broadcasts,
+      event_join_ignore: AtomicBool::new(false),
+      event_core: RwLock::new(EventCore {
+        event_min_time,
+        event_buffer,
+      }),
+      query_broadcasts,
+      query_core: Arc::new(RwLock::new(QueryCore {
+        query_min_time,
+        responses: HashMap::new(),
+        buffer: query_buffer,
+      })),
+      opts,
+      state: Mutex::new(SerfState::Alive),
+      join_lock: Mutex::new(()),
+      snapshot: handle,
+      key_manager: KeyManager::new(),
+      shutdown_tx,
+      coord_client: coord,
+      coord_cache: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+      event_tx,
+    };
+    let this = Serf { inner: Arc::new(c) };
+    // update delegate
+    let that = this.clone();
+    this.inner.memberlist.delegate().unwrap().store(that);
+    // update key manager
+    let that = this.clone();
+    this.inner.key_manager.store(that);
+
+    // Start the background tasks. See the documentation above each method
+    // for more information on their role.
+    // go serf.handleReap()
+    // go serf.handleReconnect()
+    // go serf.checkQueueDepth("Intent", serf.broadcasts)
+    // go serf.checkQueueDepth("Event", serf.eventBroadcasts)
+    // go serf.checkQueueDepth("Query", serf.queryBroadcasts)
+
+    // Attempt to re-join the cluster if we have known nodes
+    if !alive_nodes.is_empty() {
+      // go serf.handleRejoin()
+    }
+    Ok(this)
   }
 
   /// A predicate that determines whether or not encryption
@@ -244,7 +409,7 @@ where
   pub async fn set_tags(
     &self,
     tags: impl Iterator<Item = (SmolStr, SmolStr)>,
-  ) -> Result<(), Error<D, T>> {
+  ) -> Result<(), Error<T, D>> {
     let tags = tags.collect();
     // Check that the meta data length is okay
     if encode_tags(&tags)?.len() > showbiz_core::META_MAX_SIZE {
@@ -275,7 +440,7 @@ where
     name: SmolStr,
     payload: Bytes,
     coalesce: bool,
-  ) -> Result<(), Error<D, T>> {
+  ) -> Result<(), Error<T, D>> {
     let payload_size_before_encoding = name.len() + payload.len();
 
     // Check size before encoding to prevent needless encoding and return early if it's over the specified limit.
@@ -334,7 +499,7 @@ where
     name: SmolStr,
     payload: Bytes,
     params: Option<QueryParam>,
-  ) -> Result<QueryResponse, Error<D, T>> {
+  ) -> Result<QueryResponse, Error<T, D>> {
     // Provide default parameters if none given.
     let params = match params {
       Some(params) => params,
@@ -404,7 +569,7 @@ where
     &self,
     existing: impl Iterator<Item = (Address, Name)>,
     ignore_old: bool,
-  ) -> Result<Vec<NodeId>, JoinError<D, T>> {
+  ) -> Result<Vec<NodeId>, JoinError<T, D>> {
     // Do a quick state check
     if self.state().await != SerfState::Alive {
       return Err(JoinError {
@@ -478,14 +643,14 @@ where
     }
   }
 
-  pub async fn leave(&self) -> Result<(), Error<D, T>> {
+  pub async fn leave(&self) -> Result<(), Error<T, D>> {
     Ok(())
   }
 
   /// Returns the network coordinate of the local node.
-  pub fn get_cooridate(&self) -> Result<Coordinate, Error<D, T>> {
-    if !self.inner.opts.disable_coordinates {
-      return Ok(self.inner.coord_client.get_coordinate());
+  pub fn get_cooridate(&self) -> Result<Coordinate, Error<T, D>> {
+    if let Some(ref coord) = self.inner.coord_client {
+      return Ok(coord.get_coordinate());
     }
 
     Err(Error::CoordinatesDisabled)
@@ -493,7 +658,7 @@ where
 
   /// Returns the network coordinate for the node with the given
   /// name. This will only be valid if `disable_coordinates` is set to `false`.
-  pub fn get_cached_coordinate(&self, name: &Name) -> Result<Option<Coordinate>, Error<D, T>> {
+  pub fn get_cached_coordinate(&self, name: &Name) -> Result<Option<Coordinate>, Error<T, D>> {
     if !self.inner.opts.disable_coordinates {
       return Ok(self.inner.coord_cache.read().get(name).cloned());
     }
@@ -504,7 +669,7 @@ where
 
 // ---------------------------------Private Methods-------------------------------
 
-impl<D: MergeDelegate, T: Transport> Serf<D, T> {
+impl<T: Transport, D: MergeDelegate> Serf<T, D> {
   async fn handle_user_event(&self) -> bool {
     // TODO: implement this method
     true
@@ -558,17 +723,17 @@ impl<D: MergeDelegate, T: Transport> Serf<D, T> {
   /// Used to setup the listeners for the query,
   /// and to schedule closing the query after the timeout.
   async fn register_query_response(&self, timeout: Duration, resp: QueryResponse) {
-    let tresps = self.inner.query_core.responses.clone();
-    let mut resps = self.inner.query_core.responses.write().await;
+    let tresps = self.inner.query_core.clone();
+    let mut resps = self.inner.query_core.write().await;
     // Map the LTime to the QueryResponse. This is necessarily 1-to-1,
     // since we increment the time for each new query.
     let ltime = resp.ltime;
-    resps.insert(ltime, resp);
+    resps.responses.insert(ltime, resp);
 
     // Setup a timer to close the response and deregister after the timeout
     <T::Runtime as Runtime>::delay(timeout, async move {
       let mut resps = tresps.write().await;
-      if let Some(resp) = resps.remove(&ltime) {
+      if let Some(resp) = resps.responses.remove(&ltime) {
         resp.close().await;
       }
     });
@@ -583,7 +748,7 @@ impl<D: MergeDelegate, T: Transport> Serf<D, T> {
     node: NodeId,
     msg: impl Serialize,
     notify_tx: Option<async_channel::Sender<()>>,
-  ) -> Result<(), Error<D, T>> {
+  ) -> Result<(), Error<T, D>> {
     let raw = encode_message(t, &msg)?;
 
     self
@@ -602,7 +767,7 @@ impl<D: MergeDelegate, T: Transport> Serf<D, T> {
   /// given clock value. It is used on either join, or if
   /// we need to refute an older leave intent. Cannot be called
   /// with the memberLock held.
-  async fn broadcast_join(&self, ltime: LamportTime) -> Result<(), Error<D, T>> {
+  async fn broadcast_join(&self, ltime: LamportTime) -> Result<(), Error<T, D>> {
     // Construct message to update our lamport clock
     let msg = JoinMessage::new(ltime, self.inner.memberlist.local_id().clone());
     self.inner.clock().witness(ltime);
@@ -712,7 +877,7 @@ fn upsert_intent(
 /// Used to encode a tag map
 fn encode_tags<D: MergeDelegate, T: Transport>(
   tag: &HashMap<SmolStr, SmolStr>,
-) -> Result<Bytes, Error<D, T>> {
+) -> Result<Bytes, Error<T, D>> {
   struct EncodeHelper(BytesMut);
 
   impl std::io::Write for EncodeHelper {

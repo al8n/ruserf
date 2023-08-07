@@ -1,6 +1,6 @@
 use std::{
   borrow::Cow,
-  collections::{HashMap, HashSet},
+  collections::HashSet,
   fs::{File, OpenOptions},
   io::{BufRead, BufReader, BufWriter, Seek, Write},
   mem,
@@ -12,7 +12,7 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::prelude::OpenOptionsExt;
 
-use agnostic::{Delay, Runtime};
+use agnostic::Runtime;
 use async_channel::{Receiver, Sender};
 use either::Either;
 use rand::seq::SliceRandom;
@@ -21,7 +21,7 @@ use showbiz_core::{
   futures_util::{self, FutureExt},
   metrics, tracing,
   transport::Transport,
-  Name, NodeId,
+  NodeId,
 };
 
 use crate::{
@@ -154,6 +154,7 @@ pub(crate) struct ReplayResult {
   last_query_clock: LamportTime,
   offset: u64,
   fh: File,
+  path: PathBuf,
 }
 
 pub(crate) fn open_and_replay_snapshot<P: AsRef<std::path::Path>>(
@@ -263,6 +264,7 @@ pub(crate) fn open_and_replay_snapshot<P: AsRef<std::path::Path>>(
       last_query_clock,
       offset,
       fh: f,
+      path: p.as_ref().to_path_buf(),
     })
     .map_err(SnapshotError::SeekEnd)
 }
@@ -295,7 +297,7 @@ pub(crate) struct Snapshot<D: MergeDelegate, T: Transport> {
   alive_nodes: HashSet<NodeId>,
   clock: LamportClock,
   fh: Option<BufWriter<File>>,
-  in_rx: Receiver<Event<D, T>>,
+  in_rx: Receiver<Event<T, D>>,
   last_flush: Instant,
   last_clock: LamportTime,
   last_event_clock: LamportTime,
@@ -306,7 +308,7 @@ pub(crate) struct Snapshot<D: MergeDelegate, T: Transport> {
   path: PathBuf,
   offset: u64,
   rejoin_after_leave: bool,
-  stream_rx: Receiver<Event<D, T>>,
+  stream_rx: Receiver<Event<T, D>>,
   shutdown_rx: Receiver<()>,
   wait_tx: Sender<()>,
   last_attempted_compaction: Instant,
@@ -318,15 +320,16 @@ impl<D: MergeDelegate, T: Transport> Snapshot<D, T>
 where
   <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
 {
-  pub(crate) fn open<P: AsRef<std::path::Path>>(
-    path: P,
+  #[allow(clippy::type_complexity)]
+  pub(crate) fn from_replay_result(
+    replay_result: ReplayResult,
     min_compact_size: u64,
     rejoin_after_leave: bool,
     clock: LamportClock,
-    out_tx: Sender<Event<D, T>>,
+    out_tx: Option<Sender<Event<T, D>>>,
     shutdown_rx: Receiver<()>,
     #[cfg(feature = "metrics")] metric_labels: Arc<Vec<metrics::Label>>,
-  ) -> Result<(Sender<Event<D, T>>, Vec<NodeId>, SnapshotHandle), SnapshotError> {
+  ) -> Result<(Sender<Event<T, D>>, Vec<NodeId>, SnapshotHandle), SnapshotError> {
     let (in_tx, in_rx) = async_channel::bounded(EVENT_CH_SIZE);
     let (stream_tx, stream_rx) = async_channel::bounded(EVENT_CH_SIZE);
     let (leave_tx, leave_rx) = async_channel::bounded(1);
@@ -339,7 +342,8 @@ where
       last_query_clock,
       offset,
       fh,
-    } = open_and_replay_snapshot(&path, rejoin_after_leave)?;
+      path,
+    } = replay_result;
 
     // Create the snapshotter
     let this = Self {
@@ -354,7 +358,7 @@ where
       leave_rx,
       leaving: false,
       min_compact_size,
-      path: path.as_ref().to_path_buf(),
+      path,
       offset,
       rejoin_after_leave,
       stream_rx,
@@ -391,9 +395,9 @@ where
   /// A long running routine that is used to copy events
   /// to the output channel and the internal event handler.
   async fn tee_stream(
-    in_rx: Receiver<Event<D, T>>,
-    stream_tx: Sender<Event<D, T>>,
-    out_tx: Sender<Event<D, T>>,
+    in_rx: Receiver<Event<T, D>>,
+    stream_tx: Sender<Event<T, D>>,
+    out_tx: Option<Sender<Event<T, D>>>,
     shutdown_rx: Receiver<()>,
   ) {
     macro_rules! flush_event {
@@ -405,7 +409,7 @@ where
         }
 
         // Forward the event immediately, do not block
-        if !out_tx.is_closed() {
+        if let Some(ref out_tx) = out_tx {
           futures_util::select! {
             _ = out_tx.send($event).fuse() => {}
             default => {}
@@ -571,7 +575,7 @@ where
   }
 
   /// Used to handle a single query event
-  fn process_query_event(&mut self, e: &QueryEvent<D, T>) {
+  fn process_query_event(&mut self, e: &QueryEvent<T, D>) {
     // Ignore old clocks
     let ltime = *e.ltime();
     if ltime <= self.last_event_clock {

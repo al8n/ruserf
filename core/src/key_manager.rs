@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::OnceLock};
 
 use agnostic::Runtime;
 use async_channel::Receiver;
@@ -60,19 +60,31 @@ pub struct KeyRequestOptions {
 
 /// `KeyManager` encapsulates all functionality within Serf for handling
 /// encryption keyring changes across a cluster.
-pub struct KeyManager<D: MergeDelegate, T: Transport> {
-  serf: Serf<D, T>,
+pub struct KeyManager<T: Transport, D: MergeDelegate> {
+  serf: OnceLock<Serf<T, D>>,
   /// The lock is used to serialize keys related handlers
   l: RwLock<()>,
 }
 
-impl<D, T> KeyManager<D, T>
+impl<T, D> KeyManager<T, D>
 where
   D: MergeDelegate,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as std::future::Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
 {
+  pub(crate) fn new() -> Self {
+    Self {
+      serf: OnceLock::new(),
+      l: RwLock::new(()),
+    }
+  }
+
+  pub(crate) fn store(&self, serf: Serf<T, D>) {
+    // No error handling here, because we never call this in parallel
+    let _ = self.serf.set(serf);
+  }
+
   /// Handles broadcasting a query to all members and gathering
   /// responses from each of them, returning a list of messages from each node
   /// and any applicable error conditions.
@@ -80,7 +92,7 @@ where
     &self,
     key: SecretKey,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<D, T>> {
+  ) -> Result<KeyResponse, Error<T, D>> {
     let _mu = self.l.write().await;
     self
       .handle_key_request(Some(key), InternalQueryEventType::InstallKey, opts)
@@ -94,7 +106,7 @@ where
     &self,
     key: SecretKey,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<D, T>> {
+  ) -> Result<KeyResponse, Error<T, D>> {
     let _mu = self.l.write().await;
     self
       .handle_key_request(Some(key), InternalQueryEventType::UseKey, opts)
@@ -108,7 +120,7 @@ where
     &self,
     key: SecretKey,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<D, T>> {
+  ) -> Result<KeyResponse, Error<T, D>> {
     let _mu = self.l.write().await;
     self
       .handle_key_request(Some(key), InternalQueryEventType::RemoveKey, opts)
@@ -120,7 +132,7 @@ where
   /// operators to ensure that there are no lingering keys installed on any agents.
   /// Since having multiple keys installed can cause performance penalties in some
   /// cases, it's important to verify this information and remove unneeded keys.
-  pub async fn list_keys(&self) -> Result<KeyResponse, Error<D, T>> {
+  pub async fn list_keys(&self) -> Result<KeyResponse, Error<T, D>> {
     let _mu = self.l.read().await;
     self
       .handle_key_request(None, InternalQueryEventType::ListKey, None)
@@ -132,17 +144,17 @@ where
     key: Option<SecretKey>,
     ty: InternalQueryEventType,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<D, T>> {
+  ) -> Result<KeyResponse, Error<T, D>> {
     // Encode the query request
     let req =
       encode_message(MessageType::KeyRequest, &KeyRequest { key }).map_err(Error::Encode)?;
 
-    let mut q_param = self.serf.default_query_param().await;
+    let serf = self.serf.get().unwrap();
+    let mut q_param = serf.default_query_param().await;
     if let Some(opts) = opts {
       q_param.relay_factor = opts.relay_factor;
     }
-    let qresp: QueryResponse = self
-      .serf
+    let qresp: QueryResponse = serf
       .query(SmolStr::new(ty.as_str()), req.into(), Some(q_param))
       .await?;
 
@@ -173,7 +185,7 @@ where
 
   async fn stream_key_response(&self, mut ch: Receiver<NodeResponse>) -> KeyResponse {
     let mut resp = KeyResponse {
-      num_nodes: self.serf.num_nodes().await,
+      num_nodes: self.serf.get().unwrap().num_nodes().await,
       ..Default::default()
     };
     while let Some(r) = ch.next().await {

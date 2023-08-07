@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use showbiz_core::{
   async_trait, bytes::Bytes, delegate::Delegate as ShowbizDelegate, transport::Transport, Message,
@@ -7,22 +7,48 @@ use showbiz_core::{
 
 use crate::Serf;
 
-#[derive(Debug)]
-pub struct SerfDelegateError;
+pub struct SerfDelegateError<D: MergeDelegate>(D::Error);
 
-impl std::fmt::Display for SerfDelegateError {
+impl<D: MergeDelegate> std::fmt::Display for SerfDelegateError<D> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "void delegate error")
+    write!(f, "{}", self.0)
   }
 }
 
-impl std::error::Error for SerfDelegateError {}
+impl<D: MergeDelegate> std::fmt::Debug for SerfDelegateError<D> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{:?}", self.0)
+  }
+}
 
-pub(crate) struct SerfDelegate<D: MergeDelegate, T: Transport>(pub(crate) Serf<D, T>);
+impl<D: MergeDelegate> std::error::Error for SerfDelegateError<D> {}
+
+pub(crate) struct SerfDelegate<T: Transport, D: MergeDelegate> {
+  serf: OnceLock<Serf<T, D>>,
+  merge_delegate: Option<D>,
+}
+
+impl<D: MergeDelegate, T: Transport> SerfDelegate<T, D> {
+  pub(crate) fn new(d: Option<D>) -> Self {
+    Self {
+      serf: OnceLock::new(),
+      merge_delegate: d,
+    }
+  }
+
+  pub(crate) fn store(&self, s: Serf<T, D>) {
+    // No error, we never call this in parallel
+    let _ = self.serf.set(s);
+  }
+
+  fn this(&self) -> &Serf<T, D> {
+    self.serf.get().unwrap()
+  }
+}
 
 #[async_trait::async_trait]
-impl<D: MergeDelegate, T: Transport> ShowbizDelegate for SerfDelegate<D, T> {
-  type Error = SerfDelegateError;
+impl<D: MergeDelegate, T: Transport> ShowbizDelegate for SerfDelegate<T, D> {
+  type Error = SerfDelegateError<D>;
 
   fn node_meta(&self, _limit: usize) -> Bytes {
     Bytes::new()
@@ -72,7 +98,10 @@ impl<D: MergeDelegate, T: Transport> ShowbizDelegate for SerfDelegate<D, T> {
     Ok(())
   }
 
-  async fn notify_merge(&self, _peers: Vec<Node>) -> Result<(), Self::Error> {
+  async fn notify_merge(&self, peers: Vec<Node>) -> Result<(), Self::Error> {
+    if let Some(ref d) = self.merge_delegate {
+      return d.notify_merge(peers).await.map_err(SerfDelegateError);
+    }
     Ok(())
   }
 
@@ -100,5 +129,18 @@ pub trait MergeDelegate: Send + Sync + 'static {
   type Error: std::error::Error + Send + Sync + 'static;
 
   #[cfg(not(feature = "nightly"))]
-  async fn notify_merge(&self, members: &[crate::Member]) -> Result<(), Self::Error>;
+  async fn notify_merge(&self, members: Vec<Node>) -> Result<(), Self::Error>;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DefaultMergeDelegate;
+
+#[cfg_attr(not(feature = "nightly"), async_trait::async_trait)]
+impl MergeDelegate for DefaultMergeDelegate {
+  type Error = std::convert::Infallible;
+
+  #[cfg(not(feature = "nightly"))]
+  async fn notify_merge(&self, _members: Vec<Node>) -> Result<(), Self::Error> {
+    Ok(())
+  }
 }

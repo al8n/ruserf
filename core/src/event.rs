@@ -8,9 +8,9 @@ use async_lock::Mutex;
 use either::Either;
 use showbiz_core::{
   bytes::Bytes,
-  futures_util::{Future, FutureExt, Stream},
+  futures_util::{Future, Stream},
   transport::Transport,
-  Message, NodeId, Showbiz,
+  Message, NodeId,
 };
 use smol_str::SmolStr;
 
@@ -32,11 +32,11 @@ pub enum EventType {
   Query,
 }
 
-pub struct Event<D: MergeDelegate, T: Transport>(
-  pub(crate) Either<EventKind<D, T>, Arc<EventKind<D, T>>>,
+pub struct Event<T: Transport, D: MergeDelegate>(
+  pub(crate) Either<EventKind<T, D>, Arc<EventKind<T, D>>>,
 );
 
-impl<D, T> Clone for Event<D, T>
+impl<D, T> Clone for Event<T, D>
 where
   D: MergeDelegate,
   T: Transport,
@@ -46,7 +46,7 @@ where
   }
 }
 
-impl<D: MergeDelegate, T: Transport> Event<D, T> {
+impl<D: MergeDelegate, T: Transport> Event<T, D> {
   pub(crate) fn into_right(self) -> Self {
     match self.0 {
       Either::Left(e) => Self(Either::Right(Arc::new(e))),
@@ -54,7 +54,7 @@ impl<D: MergeDelegate, T: Transport> Event<D, T> {
     }
   }
 
-  pub(crate) fn kind(&self) -> &EventKind<D, T> {
+  pub(crate) fn kind(&self) -> &EventKind<T, D> {
     match &self.0 {
       Either::Left(e) => e,
       Either::Right(e) => &**e,
@@ -66,35 +66,35 @@ impl<D: MergeDelegate, T: Transport> Event<D, T> {
   }
 }
 
-impl<D: MergeDelegate, T: Transport> From<MemberEvent> for Event<D, T> {
+impl<D: MergeDelegate, T: Transport> From<MemberEvent> for Event<T, D> {
   fn from(value: MemberEvent) -> Self {
     Self(Either::Left(EventKind::Member(value)))
   }
 }
 
-impl<D: MergeDelegate, T: Transport> From<UserEvent> for Event<D, T> {
+impl<D: MergeDelegate, T: Transport> From<UserEvent> for Event<T, D> {
   fn from(value: UserEvent) -> Self {
     Self(Either::Left(EventKind::User(value)))
   }
 }
 
-impl<D: MergeDelegate, T: Transport> From<QueryEvent<D, T>> for Event<D, T> {
-  fn from(value: QueryEvent<D, T>) -> Self {
+impl<D: MergeDelegate, T: Transport> From<QueryEvent<T, D>> for Event<T, D> {
+  fn from(value: QueryEvent<T, D>) -> Self {
     Self(Either::Left(EventKind::Query(value)))
   }
 }
 
-pub(crate) enum EventKind<D: MergeDelegate, T: Transport> {
+pub(crate) enum EventKind<T: Transport, D: MergeDelegate> {
   Member(MemberEvent),
   User(UserEvent),
-  Query(QueryEvent<D, T>),
+  Query(QueryEvent<T, D>),
   InternalQuery {
     ty: InternalQueryEventType,
-    query: QueryEvent<D, T>,
+    query: QueryEvent<T, D>,
   },
 }
 
-impl<D, T> Clone for EventKind<D, T>
+impl<D, T> Clone for EventKind<T, D>
 where
   D: MergeDelegate,
   T: Transport,
@@ -112,7 +112,7 @@ where
   }
 }
 
-impl<D: MergeDelegate, T: Transport> EventKind<D, T> {
+impl<D: MergeDelegate, T: Transport> EventKind<T, D> {
   #[inline]
   pub const fn member(event: MemberEvent) -> Self {
     Self::Member(event)
@@ -124,7 +124,7 @@ impl<D: MergeDelegate, T: Transport> EventKind<D, T> {
   }
 
   #[inline]
-  pub const fn query(event: QueryEvent<D, T>) -> Self {
+  pub const fn query(event: QueryEvent<T, D>) -> Self {
     Self::Query(event)
   }
 
@@ -139,20 +139,20 @@ impl<D: MergeDelegate, T: Transport> EventKind<D, T> {
   // }
 }
 
-impl<D: MergeDelegate, T: Transport> From<MemberEvent> for EventKind<D, T> {
+impl<D: MergeDelegate, T: Transport> From<MemberEvent> for EventKind<T, D> {
   fn from(event: MemberEvent) -> Self {
     Self::Member(event)
   }
 }
 
-impl<D: MergeDelegate, T: Transport> From<UserEvent> for EventKind<D, T> {
+impl<D: MergeDelegate, T: Transport> From<UserEvent> for EventKind<T, D> {
   fn from(event: UserEvent) -> Self {
     Self::User(event)
   }
 }
 
-impl<D: MergeDelegate, T: Transport> From<QueryEvent<D, T>> for EventKind<D, T> {
-  fn from(event: QueryEvent<D, T>) -> Self {
+impl<D: MergeDelegate, T: Transport> From<QueryEvent<T, D>> for EventKind<T, D> {
+  fn from(event: QueryEvent<T, D>) -> Self {
     Self::Query(event)
   }
 }
@@ -263,21 +263,21 @@ impl InternalQueryEventType {
 }
 
 #[viewit::viewit]
-pub(crate) struct QueryContext<D: MergeDelegate, T: Transport> {
+pub(crate) struct QueryContext<T: Transport, D: MergeDelegate> {
   query_timeout: Duration,
   span: Mutex<Option<Instant>>,
-  this: Serf<D, T>,
+  this: Serf<T, D>,
 }
 
 /// Query is the struct used by EventQuery type events
 #[viewit::viewit(vis_all = "pub(crate)", setters(prefix = "with"))]
-pub struct QueryEvent<D: MergeDelegate, T: Transport> {
+pub struct QueryEvent<T: Transport, D: MergeDelegate> {
   ltime: LamportTime,
   name: SmolStr,
   payload: Bytes,
 
   #[viewit(getter(skip), setter(skip))]
-  ctx: Arc<QueryContext<D, T>>,
+  ctx: Arc<QueryContext<T, D>>,
   id: u32,
   /// source node
   from: NodeId,
@@ -285,17 +285,17 @@ pub struct QueryEvent<D: MergeDelegate, T: Transport> {
   relay_factor: u8,
 }
 
-impl<D, T> AsRef<QueryEvent<D, T>> for QueryEvent<D, T>
+impl<D, T> AsRef<QueryEvent<T, D>> for QueryEvent<T, D>
 where
   D: MergeDelegate,
   T: Transport,
 {
-  fn as_ref(&self) -> &QueryEvent<D, T> {
+  fn as_ref(&self) -> &QueryEvent<T, D> {
     self
   }
 }
 
-impl<D, T> Clone for QueryEvent<D, T>
+impl<D, T> Clone for QueryEvent<T, D>
 where
   D: MergeDelegate,
   T: Transport,
@@ -313,7 +313,7 @@ where
   }
 }
 
-impl<D, T> core::fmt::Display for QueryEvent<D, T>
+impl<D, T> core::fmt::Display for QueryEvent<T, D>
 where
   D: MergeDelegate,
   T: Transport,
@@ -323,7 +323,7 @@ where
   }
 }
 
-impl<D, T> QueryEvent<D, T>
+impl<D, T> QueryEvent<T, D>
 where
   D: MergeDelegate,
   T: Transport,
@@ -340,7 +340,7 @@ where
     }
   }
 
-  pub(crate) fn check_response_size(&self, resp: &[u8]) -> Result<(), Error<D, T>> {
+  pub(crate) fn check_response_size(&self, resp: &[u8]) -> Result<(), Error<T, D>> {
     let resp_len = resp.len();
     if resp_len > self.ctx.this.inner.opts.query_response_size_limit {
       Err(Error::QueryResponseTooLarge {
@@ -356,7 +356,7 @@ where
     &self,
     raw: Message,
     resp: QueryResponseMessage,
-  ) -> Result<(), Error<D, T>> {
+  ) -> Result<(), Error<T, D>> {
     self.check_response_size(raw.as_slice())?;
 
     let mut mu = self.ctx.span.lock().await;
@@ -386,7 +386,7 @@ where
   }
 
   /// Used to send a response to the user query
-  pub async fn respond(&self, msg: Bytes) -> Result<(), Error<D, T>> {
+  pub async fn respond(&self, msg: Bytes) -> Result<(), Error<T, D>> {
     let resp = self.create_response(msg);
 
     // Encode response

@@ -47,14 +47,14 @@ where
     "member_event_coalescer"
   }
 
-  fn handle(&self, event: &Event<Self::Delegate, Self::Transport>) -> bool {
+  fn handle(&self, event: &Event<Self::Transport, Self::Delegate>) -> bool {
     match &event.0 {
       Either::Left(e) => matches!(e, EventKind::Member(_)),
       Either::Right(e) => matches!(&**e, EventKind::Member(_)),
     }
   }
 
-  fn coalesce(&mut self, event: Event<Self::Delegate, Self::Transport>) {
+  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate>) {
     match event.0 {
       Either::Left(ev) => {
         let EventKind::Member(event) = ev else {
@@ -90,7 +90,7 @@ where
 
   async fn flush(
     &mut self,
-    out_tx: &Sender<Event<Self::Delegate, Self::Transport>>,
+    out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
   ) -> Result<(), super::ClosedOutChannel> {
     let mut events: HashMap<MemberEventType, MemberEvent> =
       HashMap::with_capacity(self.latest_events.len());

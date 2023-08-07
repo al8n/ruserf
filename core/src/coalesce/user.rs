@@ -17,12 +17,12 @@ struct LatestUserEvents {
 
 #[derive(Default)]
 #[repr(transparent)]
-pub(crate) struct UserEventCoalescer<D, T> {
+pub(crate) struct UserEventCoalescer<T, D> {
   events: HashMap<SmolStr, LatestUserEvents>,
   _m: PhantomData<(D, T)>,
 }
 
-impl<D, T> UserEventCoalescer<D, T> {
+impl<D, T> UserEventCoalescer<T, D> {
   pub(crate) fn new() -> Self {
     Self {
       events: HashMap::new(),
@@ -44,14 +44,14 @@ where
     "user_event_coalescer"
   }
 
-  fn handle(&self, event: &Event<Self::Delegate, Self::Transport>) -> bool {
+  fn handle(&self, event: &Event<Self::Transport, Self::Delegate>) -> bool {
     match &event.0 {
       Either::Left(e) => matches!(e, EventKind::User(_)),
       Either::Right(e) => matches!(&**e, EventKind::User(_)),
     }
   }
 
-  fn coalesce(&mut self, event: Event<Self::Delegate, Self::Transport>) {
+  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate>) {
     let event = match event.0 {
       Either::Left(EventKind::User(e)) => e,
       Either::Right(e) => match &*e {
@@ -90,7 +90,7 @@ where
 
   async fn flush(
     &mut self,
-    out_tx: &Sender<Event<Self::Delegate, Self::Transport>>,
+    out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
   ) -> Result<(), super::ClosedOutChannel> {
     for (_, latest) in self.events.drain() {
       for event in latest.events {

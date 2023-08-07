@@ -185,7 +185,7 @@ impl QueryResponse {
 
   /// Sends a response on the response channel ensuring the channel is not closed.
   #[inline]
-  pub(crate) async fn send_response<D, T>(&self, nr: NodeResponse) -> Result<(), Error<D, T>>
+  pub(crate) async fn send_response<D, T>(&self, nr: NodeResponse) -> Result<(), Error<T, D>>
   where
     D: MergeDelegate,
     T: Transport,
@@ -209,7 +209,7 @@ impl QueryResponse {
 
   /// Sends a response on the ack channel ensuring the channel is not closed.
   #[inline]
-  pub(crate) async fn send_ack<D, T>(&self, nr: NodeResponse) -> Result<(), Error<D, T>>
+  pub(crate) async fn send_ack<D, T>(&self, nr: NodeResponse) -> Result<(), Error<T, D>>
   where
     D: MergeDelegate,
     T: Transport,
@@ -241,7 +241,7 @@ pub struct NodeResponse {
   payload: Bytes,
 }
 
-impl<D, T> Serf<D, T>
+impl<T, D> Serf<T, D>
 where
   D: MergeDelegate,
   T: Transport,
@@ -347,7 +347,7 @@ where
     relay_factor: u8,
     node_id: NodeId,
     resp: QueryResponseMessage,
-  ) -> Result<(), Error<D, T>> {
+  ) -> Result<(), Error<T, D>> {
     if relay_factor == 0 {
       return Ok(());
     }
