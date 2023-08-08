@@ -29,6 +29,7 @@ use crate::{
   codec::NodeIdCodec,
   delegate::MergeDelegate,
   event::{Event, EventKind, MemberEvent, MemberEventType, QueryEvent, UserEvent},
+  ReconnectTimeoutOverrider,
 };
 
 /// How often we force a flush of the snapshot file
@@ -293,11 +294,11 @@ impl SnapshotHandle {
 
 /// Responsible for ingesting events and persisting
 /// them to disk, and providing a recovery mechanism at start time.
-pub(crate) struct Snapshot<D: MergeDelegate, T: Transport> {
+pub(crate) struct Snapshot<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> {
   alive_nodes: HashSet<NodeId>,
   clock: LamportClock,
   fh: Option<BufWriter<File>>,
-  in_rx: Receiver<Event<T, D>>,
+  in_rx: Receiver<Event<T, D, O>>,
   last_flush: Instant,
   last_clock: LamportTime,
   last_event_clock: LamportTime,
@@ -308,7 +309,7 @@ pub(crate) struct Snapshot<D: MergeDelegate, T: Transport> {
   path: PathBuf,
   offset: u64,
   rejoin_after_leave: bool,
-  stream_rx: Receiver<Event<T, D>>,
+  stream_rx: Receiver<Event<T, D, O>>,
   shutdown_rx: Receiver<()>,
   wait_tx: Sender<()>,
   last_attempted_compaction: Instant,
@@ -316,7 +317,7 @@ pub(crate) struct Snapshot<D: MergeDelegate, T: Transport> {
   metric_labels: Arc<Vec<metrics::Label>>,
 }
 
-impl<D: MergeDelegate, T: Transport> Snapshot<D, T>
+impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> Snapshot<T, D, O>
 where
   <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
 {
@@ -326,10 +327,10 @@ where
     min_compact_size: u64,
     rejoin_after_leave: bool,
     clock: LamportClock,
-    out_tx: Option<Sender<Event<T, D>>>,
+    out_tx: Option<Sender<Event<T, D, O>>>,
     shutdown_rx: Receiver<()>,
     #[cfg(feature = "metrics")] metric_labels: Arc<Vec<metrics::Label>>,
-  ) -> Result<(Sender<Event<T, D>>, Vec<NodeId>, SnapshotHandle), SnapshotError> {
+  ) -> Result<(Sender<Event<T, D, O>>, Vec<NodeId>, SnapshotHandle), SnapshotError> {
     let (in_tx, in_rx) = async_channel::bounded(EVENT_CH_SIZE);
     let (stream_tx, stream_rx) = async_channel::bounded(EVENT_CH_SIZE);
     let (leave_tx, leave_rx) = async_channel::bounded(1);
@@ -395,9 +396,9 @@ where
   /// A long running routine that is used to copy events
   /// to the output channel and the internal event handler.
   async fn tee_stream(
-    in_rx: Receiver<Event<T, D>>,
-    stream_tx: Sender<Event<T, D>>,
-    out_tx: Option<Sender<Event<T, D>>>,
+    in_rx: Receiver<Event<T, D, O>>,
+    stream_tx: Sender<Event<T, D, O>>,
+    out_tx: Option<Sender<Event<T, D, O>>>,
     shutdown_rx: Receiver<()>,
   ) {
     macro_rules! flush_event {
@@ -575,7 +576,7 @@ where
   }
 
   /// Used to handle a single query event
-  fn process_query_event(&mut self, e: &QueryEvent<T, D>) {
+  fn process_query_event(&mut self, e: &QueryEvent<T, D, O>) {
     // Ignore old clocks
     let ltime = *e.ltime();
     if ltime <= self.last_event_clock {

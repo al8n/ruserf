@@ -319,6 +319,28 @@ impl<T: Transport> Options<T> {
   pub(crate) fn set_tags(&self, tags: HashMap<SmolStr, SmolStr>) {
     self.tags.store(Some(Arc::new(tags)));
   }
+
+  #[inline]
+  pub(crate) fn queue_opts(&self) -> QueueOptions {
+    QueueOptions {
+      max_queue_depth: self.max_queue_depth,
+      min_queue_depth: self.min_queue_depth,
+      check_interval: self.queue_check_interval,
+      depth_warning: self.queue_depth_warning,
+      #[cfg(feature = "metrics")]
+      metric_labels: self.showbiz_options.metric_labels().clone(),
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct QueueOptions {
+  pub(crate) max_queue_depth: usize,
+  pub(crate) min_queue_depth: usize,
+  pub(crate) check_interval: Duration,
+  pub(crate) depth_warning: usize,
+  #[cfg(feature = "metrics")]
+  pub(crate) metric_labels: Arc<Vec<showbiz_core::metrics::Label>>,
 }
 
 mod tags_serde {

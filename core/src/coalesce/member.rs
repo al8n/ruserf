@@ -7,7 +7,7 @@ use showbiz_core::{transport::Transport, NodeId};
 use crate::{
   delegate::MergeDelegate,
   event::{Event, EventKind, MemberEvent, MemberEventType},
-  Member,
+  Member, ReconnectTimeoutOverrider,
 };
 
 use super::Coalescer;
@@ -18,13 +18,13 @@ pub(crate) struct CoalesceEvent {
 }
 
 #[derive(Default)]
-pub(crate) struct MemberEventCoalescer<D, T> {
+pub(crate) struct MemberEventCoalescer<T, D, O> {
   last_events: HashMap<NodeId, MemberEventType>,
   latest_events: HashMap<NodeId, CoalesceEvent>,
-  _m: PhantomData<(D, T)>,
+  _m: PhantomData<(T, D, O)>,
 }
 
-impl<D, T> MemberEventCoalescer<D, T> {
+impl<T, D, O> MemberEventCoalescer<T, D, O> {
   pub(crate) fn new() -> Self {
     Self {
       last_events: HashMap::new(),
@@ -35,26 +35,28 @@ impl<D, T> MemberEventCoalescer<D, T> {
 }
 
 #[showbiz_core::async_trait::async_trait]
-impl<D, T> Coalescer for MemberEventCoalescer<D, T>
+impl<T, D, O> Coalescer for MemberEventCoalescer<T, D, O>
 where
   D: MergeDelegate,
   T: Transport,
+  O: ReconnectTimeoutOverrider,
 {
   type Delegate = D;
   type Transport = T;
+  type Overrider = O;
 
   fn name(&self) -> &'static str {
     "member_event_coalescer"
   }
 
-  fn handle(&self, event: &Event<Self::Transport, Self::Delegate>) -> bool {
+  fn handle(&self, event: &Event<Self::Transport, Self::Delegate, Self::Overrider>) -> bool {
     match &event.0 {
       Either::Left(e) => matches!(e, EventKind::Member(_)),
       Either::Right(e) => matches!(&**e, EventKind::Member(_)),
     }
   }
 
-  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate>) {
+  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate, Self::Overrider>) {
     match event.0 {
       Either::Left(ev) => {
         let EventKind::Member(event) = ev else {
@@ -90,7 +92,7 @@ where
 
   async fn flush(
     &mut self,
-    out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
+    out_tx: &Sender<Event<Self::Transport, Self::Delegate, Self::Overrider>>,
   ) -> Result<(), super::ClosedOutChannel> {
     let mut events: HashMap<MemberEventType, MemberEvent> =
       HashMap::with_capacity(self.latest_events.len());

@@ -1,16 +1,14 @@
 use std::{
   collections::HashMap,
-  sync::Arc,
   time::{Duration, Instant},
 };
 
-use async_lock::Mutex;
 use rmp_serde::{
   decode::Error as DecodeError, encode::Error as EncodeError, Deserializer as RmpDeserializer,
   Serializer as RmpSerializer,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use showbiz_core::{bytes::Bytes, security::SecretKey, Message, Name, NodeId};
+use showbiz_core::{bytes::Bytes, Message, NodeId};
 use smol_str::SmolStr;
 
 use crate::{clock::LamportTime, query::QueryResponse, UserEvents};
@@ -252,61 +250,6 @@ pub(crate) struct Tag {
 pub(crate) struct TagRef<'a> {
   tag: &'a str,
   expr: &'a str,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Copy)]
-#[repr(transparent)]
-pub(crate) struct KeyRequest {
-  key: SecretKey,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct KeyResponse {
-  /// Map of node name to response message
-  messages: HashMap<NodeId, Message>,
-  /// Total nodes memberlist knows of
-  num_nodes: usize,
-  /// Total responses received
-  num_resp: usize,
-  /// Total errors from request
-  num_err: usize,
-
-  /// A mapping of the value of the key to the
-  /// number of nodes that have the key installed.
-  keys: HashMap<SecretKey, usize>,
-
-  /// A mapping of the value of the primary
-  /// key bytes to the number of nodes that have the key installed.
-  primary_keys: HashMap<SecretKey, usize>,
-}
-
-/// Used to contain optional parameters for a keyring operation
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-#[repr(transparent)]
-pub struct KeyRequestOptions {
-  relay_factor: u8,
-}
-
-impl KeyRequestOptions {
-  #[inline]
-  pub const fn new(relay_factor: u8) -> Self {
-    Self { relay_factor }
-  }
-
-  /// Get the number of duplicate query responses to send by relaying through
-  /// other nodes, for redundancy
-  #[inline]
-  pub const fn replay_factor(&self) -> u8 {
-    self.relay_factor
-  }
-
-  /// Set the number of duplicate query responses to send by relaying through
-  /// other nodes, for redundancy
-  #[inline]
-  pub const fn set_relay_factor(mut self, factor: u8) -> Self {
-    self.relay_factor = factor;
-    self
-  }
 }
 
 pub(crate) fn encode_message<T>(t: MessageType, msg: &T) -> Result<Message, EncodeError>

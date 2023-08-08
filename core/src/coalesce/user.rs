@@ -6,6 +6,7 @@ use smol_str::SmolStr;
 use crate::{
   clock::LamportTime,
   event::{EventKind, UserEvent},
+  ReconnectTimeoutOverrider,
 };
 
 use super::{Coalescer, *};
@@ -17,12 +18,12 @@ struct LatestUserEvents {
 
 #[derive(Default)]
 #[repr(transparent)]
-pub(crate) struct UserEventCoalescer<T, D> {
+pub(crate) struct UserEventCoalescer<T, D, O> {
   events: HashMap<SmolStr, LatestUserEvents>,
-  _m: PhantomData<(D, T)>,
+  _m: PhantomData<(D, T, O)>,
 }
 
-impl<D, T> UserEventCoalescer<T, D> {
+impl<T, D, O> UserEventCoalescer<T, D, O> {
   pub(crate) fn new() -> Self {
     Self {
       events: HashMap::new(),
@@ -32,26 +33,28 @@ impl<D, T> UserEventCoalescer<T, D> {
 }
 
 #[showbiz_core::async_trait::async_trait]
-impl<D, T> Coalescer for UserEventCoalescer<D, T>
+impl<T, D, O> Coalescer for UserEventCoalescer<T, D, O>
 where
   D: MergeDelegate,
   T: Transport,
+  O: ReconnectTimeoutOverrider,
 {
   type Delegate = D;
   type Transport = T;
+  type Overrider = O;
 
   fn name(&self) -> &'static str {
     "user_event_coalescer"
   }
 
-  fn handle(&self, event: &Event<Self::Transport, Self::Delegate>) -> bool {
+  fn handle(&self, event: &Event<Self::Transport, Self::Delegate, Self::Overrider>) -> bool {
     match &event.0 {
       Either::Left(e) => matches!(e, EventKind::User(_)),
       Either::Right(e) => matches!(&**e, EventKind::User(_)),
     }
   }
 
-  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate>) {
+  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate, Self::Overrider>) {
     let event = match event.0 {
       Either::Left(EventKind::User(e)) => e,
       Either::Right(e) => match &*e {
@@ -90,7 +93,7 @@ where
 
   async fn flush(
     &mut self,
-    out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
+    out_tx: &Sender<Event<Self::Transport, Self::Delegate, Self::Overrider>>,
   ) -> Result<(), super::ClosedOutChannel> {
     for (_, latest) in self.events.drain() {
       for event in latest.events {

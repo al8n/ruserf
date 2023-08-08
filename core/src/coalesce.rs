@@ -13,9 +13,7 @@ use showbiz_core::{
   transport::Transport,
 };
 
-use crate::delegate::MergeDelegate;
-
-use super::event::Event;
+use super::{delegate::MergeDelegate, event::Event, serf::ReconnectTimeoutOverrider};
 
 pub(crate) struct ClosedOutChannel;
 
@@ -24,30 +22,31 @@ pub(crate) struct ClosedOutChannel;
 pub(crate) trait Coalescer: Send + Sync + 'static {
   type Delegate: MergeDelegate;
   type Transport: Transport;
+  type Overrider: ReconnectTimeoutOverrider;
 
   fn name(&self) -> &'static str;
 
-  fn handle(&self, event: &Event<Self::Transport, Self::Delegate>) -> bool;
+  fn handle(&self, event: &Event<Self::Transport, Self::Delegate, Self::Overrider>) -> bool;
 
   /// Invoked to coalesce the given event
-  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate>);
+  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate, Self::Overrider>);
 
   /// Invoked to flush the coalesced events
   async fn flush(
     &mut self,
-    out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
+    out_tx: &Sender<Event<Self::Transport, Self::Delegate, Self::Overrider>>,
   ) -> Result<(), ClosedOutChannel>;
 }
 
 /// Returns an event channel where the events are coalesced
 /// using the given coalescer.
 pub(crate) fn coalesced_event<C: Coalescer>(
-  out_tx: Sender<Event<C::Transport, C::Delegate>>,
+  out_tx: Sender<Event<C::Transport, C::Delegate, C::Overrider>>,
   shutdown_rx: Receiver<()>,
   c_period: Duration,
   q_period: Duration,
   c: C,
-) -> Sender<Event<C::Transport, C::Delegate>> {
+) -> Sender<Event<C::Transport, C::Delegate, C::Overrider>> {
   let (in_tx, in_rx) = bounded(1024);
   <<C::Transport as Transport>::Runtime as Runtime>::spawn_detach(coalesce_loop::<C>(
     in_rx,
@@ -63,8 +62,8 @@ pub(crate) fn coalesced_event<C: Coalescer>(
 /// A simple long-running routine that manages the high-level
 /// flow of coalescing based on quiescence and a maximum quantum period.
 async fn coalesce_loop<C: Coalescer>(
-  in_rx: Receiver<Event<C::Transport, C::Delegate>>,
-  out_tx: Sender<Event<C::Transport, C::Delegate>>,
+  in_rx: Receiver<Event<C::Transport, C::Delegate, C::Overrider>>,
+  out_tx: Sender<Event<C::Transport, C::Delegate, C::Overrider>>,
   shutdown_rx: Receiver<()>,
   coalesce_peirod: Duration,
   quiescent_period: Duration,

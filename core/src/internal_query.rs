@@ -18,7 +18,7 @@ use crate::{
   error::Error,
   event::{Event, EventKind, InternalQueryEventType, QueryEvent},
   types::{decode_message, encode_message, MessageType, QueryResponseMessage},
-  KeyRequest,
+  KeyRequest, ReconnectTimeoutOverrider,
 };
 
 /// Used to compute the max number of keys in a list key
@@ -28,24 +28,29 @@ use crate::{
 /// computation and in case of changes, the value can be adjusted.
 const MIN_ENCODED_KEY_LENGTH: usize = 25;
 
-pub(crate) struct SerfQueries<T, D>
+pub(crate) struct SerfQueries<T, D, O>
 where
   D: MergeDelegate,
   T: Transport,
+  O: ReconnectTimeoutOverrider,
 {
-  in_rx: Receiver<Event<T, D>>,
-  out_tx: Sender<Event<T, D>>,
+  in_rx: Receiver<Event<T, D, O>>,
+  out_tx: Sender<Event<T, D, O>>,
   shutdown_rx: Receiver<()>,
 }
 
-impl<D, T> SerfQueries<T, D>
+impl<D, T, O> SerfQueries<T, D, O>
 where
   D: MergeDelegate,
+  O: ReconnectTimeoutOverrider,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
 {
-  pub(crate) fn new(out_tx: Sender<Event<T, D>>, shutdown_rx: Receiver<()>) -> Sender<Event<T, D>> {
+  pub(crate) fn new(
+    out_tx: Sender<Event<T, D, O>>,
+    shutdown_rx: Receiver<()>,
+  ) -> Sender<Event<T, D, O>> {
     let (in_tx, in_rx) = bounded(1024);
     let this = Self {
       in_rx,
@@ -88,7 +93,7 @@ where
     });
   }
 
-  async fn handle_query(ev: Event<T, D>) {
+  async fn handle_query(ev: Event<T, D, O>) {
     macro_rules! handle_query {
       ($ev: expr) => {{
         match $ev {
@@ -124,7 +129,7 @@ where
   /// invoked when we get a query that is attempting to
   /// disambiguate a name conflict. They payload is a node name, and the response
   /// should the address we believe that node is at, if any.
-  async fn handle_conflict(ev: impl AsRef<QueryEvent<T, D>> + Send) {
+  async fn handle_conflict(ev: impl AsRef<QueryEvent<T, D, O>> + Send) {
     let q = ev.as_ref();
     // The target node id is the payload
     let id = match NodeId::decode(q.payload()) {
@@ -179,7 +184,7 @@ where
   /// the memberlist keyring. This type of query may fail if the provided key does
   /// not fit the constraints that memberlist enforces. If the query fails, the
   /// response will contain the error message so that it may be relayed.
-  async fn handle_install_key(ev: impl AsRef<QueryEvent<T, D>> + Send) {
+  async fn handle_install_key(ev: impl AsRef<QueryEvent<T, D, O>> + Send) {
     let q = ev.as_ref();
     let mut response = NodeKeyResponse::default();
     let req = match decode_message::<KeyRequest>(&q.payload[1..]) {
@@ -225,7 +230,7 @@ where
     }
   }
 
-  async fn handle_use_key(ev: impl AsRef<QueryEvent<T, D>> + Send) {
+  async fn handle_use_key(ev: impl AsRef<QueryEvent<T, D, O>> + Send) {
     let q = ev.as_ref();
     let mut response = NodeKeyResponse::default();
 
@@ -278,7 +283,7 @@ where
     }
   }
 
-  async fn handle_remove_key(ev: impl AsRef<QueryEvent<T, D>> + Send) {
+  async fn handle_remove_key(ev: impl AsRef<QueryEvent<T, D, O>> + Send) {
     let q = ev.as_ref();
     let mut response = NodeKeyResponse::default();
     let req = match decode_message::<KeyRequest>(&q.payload[1..]) {
@@ -332,7 +337,7 @@ where
 
   /// Invoked when a query is received to return a list of all
   /// installed keys the Serf instance knows of.
-  async fn handle_list_keys(ev: impl AsRef<QueryEvent<T, D>> + Send) {
+  async fn handle_list_keys(ev: impl AsRef<QueryEvent<T, D, O>> + Send) {
     let q = ev.as_ref();
     let mut response = NodeKeyResponse::default();
     if !q.ctx.this.encryption_enabled() {
@@ -366,9 +371,9 @@ where
   }
 
   fn key_list_response_with_correct_size(
-    q: &QueryEvent<T, D>,
+    q: &QueryEvent<T, D, O>,
     resp: &mut NodeKeyResponse,
-  ) -> Result<(Message, QueryResponseMessage), Error<T, D>> {
+  ) -> Result<(Message, QueryResponseMessage), Error<T, D, O>> {
     let actual = resp.keys.len();
 
     // if the provided list of keys is smaller then the max allowed, just iterate over it
@@ -403,7 +408,7 @@ where
     Err(Error::FailTruncateResponse)
   }
 
-  async fn send_key_response(q: &QueryEvent<T, D>, resp: &mut NodeKeyResponse) {
+  async fn send_key_response(q: &QueryEvent<T, D, O>, resp: &mut NodeKeyResponse) {
     match q.name().as_str() {
       "ruserf-list-keys" => {
         let (raw, qresp) = match Self::key_list_response_with_correct_size(q, resp) {

@@ -24,7 +24,7 @@ use crate::{
     decode_message, encode_filter, encode_relay_message, FilterType, FilterTypeRef, MessageType,
     QueryResponseMessage, Tag, TagRef,
   },
-  Member, MemberStatus, Serf,
+  Member, MemberStatus, ReconnectTimeoutOverrider, Serf,
 };
 
 /// Provided to [`Serf::query`] to configure the parameters of the
@@ -185,10 +185,11 @@ impl QueryResponse {
 
   /// Sends a response on the response channel ensuring the channel is not closed.
   #[inline]
-  pub(crate) async fn send_response<D, T>(&self, nr: NodeResponse) -> Result<(), Error<T, D>>
+  pub(crate) async fn send_response<D, T, O>(&self, nr: NodeResponse) -> Result<(), Error<T, D, O>>
   where
     D: MergeDelegate,
     T: Transport,
+    O: ReconnectTimeoutOverrider,
   {
     let mut c = self.inner.core.lock().await;
     if c.closed {
@@ -209,10 +210,11 @@ impl QueryResponse {
 
   /// Sends a response on the ack channel ensuring the channel is not closed.
   #[inline]
-  pub(crate) async fn send_ack<D, T>(&self, nr: NodeResponse) -> Result<(), Error<T, D>>
+  pub(crate) async fn send_ack<D, T, O>(&self, nr: NodeResponse) -> Result<(), Error<T, D, O>>
   where
     D: MergeDelegate,
     T: Transport,
+    O: ReconnectTimeoutOverrider,
   {
     let mut c = self.inner.core.lock().await;
     if c.closed {
@@ -241,9 +243,10 @@ pub struct NodeResponse {
   payload: Bytes,
 }
 
-impl<T, D> Serf<T, D>
+impl<T, D, O> Serf<T, D, O>
 where
   D: MergeDelegate,
+  O: ReconnectTimeoutOverrider,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as std::future::Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
@@ -347,7 +350,7 @@ where
     relay_factor: u8,
     node_id: NodeId,
     resp: QueryResponseMessage,
-  ) -> Result<(), Error<T, D>> {
+  ) -> Result<(), Error<T, D, O>> {
     if relay_factor == 0 {
       return Ok(());
     }
