@@ -31,7 +31,7 @@ use crate::{
   coordinate::{Coordinate, CoordinateClient, CoordinateOptions},
   delegate::{DefaultMergeDelegate, MergeDelegate, SerfDelegate},
   error::{Error, JoinError},
-  event::Event,
+  event::{Event, MemberEvent, MemberEventType},
   internal_query::SerfQueries,
   query::{QueryParam, QueryResponse},
   snapshot::{open_and_replay_snapshot, Snapshot, SnapshotHandle},
@@ -516,8 +516,16 @@ where
 
     // Start the background tasks. See the documentation above each method
     // for more information on their role.
-    // go serf.handleReap()
-    // go serf.handleReconnect()
+    Reaper {
+      coord_core: this.inner.coord_core.clone(),
+      reconnector: this.inner.reconnector.clone(),
+      members: this.inner.members.clone(),
+      event_tx: this.inner.event_tx.clone(),
+      shutdown_rx: shutdown_rx.clone(),
+      reap_interval: this.inner.opts.reap_interval,
+      reconnect_timeout: this.inner.opts.reconnect_timeout,
+    }
+    .spawn();
 
     Reconnector {
       members: this.inner.members.clone(),
@@ -556,7 +564,8 @@ where
 
     // Attempt to re-join the cluster if we have known nodes
     if !alive_nodes.is_empty() {
-      // go serf.handleRejoin()
+      let showbiz = this.inner.memberlist.clone();
+      Self::handle_rejoin(showbiz, alive_nodes);
     }
     Ok(this)
   }
@@ -863,7 +872,14 @@ where
 
 // ---------------------------------Private Methods-------------------------------
 
-impl<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> Serf<T, D, O> {
+impl<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> Serf<T, D, O>
+where
+  D: MergeDelegate,
+  O: ReconnectTimeoutOverrider,
+  T: Transport,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
   pub(crate) async fn handle_user_event(&self) -> bool {
     // TODO: implement this method
     true
@@ -872,8 +888,6 @@ impl<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> Serf<T, D, O>
   pub(crate) async fn handle_query(&self, q: QueryMessage) {
     todo!()
   }
-
-  async fn handle_reconnect(&self) {}
 
   /// Called when a node broadcasts a
   /// join message to set the lamport time of its join
@@ -1022,6 +1036,43 @@ impl<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> Serf<T, D, O>
 
     Ok(())
   }
+
+  fn handle_rejoin(showbiz: Showbiz<T, SerfDelegate<T, D, O>>, alive_nodes: Vec<NodeId>) {
+    <T::Runtime as Runtime>::spawn_detach(async move {
+      for prev in alive_nodes {
+        // Do not attempt to join ourself
+        if prev.eq(showbiz.local_id()) {
+          continue;
+        }
+
+        tracing::info!(
+          target = "ruserf",
+          "attempting re-join to previously known node {}",
+          prev
+        );
+        if let Err(e) = showbiz.join_node(&prev).await {
+          tracing::warn!(
+            target = "ruserf",
+            "failed to re-join to previously known node {}: {}",
+            prev,
+            e
+          );
+        } else {
+          tracing::info!(
+            target = "ruserf",
+            "re-joined to previously known node: {}",
+            prev
+          );
+          return;
+        }
+      }
+
+      tracing::warn!(
+        target = "ruserf",
+        "failed to re-join to any previously known node"
+      );
+    });
+  }
 }
 
 #[viewit::viewit(vis_all = "", getters(prefix = "get"))]
@@ -1040,9 +1091,118 @@ pub struct Stats {
   encrypted: bool,
 }
 
-// struct Reaper {
-//   coord_client: ,
-// }
+struct Reaper<T, D, O>
+where
+  T: Transport,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: MergeDelegate,
+  O: ReconnectTimeoutOverrider,
+{
+  coord_core: Option<Arc<CoordCore>>,
+  reconnector: Option<Arc<O>>,
+  members: Arc<RwLock<Members>>,
+  event_tx: Option<async_channel::Sender<Event<T, D, O>>>,
+  shutdown_rx: async_channel::Receiver<()>,
+  reap_interval: Duration,
+  reconnect_timeout: Duration,
+}
+
+macro_rules! reap {
+  (
+    $tx:ident <- $reconnector:ident($timeout: ident($members: ident.$ty: ident, $coord:ident))
+  ) => {{
+    let mut n = $members.$ty.len();
+    let mut i = 0;
+    while i < n {
+      let m = $members.$ty[i].clone();
+      let mut member_timeout = $timeout;
+      if let Some(r) = $reconnector {
+        member_timeout = r.reconnect_timeout(&m.member, member_timeout).await;
+      }
+
+      // Skip if the timeout is not yet reached
+      if m.leave_time.elapsed() <= member_timeout {
+        i += 1;
+        continue;
+      }
+
+      // Delete from the list
+      $members.$ty.swap_remove(i);
+      n -= 1;
+
+      // Delete from members and send out event
+      let id = m.member.id();
+      tracing::info!(target = "ruserf", "event member reap: {}", id);
+
+      // takes a node completely out of the member list
+      $members.states.remove(id);
+
+      // Tell the coordinate client the node has gone away and delete
+      // its cached coordinates.
+      if let Some(cc) = $coord {
+        cc.client.forget_node(id.name());
+        cc.cache.write().remove(id.name());
+      }
+
+      // Send out event
+      if let Some(tx) = $tx {
+        let _ = tx
+          .send(Event::from(MemberEvent {
+            ty: MemberEventType::Reap,
+            members: vec![m.member.clone()],
+          }))
+          .await;
+      }
+    }
+  }};
+}
+
+impl<T, D, O> Reaper<T, D, O>
+where
+  T: Transport,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: MergeDelegate,
+  O: ReconnectTimeoutOverrider,
+{
+  fn spawn(self) {
+    <T::Runtime as Runtime>::spawn_detach(async move {
+      loop {
+        futures_util::select! {
+          _ = <T::Runtime as Runtime>::sleep(self.reap_interval).fuse() => {
+            let mut ms = self.members.write().await;
+            Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.reconnector.as_deref(), self.coord_core.as_deref(), self.reconnect_timeout).await;
+            Self::reap_left(&mut ms, self.event_tx.as_ref(), self.reconnector.as_deref(), self.coord_core.as_deref(), self.reconnect_timeout).await;
+          }
+          _ = self.shutdown_rx.recv().fuse() => {
+            return;
+          }
+        }
+      }
+    });
+  }
+
+  async fn reap_failed(
+    old: &mut Members,
+    event_tx: Option<&async_channel::Sender<Event<T, D, O>>>,
+    reconnector: Option<&O>,
+    coord: Option<&CoordCore>,
+    timeout: Duration,
+  ) {
+    reap!(event_tx <- reconnector(timeout(old.failed_members, coord)))
+  }
+
+  async fn reap_left(
+    old: &mut Members,
+    event_tx: Option<&async_channel::Sender<Event<T, D, O>>>,
+    reconnector: Option<&O>,
+    coord: Option<&CoordCore>,
+    timeout: Duration,
+  ) {
+    reap!(event_tx <- reconnector(timeout(old.left_members, coord)))
+  }
+}
 
 struct Reconnector<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> {
   members: Arc<RwLock<Members>>,
