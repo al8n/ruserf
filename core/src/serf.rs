@@ -12,6 +12,7 @@ use agnostic::Runtime;
 use async_graphql::async_trait::async_trait;
 use async_lock::{Mutex, RwLock};
 use atomic::Atomic;
+use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use showbiz_core::{
   bytes::{BufMut, Bytes, BytesMut},
@@ -166,6 +167,11 @@ impl NodeCalculator for SerfNodeCalculator {
   }
 }
 
+pub(crate) struct CoordCore {
+  client: CoordinateClient,
+  cache: parking_lot::RwLock<HashMap<Name, Coordinate>>,
+}
+
 #[derive(Default)]
 pub(crate) struct QueryCore {
   responses: HashMap<LamportTime, QueryResponse>,
@@ -216,8 +222,7 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOv
   shutdown_tx: async_channel::Sender<()>,
   reconnector: Option<Arc<O>>,
 
-  coord_client: Option<CoordinateClient>,
-  coord_cache: Arc<parking_lot::RwLock<HashMap<Name, Coordinate>>>,
+  coord_core: Option<Arc<CoordCore>>,
 }
 
 /// Serf is a single node that is part of a single cluster that gets
@@ -492,8 +497,12 @@ where
       snapshot: handle,
       key_manager: KeyManager::new(),
       shutdown_tx,
-      coord_client: coord,
-      coord_cache: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+      coord_core: coord.map(|cc| {
+        Arc::new(CoordCore {
+          client: cc,
+          cache: parking_lot::RwLock::new(HashMap::new()),
+        })
+      }),
       event_tx,
       reconnector: reconnector.map(Arc::new),
     };
@@ -509,6 +518,14 @@ where
     // for more information on their role.
     // go serf.handleReap()
     // go serf.handleReconnect()
+
+    Reconnector {
+      members: this.inner.members.clone(),
+      memberlist: this.inner.memberlist.clone(),
+      shutdown_rx: shutdown_rx.clone(),
+      reconnect_interval: this.inner.opts.reconnect_interval,
+    }
+    .spawn();
 
     QueueChecker {
       name: "Intent",
@@ -742,7 +759,7 @@ where
   /// Joins an existing Serf cluster. Returns the id of nodes
   /// successfully contacted. If `ignore_old` is true, then any
   /// user messages sent prior to the join will be ignored.
-  pub async fn join(
+  pub async fn join_many(
     &self,
     existing: impl Iterator<Item = (Address, Name)>,
     ignore_old: bool,
@@ -770,7 +787,7 @@ where
     }
 
     // Have memberlist attempt to join
-    match self.inner.memberlist.join(existing).await {
+    match self.inner.memberlist.join_many(existing).await {
       Ok(joined) => {
         // Start broadcasting the update
         if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
@@ -826,8 +843,8 @@ where
 
   /// Returns the network coordinate of the local node.
   pub fn get_cooridate(&self) -> Result<Coordinate, Error<T, D, O>> {
-    if let Some(ref coord) = self.inner.coord_client {
-      return Ok(coord.get_coordinate());
+    if let Some(ref coord) = self.inner.coord_core {
+      return Ok(coord.client.get_coordinate());
     }
 
     Err(Error::CoordinatesDisabled)
@@ -836,8 +853,8 @@ where
   /// Returns the network coordinate for the node with the given
   /// name. This will only be valid if `disable_coordinates` is set to `false`.
   pub fn get_cached_coordinate(&self, name: &Name) -> Result<Option<Coordinate>, Error<T, D, O>> {
-    if !self.inner.opts.disable_coordinates {
-      return Ok(self.inner.coord_cache.read().get(name).cloned());
+    if let Some(ref coord) = self.inner.coord_core {
+      return Ok(coord.cache.read().get(name).cloned());
     }
 
     Err(Error::CoordinatesDisabled)
@@ -855,6 +872,8 @@ impl<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> Serf<T, D, O>
   pub(crate) async fn handle_query(&self, q: QueryMessage) {
     todo!()
   }
+
+  async fn handle_reconnect(&self) {}
 
   /// Called when a node broadcasts a
   /// join message to set the lamport time of its join
@@ -1019,6 +1038,76 @@ pub struct Stats {
   event_queue: usize,
   query_queue: usize,
   encrypted: bool,
+}
+
+// struct Reaper {
+//   coord_client: ,
+// }
+
+struct Reconnector<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> {
+  members: Arc<RwLock<Members>>,
+  memberlist: Showbiz<T, SerfDelegate<T, D, O>>,
+  shutdown_rx: async_channel::Receiver<()>,
+  reconnect_interval: Duration,
+}
+
+impl<T, D, O> Reconnector<T, D, O>
+where
+  T: Transport,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: MergeDelegate,
+  O: ReconnectTimeoutOverrider,
+{
+  fn spawn(self) {
+    let mut rng = rand::rngs::StdRng::from_rng(rand::thread_rng()).unwrap();
+
+    <T::Runtime as Runtime>::spawn_detach(async move {
+      loop {
+        futures_util::select! {
+          _ = <T::Runtime as Runtime>::sleep(self.reconnect_interval).fuse() => {
+            let mu = self.members.read().await;
+            let num_failed = mu.failed_members.len();
+            // Nothing to do if there are no failed members
+            if num_failed == 0 {
+              continue;
+            }
+
+            // Probability we should attempt to reconect is given
+            // by num failed / (num members - num failed - num left)
+            // This means that we probabilistically expect the cluster
+            // to attempt to connect to each failed member once per
+            // reconnect interval
+
+            let num_alive = (mu.states.len() - num_failed - mu.left_members.len()).max(1);
+            let prob = num_failed as f32 / num_alive as f32;
+            let r: f32 = rng.gen();
+            if r > prob {
+              tracing::debug!(target = "ruserf", "forgoing reconnect for random throttling");
+              continue;
+            }
+
+            // Select a random member to try and join
+            let idx: usize = rng.gen_range(0..num_failed);
+            let member = &mu.failed_members[idx];
+
+            let id = member.member.id().clone();
+            drop(mu); // release read lock
+            tracing::info!(target = "ruserf", "attempting to reconnect to {}", id);
+            // Attempt to join at the memberlist level
+            if let Err(e) = self.memberlist.join_node(&id).await {
+              tracing::warn!(target = "ruserf", "failed to reconnect {}: {}", id, e);
+            } else {
+              tracing::info!(target = "ruserf", "successfully reconnected to {}", id);
+            }
+          }
+          _ = self.shutdown_rx.recv().fuse() => {
+            return;
+          }
+        }
+      }
+    });
+  }
 }
 
 struct QueueChecker {
