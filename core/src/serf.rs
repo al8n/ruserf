@@ -1,5 +1,5 @@
 use std::{
-  collections::HashMap,
+  collections::{hash_map::Entry, HashMap},
   future::Future,
   sync::{
     atomic::{AtomicBool, Ordering},
@@ -16,6 +16,7 @@ use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use showbiz_core::{
   bytes::{BufMut, Bytes, BytesMut},
+  delegate::Delegate,
   futures_util::{self, FutureExt, Stream},
   queue::{NodeCalculator, TransmitLimitedQueue},
   tracing,
@@ -35,7 +36,9 @@ use crate::{
   internal_query::SerfQueries,
   query::{QueryParam, QueryResponse},
   snapshot::{open_and_replay_snapshot, Snapshot, SnapshotHandle},
-  types::{encode_message, JoinMessage, MessageType, MessageUserEvent, QueryFlag, QueryMessage},
+  types::{
+    encode_message, JoinMessage, Leave, MessageType, MessageUserEvent, QueryFlag, QueryMessage,
+  },
   KeyManager, Options, QueueOptions,
 };
 
@@ -76,6 +79,25 @@ pub enum MemberStatus {
   Leaving,
   Left,
   Failed,
+}
+
+impl core::fmt::Display for MemberStatus {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", self.as_str())
+  }
+}
+
+impl MemberStatus {
+  #[inline]
+  pub const fn as_str(&self) -> &'static str {
+    match self {
+      Self::None => "none",
+      Self::Alive => "alive",
+      Self::Leaving => "leaving",
+      Self::Left => "left",
+      Self::Failed => "failed",
+    }
+  }
 }
 
 fn serialize_atomic_member_status<S>(
@@ -131,6 +153,14 @@ pub(crate) struct MemberState {
   leave_time: Instant,
 }
 
+impl MemberState {
+  fn zero_leave_time() -> Instant {
+    static ZERO: once_cell::sync::Lazy<Instant> =
+      once_cell::sync::Lazy::new(|| Instant::now() - std::time::UNIX_EPOCH.elapsed().unwrap());
+    *ZERO
+  }
+}
+
 /// Used to buffer intents for out-of-order deliveries.
 pub(crate) struct NodeIntent {
   ty: MessageType,
@@ -147,6 +177,23 @@ pub enum SerfState {
   Leaving,
   Left,
   Shutdown,
+}
+
+impl SerfState {
+  pub const fn as_str(&self) -> &'static str {
+    match self {
+      Self::Alive => "alive",
+      Self::Leaving => "leaving",
+      Self::Left => "left",
+      Self::Shutdown => "shutdown",
+    }
+  }
+}
+
+impl core::fmt::Display for SerfState {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", self.as_str())
+  }
 }
 
 #[derive(Clone)]
@@ -187,6 +234,15 @@ pub(crate) struct Members {
   failed_members: Vec<MemberState>,
 }
 
+impl Members {
+  fn recent_intent(&self, node: &NodeId, ty: MessageType) -> Option<LamportTime> {
+    match self.recent_intents.get(node) {
+      Some(intent) if intent.ty == ty => Some(intent.ltime),
+      _ => None,
+    }
+  }
+}
+
 pub(crate) struct EventCore {
   event_min_time: LamportTime,
   event_buffer: Vec<Option<UserEvents>>,
@@ -212,7 +268,7 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOv
 
   opts: Options<T>,
 
-  state: Mutex<SerfState>,
+  state: parking_lot::Mutex<SerfState>,
 
   join_lock: Mutex<()>,
 
@@ -220,9 +276,37 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOv
   key_manager: KeyManager<T, D, O>,
 
   shutdown_tx: async_channel::Sender<()>,
+  shutdown_rx: async_channel::Receiver<()>,
   reconnector: Option<Arc<O>>,
 
   coord_core: Option<Arc<CoordCore>>,
+}
+
+impl<T, D, O> Drop for SerfCore<D, T, O>
+where
+  T: Transport,
+  D: MergeDelegate,
+  O: ReconnectTimeoutOverrider,
+{
+  fn drop(&mut self) {
+    use showbiz_core::pollster::FutureExt as _;
+
+    let mut s = self.state.lock();
+    if *s != SerfState::Left {
+      tracing::warn!(target: "serf", "shutdown without a leave");
+    }
+
+    // Wait to close the shutdown channel until after we've shut down the
+    // memberlist and its associated network resources, since the shutdown
+    // channel signals that we are cleaned up outside of Serf.
+    *s = SerfState::Shutdown;
+    self.shutdown_tx.close();
+
+    // Wait for the snapshoter to finish if we have one
+    if let Some(ref snapshot) = self.snapshot {
+      snapshot.wait().block_on();
+    }
+  }
 }
 
 /// Serf is a single node that is part of a single cluster that gets
@@ -492,11 +576,12 @@ where
         buffer: query_buffer,
       })),
       opts,
-      state: Mutex::new(SerfState::Alive),
+      state: parking_lot::Mutex::new(SerfState::Alive),
       join_lock: Mutex::new(()),
       snapshot: handle,
       key_manager: KeyManager::new(),
       shutdown_tx,
+      shutdown_rx: shutdown_rx.clone(),
       coord_core: coord.map(|cc| {
         Arc::new(CoordCore {
           client: cc,
@@ -509,7 +594,14 @@ where
     let this = Serf { inner: Arc::new(c) };
     // update delegate
     let that = this.clone();
-    this.inner.memberlist.delegate().unwrap().store(that);
+    let delegate = this.inner.memberlist.delegate().unwrap();
+    delegate.store(that);
+    let local_node = this.inner.memberlist.local_node().await;
+    delegate
+      .notify_join(local_node)
+      .await
+      .map_err(|e| showbiz_core::error::Error::delegate(e))?;
+
     // update key manager
     let that = this.clone();
     this.inner.key_manager.store(that);
@@ -579,10 +671,17 @@ where
     self.inner.memberlist.encryption_enabled()
   }
 
+  /// Returns a receiver that can be used to wait for
+  /// Serf to shutdown.
+  #[inline]
+  pub fn shutdown_rx(&self) -> async_channel::Receiver<()> {
+    self.inner.shutdown_rx.clone()
+  }
+
   /// The current state of this Serf instance.
   #[inline]
-  pub async fn state(&self) -> SerfState {
-    *self.inner.state.lock().await
+  pub fn state(&self) -> SerfState {
+    *self.inner.state.lock()
   }
 
   /// Returns a point-in-time snapshot of the members of this cluster.
@@ -603,6 +702,21 @@ where
   #[inline]
   pub async fn num_nodes(&self) -> usize {
     self.inner.members.read().await.states.len()
+  }
+
+  /// Returns the Member information for the local node
+  #[inline]
+  pub async fn local_member(&self) -> Arc<Member> {
+    self
+      .inner
+      .members
+      .read()
+      .await
+      .states
+      .get(self.inner.memberlist.local_id())
+      .unwrap()
+      .member
+      .clone()
   }
 
   /// Used to dynamically update the tags associated with
@@ -774,12 +888,13 @@ where
     ignore_old: bool,
   ) -> Result<Vec<NodeId>, JoinError<T, D, O>> {
     // Do a quick state check
-    if self.state().await != SerfState::Alive {
+    let current_state = self.state();
+    if current_state != SerfState::Alive {
       return Err(JoinError {
         joined: vec![],
         errors: existing
           .into_iter()
-          .map(|(addr, _)| (addr, Error::BadStatus))
+          .map(|(addr, _)| (addr, Error::BadJoinStatus(current_state)))
           .collect(),
         broadcast_error: None,
       });
@@ -846,7 +961,142 @@ where
     }
   }
 
+  /// Gracefully exits the cluster. It is safe to call this multiple
+  /// times.
+  /// If the Leave broadcast timeout, Leave() will try to finish the sequence as best effort.
   pub async fn leave(&self) -> Result<(), Error<T, D, O>> {
+    // Check the current state
+    {
+      let mut s = self.inner.state.lock();
+      match *s {
+        SerfState::Left => return Ok(()),
+        SerfState::Leaving => return Err(Error::BadLeaveStatus(*s)),
+        SerfState::Shutdown => return Err(Error::BadLeaveStatus(*s)),
+        _ => {
+          // Set the state to leaving
+          *s = SerfState::Leaving;
+        }
+      }
+    }
+
+    // If we have a snapshot, mark we are leaving
+    if let Some(ref snap) = self.inner.snapshot {
+      snap.leave().await;
+    }
+
+    // Construct the message for the graceful leave
+    let msg = Leave {
+      ltime: self.inner.clock.time(),
+      node: self.inner.memberlist.local_id().clone(),
+      prune: false,
+    };
+
+    self.inner.clock.increment();
+
+    // Process the leave locally
+    self.handle_node_leave_intent(&msg).await;
+
+    // Only broadcast the leave message if there is at least one
+    // other node alive.
+    if self.has_alive_members().await {
+      let (notify_tx, notify_rx) = async_channel::bounded(1);
+      self
+        .broadcast(MessageType::Leave, msg.node.clone(), &msg, Some(notify_tx))
+        .await?;
+
+      futures_util::select! {
+        _ = notify_rx.recv().fuse() => {
+          // We got a response, so we are done
+        }
+        _ = <T::Runtime as Runtime>::sleep(self.inner.opts.broadcast_timeout).fuse() => {
+          tracing::warn!(target = "ruserf", "timeout while waiting for graceful leave");
+        }
+      }
+    }
+
+    // Attempt the memberlist leave
+    if let Err(e) = self
+      .inner
+      .memberlist
+      .leave(self.inner.opts.broadcast_timeout)
+      .await
+    {
+      tracing::warn!(
+        target = "ruserf",
+        "timeout waiting for leave broadcast: {}",
+        e
+      );
+    }
+
+    // Wait for the leave to propagate through the cluster. The broadcast
+    // timeout is how long we wait for the message to go out from our own
+    // queue, but this wait is for that message to propagate through the
+    // cluster. In particular, we want to stay up long enough to service
+    // any probes from other nodes before they learn about us leaving.
+    <T::Runtime as Runtime>::sleep(self.inner.opts.leave_propagate_delay).await;
+
+    // Transition to Left only if we not already shutdown
+    {
+      let mut s = self.inner.state.lock();
+      match *s {
+        SerfState::Shutdown => {}
+        _ => {
+          *s = SerfState::Left;
+        }
+      }
+    }
+    Ok(())
+  }
+
+  /// Forcibly removes a failed node from the cluster
+  /// immediately, instead of waiting for the reaper to eventually reclaim it.
+  /// This also has the effect that Serf will no longer attempt to reconnect
+  /// to this node.
+  pub async fn remove_failed_node(&self, node: NodeId) -> Result<(), Error<T, D, O>> {
+    self.force_leave(node, false).await
+  }
+
+  /// Forcibly removes a failed node from the cluster
+  /// immediately, instead of waiting for the reaper to eventually reclaim it.
+  /// This also has the effect that Serf will no longer attempt to reconnect
+  /// to this node.
+  pub async fn remove_failed_node_prune(&self, node: NodeId) -> Result<(), Error<T, D, O>> {
+    self.force_leave(node, true).await
+  }
+
+  /// Forcefully shuts down the Serf instance, stopping all network
+  /// activity and background maintenance associated with the instance.
+  ///
+  /// This is not a graceful shutdown, and should be preceded by a call
+  /// to Leave. Otherwise, other nodes in the cluster will detect this node's
+  /// exit as a node failure.
+  ///
+  /// It is safe to call this method multiple times.
+  pub async fn shutdown(&self) -> Result<(), Error<T, D, O>> {
+    {
+      let mut s = self.inner.state.lock();
+      match *s {
+        SerfState::Shutdown => return Ok(()),
+        SerfState::Left => {}
+        _ => {
+          tracing::warn!(target = "ruserf", "shutdown without a leave");
+        }
+      }
+
+      // Wait to close the shutdown channel until after we've shut down the
+      // memberlist and its associated network resources, since the shutdown
+      // channel signals that we are cleaned up outside of Serf.
+      *s = SerfState::Shutdown;
+    }
+
+    self.inner.memberlist.shutdown().await?;
+    self.inner.shutdown_tx.close();
+
+    // Wait for the snapshoter to finish if we have one
+    if let Some(ref snap) = self.inner.snapshot {
+      snap.wait().await;
+    }
+
     Ok(())
   }
 
@@ -880,54 +1130,19 @@ where
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  pub(crate) async fn handle_user_event(&self) -> bool {
-    // TODO: implement this method
-    true
-  }
-
-  pub(crate) async fn handle_query(&self, q: QueryMessage) {
-    todo!()
-  }
-
-  /// Called when a node broadcasts a
-  /// join message to set the lamport time of its join
-  pub(crate) async fn handle_node_join_intent(&self, join_msg: &JoinMessage) -> bool {
-    // Witness a potentially newer time
-    self.inner.clock.witness(join_msg.ltime);
-
-    let mut members = self.inner.members.write().await;
-    match members.states.get_mut(&join_msg.node) {
-      Some(member) => {
-        // Check if this time is newer than what we have
-        if join_msg.ltime <= member.status_time {
-          return false;
-        }
-
-        // Update the LTime
-        member.status_time = join_msg.ltime;
-
-        // If we are in the leaving state, we should go back to alive,
-        // since the leaving message must have been for an older time
-        let _ = member.member.status.compare_exchange(
-          MemberStatus::Leaving,
-          MemberStatus::Alive,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        );
-
-        true
+  async fn has_alive_members(&self) -> bool {
+    let members = self.inner.members.read().await;
+    for member in members.states.values() {
+      if member.member.id() == self.inner.memberlist.local_id() {
+        continue;
       }
-      None => {
-        // Rebroadcast only if this was an update we hadn't seen before.
-        upsert_intent(
-          &mut members.recent_intents,
-          &join_msg.node,
-          MessageType::Join,
-          join_msg.ltime,
-          Instant::now,
-        )
+
+      if member.member.status.load(Ordering::Relaxed) == MemberStatus::Alive {
+        return true;
       }
     }
+
+    false
   }
 
   /// Used to setup the listeners for the query,
@@ -1037,41 +1252,37 @@ where
     Ok(())
   }
 
-  fn handle_rejoin(showbiz: Showbiz<T, SerfDelegate<T, D, O>>, alive_nodes: Vec<NodeId>) {
-    <T::Runtime as Runtime>::spawn_detach(async move {
-      for prev in alive_nodes {
-        // Do not attempt to join ourself
-        if prev.eq(showbiz.local_id()) {
-          continue;
-        }
+  /// Forcibly removes a failed node from the cluster
+  /// immediately, instead of waiting for the reaper to eventually reclaim it.
+  /// This also has the effect that Serf will no longer attempt to reconnect
+  /// to this node.
+  async fn force_leave(&self, node: NodeId, prune: bool) -> Result<(), Error<T, D, O>> {
+    // Construct the message to broadcast
+    let msg = Leave {
+      ltime: self.inner.clock.time(),
+      node,
+      prune,
+    };
 
-        tracing::info!(
-          target = "ruserf",
-          "attempting re-join to previously known node {}",
-          prev
-        );
-        if let Err(e) = showbiz.join_node(&prev).await {
-          tracing::warn!(
-            target = "ruserf",
-            "failed to re-join to previously known node {}: {}",
-            prev,
-            e
-          );
-        } else {
-          tracing::info!(
-            target = "ruserf",
-            "re-joined to previously known node: {}",
-            prev
-          );
-          return;
-        }
-      }
+    // Process our own event
+    self.handle_node_leave_intent(&msg).await;
 
-      tracing::warn!(
-        target = "ruserf",
-        "failed to re-join to any previously known node"
-      );
-    });
+    // If we have no members, then we don't need to broadcast
+    if !self.has_alive_members().await {
+      return Ok(());
+    }
+
+    // Broadcast the remove
+    let (ntx, nrx) = async_channel::bounded(1);
+    self
+      .broadcast(MessageType::Leave, msg.node.clone(), &msg, Some(ntx))
+      .await?;
+
+    // Wait for the broadcast
+    futures_util::select! {
+      _ = nrx.recv().fuse() => Ok(()),
+      _ = <T::Runtime as Runtime>::sleep(self.inner.opts.broadcast_timeout).fuse() => Err(Error::RemovalBroadcastTimeout),
+    }
   }
 }
 
@@ -1108,6 +1319,31 @@ where
   reconnect_timeout: Duration,
 }
 
+macro_rules! erase_node {
+  ($tx:ident <- $coord:ident($members:ident[$id:ident].$m:ident)) => {{
+    // takes a node completely out of the member list
+    $members.states.remove($id);
+
+    // Tell the coordinate client the node has gone away and delete
+    // its cached coordinates.
+    if let Some(cc) = $coord {
+      let name = $id.name();
+      cc.client.forget_node(name);
+      cc.cache.write().remove(name);
+    }
+
+    // Send out event
+    if let Some(tx) = $tx {
+      let _ = tx
+        .send(Event::from(MemberEvent {
+          ty: MemberEventType::Reap,
+          members: vec![$m.member.clone()],
+        }))
+        .await;
+    }
+  }};
+}
+
 macro_rules! reap {
   (
     $tx:ident <- $reconnector:ident($timeout: ident($members: ident.$ty: ident, $coord:ident))
@@ -1135,25 +1371,7 @@ macro_rules! reap {
       let id = m.member.id();
       tracing::info!(target = "ruserf", "event member reap: {}", id);
 
-      // takes a node completely out of the member list
-      $members.states.remove(id);
-
-      // Tell the coordinate client the node has gone away and delete
-      // its cached coordinates.
-      if let Some(cc) = $coord {
-        cc.client.forget_node(id.name());
-        cc.cache.write().remove(id.name());
-      }
-
-      // Send out event
-      if let Some(tx) = $tx {
-        let _ = tx
-          .send(Event::from(MemberEvent {
-            ty: MemberEventType::Reap,
-            members: vec![m.member.clone()],
-          }))
-          .await;
-      }
+      erase_node!($tx <- $coord($members[id].m));
     }
   }};
 }
@@ -1318,6 +1536,527 @@ impl QueueChecker {
       }
     }
     max
+  }
+}
+
+// ---------------------------------Hanlders Methods-------------------------------
+impl<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> Serf<T, D, O>
+where
+  D: MergeDelegate,
+  O: ReconnectTimeoutOverrider,
+  T: Transport,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
+  pub(crate) async fn handle_user_event(&self) -> bool {
+    // TODO: implement this method
+    true
+  }
+
+  pub(crate) async fn handle_query(&self, q: QueryMessage) {
+    todo!()
+  }
+
+  /// Called when a node join event is received
+  /// from memberlist.
+  pub(crate) async fn handle_node_join(&self, n: Arc<showbiz_core::Node>) {
+    let mut members = self.inner.members.write().await;
+
+    // TODO: message dropper?
+
+    let id = n.id();
+    let (old_status, fut) = if let Some(member) = members.states.get_mut(id) {
+      let old_status = member.member.status.load(Ordering::Acquire);
+      let dead_time = member.leave_time.elapsed();
+      if old_status == MemberStatus::Failed && dead_time < self.inner.opts.flap_timeout {
+        // TODO: metrics
+      }
+
+      *member = MemberState {
+        member: Arc::new(Member {
+          id: id.clone(),
+          tags: Arc::new(decode_tags(&n.meta)),
+          status: Atomic::new(MemberStatus::Alive),
+          protocol_version: ProtocolVersion::V0,
+          delegate_version: DelegateVersion::V0,
+        }),
+        status_time: member.status_time,
+        leave_time: MemberState::zero_leave_time(),
+      };
+
+      (
+        old_status,
+        self.inner.event_tx.as_ref().map(|tx| {
+          tx.send(
+            MemberEvent {
+              ty: MemberEventType::Join,
+              members: vec![member.member.clone()],
+            }
+            .into(),
+          )
+        }),
+      )
+    } else {
+      // Check if we have a join or leave intent. The intent buffer
+      // will only hold one event for this node, so the more recent
+      // one will take effect.
+      let mut status = MemberStatus::Alive;
+      let mut status_ltime = LamportTime::new(0);
+      if let Some(t) = members.recent_intent(n.id(), MessageType::Join) {
+        status_ltime = t;
+      }
+
+      if let Some(t) = members.recent_intent(n.id(), MessageType::Leave) {
+        status_ltime = t;
+        status = MemberStatus::Leaving;
+      }
+
+      let ms = MemberState {
+        member: Arc::new(Member {
+          id: id.clone(),
+          tags: Arc::new(decode_tags(&n.meta)),
+          status: Atomic::new(status),
+          // TODO:
+          protocol_version: ProtocolVersion::V0,
+          delegate_version: DelegateVersion::V0,
+        }),
+        status_time: status_ltime,
+        leave_time: MemberState::zero_leave_time(),
+      };
+      let member = ms.member.clone();
+      members.states.insert(id.clone(), ms);
+      (
+        MemberStatus::None,
+        self.inner.event_tx.as_ref().map(|tx| {
+          tx.send(
+            MemberEvent {
+              ty: MemberEventType::Join,
+              members: vec![member],
+            }
+            .into(),
+          )
+        }),
+      )
+    };
+
+    if matches!(old_status, MemberStatus::Failed | MemberStatus::Left) {
+      remove_old_member(&mut members.failed_members, id);
+      remove_old_member(&mut members.left_members, id);
+    }
+
+    // TODO: update metrics
+
+    tracing::info!(target = "ruserf", "member join: {}", id);
+    if let Some(fut) = fut {
+      if let Err(e) = fut.await {
+        tracing::error!(target = "ruserf", err=%e, "failed to send member event");
+      }
+    }
+  }
+
+  /// Called when a node broadcasts a
+  /// join message to set the lamport time of its join
+  pub(crate) async fn handle_node_join_intent(&self, join_msg: &JoinMessage) -> bool {
+    // Witness a potentially newer time
+    self.inner.clock.witness(join_msg.ltime);
+
+    let mut members = self.inner.members.write().await;
+    match members.states.get_mut(&join_msg.node) {
+      Some(member) => {
+        // Check if this time is newer than what we have
+        if join_msg.ltime <= member.status_time {
+          return false;
+        }
+
+        // Update the LTime
+        member.status_time = join_msg.ltime;
+
+        // If we are in the leaving state, we should go back to alive,
+        // since the leaving message must have been for an older time
+        let _ = member.member.status.compare_exchange(
+          MemberStatus::Leaving,
+          MemberStatus::Alive,
+          Ordering::SeqCst,
+          Ordering::SeqCst,
+        );
+
+        true
+      }
+      None => {
+        // Rebroadcast only if this was an update we hadn't seen before.
+        upsert_intent(
+          &mut members.recent_intents,
+          &join_msg.node,
+          MessageType::Join,
+          join_msg.ltime,
+          Instant::now,
+        )
+      }
+    }
+  }
+
+  pub(crate) async fn handle_node_leave(&self, n: Arc<showbiz_core::Node>) {
+    let mut members = self.inner.members.write().await;
+
+    let Some(member_state) = members.states.get_mut(n.id()) else {
+      return;
+    };
+
+    let mut ms = member_state.member.status.load(Ordering::Acquire);
+    let member = match ms {
+      MemberStatus::Leaving => {
+        member_state
+          .member
+          .status
+          .store(MemberStatus::Left, Ordering::Release);
+        ms = MemberStatus::Left;
+        member_state.leave_time = Instant::now();
+        let member_state = member_state.clone();
+        let member = member_state.member.clone();
+        members.left_members.push(member_state);
+        member
+      }
+      MemberStatus::Alive => {
+        member_state
+          .member
+          .status
+          .store(MemberStatus::Failed, Ordering::Release);
+        ms = MemberStatus::Failed;
+        member_state.leave_time = Instant::now();
+        let member_state = member_state.clone();
+        let member = member_state.member.clone();
+        members.failed_members.push(member_state);
+        member
+      }
+      _ => {
+        tracing::warn!(target = "ruserf", "Bad state when leave: {}", ms);
+        return;
+      }
+    };
+
+    // Send an event along
+    let ty = if ms != MemberStatus::Left {
+      MemberEventType::Failed
+    } else {
+      MemberEventType::Leave
+    };
+
+    // Update some metrics
+    // TODO: metrics
+
+    tracing::info!(target = "ruserf", "{}: {}", ty.as_str(), member.id());
+
+    if let Some(ref tx) = self.inner.event_tx {
+      if let Err(e) = tx
+        .send(
+          MemberEvent {
+            ty,
+            members: vec![member],
+          }
+          .into(),
+        )
+        .await
+      {
+        tracing::error!(target = "ruserf", err=%e, "failed to send member event: {}", e);
+      }
+    }
+  }
+
+  pub(crate) async fn handle_node_leave_intent(&self, msg: &Leave) -> bool {
+    let state = self.state();
+
+    // Witness a potentially newer time
+    self.inner.clock.witness(msg.ltime);
+
+    let mut members = self.inner.members.write().await;
+
+    // TODO: There are plenty of duplicated code(to avoid borrow checker), I do not have a good idea how to refactor it currently...
+    if msg.prune {
+      if let Some(mut member) = members.states.remove(&msg.node) {
+        // If the message is old, then it is irrelevant and we can skip it
+        if msg.ltime <= member.status_time {
+          return false;
+        }
+
+        // Refute us leaving if we are in the alive state
+        // Must be done in another goroutine since we have the memberLock
+        if msg.node.eq(self.inner.memberlist.local_id()) && state == SerfState::Alive {
+          tracing::debug!(target = "ruserf", "refuting an older leave intent");
+          let this = self.clone();
+          let ltime = self.inner.clock.time();
+          <T::Runtime as Runtime>::spawn_detach(async move {
+            if let Err(e) = this.broadcast_join(ltime).await {
+              tracing::error!(target = "ruserf", err=%e, "failed to broadcast join");
+            }
+          });
+          return false;
+        }
+
+        // Always update the lamport time even when the status does not change
+        // (despite the variable naming implying otherwise).
+        //
+        // By updating this statusLTime here we ensure that the earlier conditional
+        // on "leaveMsg.LTime <= member.statusLTime" will prevent an infinite
+        // rebroadcast when seeing two successive leave message for the same
+        // member. Without this fix a leave message that arrives after a member is
+        // already marked as leaving/left will cause it to be rebroadcast without
+        // marking it locally as witnessed. If more than one serf instance in the
+        // cluster experiences this series of events then they will rebroadcast
+        // each other's messages about the affected node indefinitely.
+        //
+        // This eventually leads to overflowing serf intent queues
+        // - https://github.com/hashicorp/consul/issues/8179
+        // - https://github.com/hashicorp/consul/issues/7960
+        member.status_time = msg.ltime;
+        // State transition depends on current state
+        let ms = member.member.status.load(Ordering::Acquire);
+        match ms {
+          MemberStatus::Alive => {
+            member
+              .member
+              .status
+              .store(MemberStatus::Leaving, Ordering::Release);
+            let id = member.member.id();
+            tracing::info!(target = "ruserf", "EventMemberReap (forced): {}", id);
+
+            let tx = self.inner.event_tx.as_ref();
+            let coord = self.inner.coord_core.as_deref();
+            erase_node!(tx <- coord(members[id].member));
+            true
+          }
+          MemberStatus::Failed => {
+            member
+              .member
+              .status
+              .store(MemberStatus::Left, Ordering::Release);
+
+            // We must push a message indicating the node has now
+            // left to allow higher-level applications to handle the
+            // graceful leave.
+            tracing::info!(
+              target = "ruserf",
+              "EventMemberLeave: {}",
+              member.member.id()
+            );
+
+            let msg = self.inner.event_tx.as_ref().map(|tx| {
+              tx.send(
+                MemberEvent {
+                  ty: MemberEventType::Leave,
+                  members: vec![member.member.clone()],
+                }
+                .into(),
+              )
+            });
+            // Remove from the failed list and add to the left list. We add
+            // to the left list so that when we do a sync, other nodes will
+            // remove it from their failed list.
+            remove_old_member(&mut members.failed_members, member.member.id());
+            members.left_members.push(member);
+
+            if let Some(fut) = msg {
+              if let Err(e) = fut.await {
+                tracing::error!(target = "ruserf", err=%e, "failed to send member event");
+              }
+            }
+
+            true
+          }
+          MemberStatus::Leaving | MemberStatus::Left => {
+            if ms == MemberStatus::Leaving {
+              <T::Runtime as Runtime>::sleep(
+                self.inner.opts.broadcast_timeout + self.inner.opts.leave_propagate_delay,
+              )
+              .await;
+            }
+
+            let id = member.member.id();
+            tracing::info!(target = "ruserf", "EventMemberReap (forced): {}", id);
+
+            // If we are leaving or left we may be in that list of members
+            if matches!(ms, MemberStatus::Leaving | MemberStatus::Left) {
+              remove_old_member(&mut members.left_members, id);
+            }
+
+            let tx = self.inner.event_tx.as_ref();
+            let coord = self.inner.coord_core.as_deref();
+            erase_node!(tx <- coord(members[id].member));
+            true
+          }
+          _ => false,
+        }
+      } else {
+        // Rebroadcast only if this was an update we hadn't seen before.
+        upsert_intent(
+          &mut members.recent_intents,
+          &msg.node,
+          MessageType::Leave,
+          msg.ltime,
+          Instant::now,
+        )
+      }
+    } else if let Some(member) = members.states.get_mut(&msg.node) {
+      // If the message is old, then it is irrelevant and we can skip it
+      if msg.ltime <= member.status_time {
+        return false;
+      }
+
+      // Refute us leaving if we are in the alive state
+      // Must be done in another goroutine since we have the memberLock
+      if msg.node.eq(self.inner.memberlist.local_id()) && state == SerfState::Alive {
+        tracing::debug!(target = "ruserf", "refuting an older leave intent");
+        let this = self.clone();
+        let ltime = self.inner.clock.time();
+        <T::Runtime as Runtime>::spawn_detach(async move {
+          if let Err(e) = this.broadcast_join(ltime).await {
+            tracing::error!(target = "ruserf", err=%e, "failed to broadcast join");
+          }
+        });
+        return false;
+      }
+
+      // Always update the lamport time even when the status does not change
+      // (despite the variable naming implying otherwise).
+      //
+      // By updating this statusLTime here we ensure that the earlier conditional
+      // on "leaveMsg.LTime <= member.statusLTime" will prevent an infinite
+      // rebroadcast when seeing two successive leave message for the same
+      // member. Without this fix a leave message that arrives after a member is
+      // already marked as leaving/left will cause it to be rebroadcast without
+      // marking it locally as witnessed. If more than one serf instance in the
+      // cluster experiences this series of events then they will rebroadcast
+      // each other's messages about the affected node indefinitely.
+      //
+      // This eventually leads to overflowing serf intent queues
+      // - https://github.com/hashicorp/consul/issues/8179
+      // - https://github.com/hashicorp/consul/issues/7960
+      member.status_time = msg.ltime;
+      // State transition depends on current state
+      match member.member.status.load(Ordering::Acquire) {
+        MemberStatus::Alive => {
+          member
+            .member
+            .status
+            .store(MemberStatus::Leaving, Ordering::Release);
+          true
+        }
+        MemberStatus::Failed => {
+          member
+            .member
+            .status
+            .store(MemberStatus::Left, Ordering::Release);
+
+          // Remove from the failed list and add to the left list. We add
+          // to the left list so that when we do a sync, other nodes will
+          // remove it from their failed list.
+          let member = member.clone();
+          let msg = self.inner.event_tx.as_ref().map(|tx| {
+            tx.send(
+              MemberEvent {
+                ty: MemberEventType::Leave,
+                members: vec![member.member.clone()],
+              }
+              .into(),
+            )
+          });
+
+          members
+            .failed_members
+            .retain(|m| m.member.id() != member.member.id());
+          members.left_members.push(member);
+          if let Some(fut) = msg {
+            if let Err(e) = fut.await {
+              tracing::error!(target = "ruserf", err=%e, "failed to send member event");
+            }
+          }
+          true
+        }
+        MemberStatus::Leaving | MemberStatus::Left => true,
+        _ => false,
+      }
+    } else {
+      // Rebroadcast only if this was an update we hadn't seen before.
+      upsert_intent(
+        &mut members.recent_intents,
+        &msg.node,
+        MessageType::Leave,
+        msg.ltime,
+        Instant::now,
+      )
+    }
+  }
+
+  pub(crate) async fn handle_node_update(&self, n: Arc<showbiz_core::Node>) {}
+
+  /// Waits for nodes that are leaving and then forcibly
+  /// erases a member from the list of members
+  pub(crate) async fn handle_prune(&self, member: &MemberState, members: &mut Members) {
+    let ms = member.member.status.load(Ordering::Relaxed);
+    if ms == MemberStatus::Leaving {
+      <T::Runtime as Runtime>::sleep(
+        self.inner.opts.broadcast_timeout + self.inner.opts.leave_propagate_delay,
+      )
+      .await;
+    }
+
+    let id = member.member.id();
+    tracing::info!(target = "ruserf", "EventMemberReap (forced): {}", id);
+
+    // If we are leaving or left we may be in that list of members
+    if matches!(ms, MemberStatus::Leaving | MemberStatus::Left) {
+      remove_old_member(&mut members.left_members, id);
+    }
+
+    let tx = self.inner.event_tx.as_ref();
+    let coord = self.inner.coord_core.as_deref();
+    erase_node!(tx <- coord(members[id].member))
+  }
+
+  /// Invoked when a join detects a conflict over a name.
+  /// This means two different nodes (IP/Port) are claiming the same name. Memberlist
+  /// will reject the "new" node mapping, but we can still be notified.
+  pub(crate) async fn handle_node_conflict(
+    &self,
+    existing: Arc<showbiz_core::Node>,
+    other: Arc<showbiz_core::Node>,
+  ) {
+  }
+
+  fn handle_rejoin(showbiz: Showbiz<T, SerfDelegate<T, D, O>>, alive_nodes: Vec<NodeId>) {
+    <T::Runtime as Runtime>::spawn_detach(async move {
+      for prev in alive_nodes {
+        // Do not attempt to join ourself
+        if prev.eq(showbiz.local_id()) {
+          continue;
+        }
+
+        tracing::info!(
+          target = "ruserf",
+          "attempting re-join to previously known node {}",
+          prev
+        );
+        if let Err(e) = showbiz.join_node(&prev).await {
+          tracing::warn!(
+            target = "ruserf",
+            "failed to re-join to previously known node {}: {}",
+            prev,
+            e
+          );
+        } else {
+          tracing::info!(
+            target = "ruserf",
+            "re-joined to previously known node: {}",
+            prev
+          );
+          return;
+        }
+      }
+
+      tracing::warn!(
+        target = "ruserf",
+        "failed to re-join to any previously known node"
+      );
+    });
   }
 }
 

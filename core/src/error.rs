@@ -5,7 +5,7 @@ use showbiz_core::{transport::Transport, Address, NodeId};
 use crate::{
   delegate::{MergeDelegate, SerfDelegate},
   snapshot::SnapshotError,
-  Member, ReconnectTimeoutOverrider,
+  Member, ReconnectTimeoutOverrider, SerfState,
 };
 
 #[derive(Debug)]
@@ -27,8 +27,10 @@ pub enum Error<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> {
   UserEventLimitTooLarge(usize),
   #[error("ruserf: user event exceeds sane limit of {0} bytes before encoding")]
   UserEventTooLarge(usize),
-  #[error("ruserf: can't join after leave or shutdown")]
-  BadStatus,
+  #[error("ruserf: join called on {0} statues")]
+  BadJoinStatus(SerfState),
+  #[error("ruserf: leave called on {0} statues")]
+  BadLeaveStatus(SerfState),
   #[error("ruserf: user event exceeds sane limit of {0} bytes after encoding")]
   RawUserEventTooLarge(usize),
   #[error("ruserf: query exceeds limit of {0} bytes")]
@@ -57,6 +59,8 @@ pub enum Error<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> {
   CoordinatesDisabled,
   #[error("ruserf: {0}")]
   Snapshot(#[from] SnapshotError),
+  #[error("ruserf: timed out broadcasting node removal")]
+  RemovalBroadcastTimeout,
 }
 
 pub struct ShowbizError<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>(

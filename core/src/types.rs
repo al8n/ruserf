@@ -123,6 +123,7 @@ impl JoinMessage {
 
 /// The message broadcasted to signal the intentional to
 /// leave.
+#[viewit::viewit]
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Leave {
   ltime: LamportTime,

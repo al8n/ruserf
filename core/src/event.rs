@@ -177,6 +177,18 @@ pub enum MemberEventType {
   Reap,
 }
 
+impl MemberEventType {
+  pub const fn as_str(&self) -> &'static str {
+    match self {
+      Self::Join => "member-join",
+      Self::Leave => "member-leave",
+      Self::Failed => "member-failed",
+      Self::Update => "member-update",
+      Self::Reap => "member-reap",
+    }
+  }
+}
+
 impl core::fmt::Display for MemberEventType {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     match self {
@@ -194,6 +206,7 @@ impl core::fmt::Display for MemberEventType {
 #[derive(Debug, Clone)]
 pub struct MemberEvent {
   pub(crate) ty: MemberEventType,
+  // TODO: use an enum to avoid allocate when there is only one member
   pub(crate) members: Vec<Arc<Member>>,
 }
 
