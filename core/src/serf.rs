@@ -1628,8 +1628,8 @@ where
   /// received.
   pub(crate) async fn handle_query_response(&self, resp: QueryResponseMessage) {
     // Look for a corresponding QueryResponse
-    let qc = self.inner.query_core.read().await;
-    if let Some(query) = qc.responses.get(&resp.ltime) {
+    let mut qc = self.inner.query_core.write().await;
+    if let Some(query) = qc.responses.get_mut(&resp.ltime) {
       // Verify the ID matches
       if query.id != resp.id {
         tracing::warn!(
@@ -1649,16 +1649,19 @@ where
       // Process each type of response
       if resp.ack() {
         // Exit early if this is a duplicate ack
-        // if query.acks.contains_key(&resp.from) {
-        //   return;
-        // }
+        if query.acks.contains(&resp.from) {
+          // TODO: metrics
+          return;
+        }
+
         // TODO: metrics
         if let Err(e) = query.send_ack::<T, D, O>(&resp).await {
           tracing::warn!(target = "ruserf", "{}", e);
         }
       } else {
         // Exit early if this is a duplicate ack
-        if query.inner.responses.contains_key(&resp.from) {
+        if query.responses.contains(&resp.from) {
+          // TODO: metrics
           return;
         }
 
@@ -1682,9 +1685,7 @@ where
         resp.id,
         resp.from
       );
-      return;
     }
-    todo!()
   }
 
   /// Called when a node join event is received
