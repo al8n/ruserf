@@ -57,6 +57,24 @@ impl core::ops::Add<Self> for LamportTime {
   }
 }
 
+impl core::ops::Sub<Self> for LamportTime {
+  type Output = Self;
+
+  #[inline]
+  fn sub(self, rhs: Self) -> Self::Output {
+    Self(self.0 - rhs.0)
+  }
+}
+
+impl core::ops::Rem<Self> for LamportTime {
+  type Output = Self;
+
+  #[inline]
+  fn rem(self, rhs: Self) -> Self::Output {
+    Self(self.0 % rhs.0)
+  }
+}
+
 /// A thread safe implementation of a lamport clock. It
 /// uses efficient atomic operations for all of its functions, falling back
 /// to a heavy lock only if there are enough CAS failures.

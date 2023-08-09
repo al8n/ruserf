@@ -34,10 +34,11 @@ use crate::{
   error::{Error, JoinError},
   event::{Event, MemberEvent, MemberEventType},
   internal_query::SerfQueries,
-  query::{QueryParam, QueryResponse},
+  query::{NodeResponse, QueryParam, QueryResponse},
   snapshot::{open_and_replay_snapshot, Snapshot, SnapshotHandle},
   types::{
     encode_message, JoinMessage, Leave, MessageType, MessageUserEvent, QueryFlag, QueryMessage,
+    QueryResponseMessage,
   },
   KeyManager, Options, QueueOptions,
 };
@@ -60,7 +61,7 @@ pub(crate) struct UserEvents {
 /// Stores all the user events at a specific time
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct UserEvent {
-  name: String,
+  name: SmolStr,
   payload: Bytes,
 }
 
@@ -244,8 +245,8 @@ impl Members {
 }
 
 pub(crate) struct EventCore {
-  event_min_time: LamportTime,
-  event_buffer: Vec<Option<UserEvents>>,
+  min_time: LamportTime,
+  buffer: Vec<Option<UserEvents>>,
 }
 
 #[viewit::viewit]
@@ -566,8 +567,8 @@ where
       event_broadcasts,
       event_join_ignore: AtomicBool::new(false),
       event_core: RwLock::new(EventCore {
-        event_min_time,
-        event_buffer,
+        min_time: event_min_time,
+        buffer: event_buffer,
       }),
       query_broadcasts,
       query_core: Arc::new(RwLock::new(QueryCore {
@@ -793,7 +794,7 @@ where
     self.inner.event_clock.increment();
 
     // Process update locally
-    self.handle_user_event().await;
+    self.handle_user_event(msg).await;
 
     self
       .inner
@@ -1548,12 +1549,141 @@ where
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  pub(crate) async fn handle_user_event(&self) -> bool {
-    // TODO: implement this method
+  /// Called when a user event broadcast is
+  /// received. Returns if the message should be rebroadcast.
+  pub(crate) async fn handle_user_event(&self, msg: MessageUserEvent) -> bool {
+    // Witness a potentially newer time
+    self.inner.event_clock.witness(msg.ltime);
+
+    let mut el = self.inner.event_core.write().await;
+
+    // Ignore if it is before our minimum event time
+    if msg.ltime < el.min_time {
+      return false;
+    }
+
+    // Check if this message is too old
+    let bltime = LamportTime::new(el.buffer.len() as u64);
+    let cur_time = self.inner.event_clock.time();
+    if cur_time > bltime && msg.ltime < cur_time - bltime {
+      tracing::warn!(
+        target = "ruserf",
+        "received old event {} from time {} (current: {})",
+        msg.name,
+        msg.ltime,
+        cur_time
+      );
+      return false;
+    }
+
+    // Check if we've already seen this
+    let idx = (msg.ltime % bltime).0 as usize;
+    let seen: Option<&mut UserEvents> = el.buffer[idx].as_mut();
+    let user_event = UserEvent {
+      name: msg.name.clone(),
+      payload: msg.payload.clone(),
+    };
+    if let Some(seen) = seen {
+      for prev in seen.events.iter() {
+        if user_event.eq(prev) {
+          return false;
+        }
+      }
+      seen.events.push(user_event);
+    } else {
+      el.buffer[idx] = Some(UserEvents {
+        ltime: msg.ltime,
+        events: vec![user_event],
+      });
+    }
+
+    // TODO: metrics
+
+    if let Some(ref tx) = self.inner.event_tx {
+      if let Err(e) = tx
+        .send(
+          crate::event::UserEvent {
+            ltime: msg.ltime,
+            name: msg.name,
+            payload: msg.payload,
+            coalesce: msg.cc,
+          }
+          .into(),
+        )
+        .await
+      {
+        tracing::error!(target = "ruserf", "failed to send user event: {}", e);
+      }
+    }
     true
   }
 
+  /// Called when a query broadcast is
+  /// received. Returns if the message should be rebroadcast.
   pub(crate) async fn handle_query(&self, q: QueryMessage) {
+    todo!()
+  }
+
+  /// Called when a query response is
+  /// received.
+  pub(crate) async fn handle_query_response(&self, resp: QueryResponseMessage) {
+    // Look for a corresponding QueryResponse
+    let qc = self.inner.query_core.read().await;
+    if let Some(query) = qc.responses.get(&resp.ltime) {
+      // Verify the ID matches
+      if query.id != resp.id {
+        tracing::warn!(
+          target = "ruserf",
+          "query reply ID mismatch (local: {}, response: {})",
+          query.id,
+          resp.id
+        );
+        return;
+      }
+
+      // Check if the query is closed
+      if query.finished().await {
+        return;
+      }
+
+      // Process each type of response
+      if resp.ack() {
+        // Exit early if this is a duplicate ack
+        // if query.acks.contains_key(&resp.from) {
+        //   return;
+        // }
+        // TODO: metrics
+        if let Err(e) = query.send_ack::<T, D, O>(&resp).await {
+          tracing::warn!(target = "ruserf", "{}", e);
+        }
+      } else {
+        // Exit early if this is a duplicate ack
+        if query.inner.responses.contains_key(&resp.from) {
+          return;
+        }
+
+        // TODO: metrics
+
+        if let Err(e) = query
+          .send_response::<T, D, O>(NodeResponse {
+            from: resp.from,
+            payload: resp.payload,
+          })
+          .await
+        {
+          tracing::warn!(target = "ruserf", "{}", e);
+        }
+      }
+    } else {
+      tracing::warn!(
+        target = "ruserf",
+        "reply for non-running query (LTime: {}, ID: {}) From: {}",
+        resp.ltime,
+        resp.id,
+        resp.from
+      );
+      return;
+    }
     todo!()
   }
 
@@ -1575,7 +1705,7 @@ where
       *member = MemberState {
         member: Arc::new(Member {
           id: id.clone(),
-          tags: Arc::new(decode_tags(&n.meta)),
+          tags: Arc::new(decode_tags(n.meta())),
           status: Atomic::new(MemberStatus::Alive),
           protocol_version: ProtocolVersion::V0,
           delegate_version: DelegateVersion::V0,
@@ -1614,7 +1744,7 @@ where
       let ms = MemberState {
         member: Arc::new(Member {
           id: id.clone(),
-          tags: Arc::new(decode_tags(&n.meta)),
+          tags: Arc::new(decode_tags(n.meta())),
           status: Atomic::new(status),
           // TODO:
           protocol_version: ProtocolVersion::V0,
@@ -1986,7 +2116,40 @@ where
     }
   }
 
-  pub(crate) async fn handle_node_update(&self, n: Arc<showbiz_core::Node>) {}
+  /// Called when a node meta data update
+  /// has taken place
+  pub(crate) async fn handle_node_update(&self, n: Arc<showbiz_core::Node>) {
+    let mut members = self.inner.members.write().await;
+    let id = n.id();
+    if let Some(ms) = members.states.get_mut(id) {
+      // Update the member attributes
+      ms.member = Arc::new(Member {
+        id: id.clone(),
+        tags: Arc::new(decode_tags(n.meta())),
+        status: Atomic::new(ms.member.status.load(Ordering::Relaxed)),
+        protocol_version: ProtocolVersion::V0,
+        delegate_version: DelegateVersion::V0,
+      });
+
+      // TODO: metrics
+
+      tracing::info!(target = "ruserf", "member update: {}", id);
+      if let Some(ref tx) = self.inner.event_tx {
+        if let Err(e) = tx
+          .send(
+            MemberEvent {
+              ty: MemberEventType::Update,
+              members: vec![ms.member.clone()],
+            }
+            .into(),
+          )
+          .await
+        {
+          tracing::error!(target = "ruserf", err=%e, "failed to send member event");
+        }
+      }
+    }
+  }
 
   /// Waits for nodes that are leaving and then forcibly
   /// erases a member from the list of members

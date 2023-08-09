@@ -185,7 +185,7 @@ impl QueryResponse {
 
   /// Sends a response on the response channel ensuring the channel is not closed.
   #[inline]
-  pub(crate) async fn send_response<D, T, O>(&self, nr: NodeResponse) -> Result<(), Error<T, D, O>>
+  pub(crate) async fn send_response<T, D, O>(&self, nr: NodeResponse) -> Result<(), Error<T, D, O>>
   where
     D: MergeDelegate,
     T: Transport,
@@ -210,7 +210,10 @@ impl QueryResponse {
 
   /// Sends a response on the ack channel ensuring the channel is not closed.
   #[inline]
-  pub(crate) async fn send_ack<D, T, O>(&self, nr: NodeResponse) -> Result<(), Error<T, D, O>>
+  pub(crate) async fn send_ack<T, D, O>(
+    &self,
+    nr: &QueryResponseMessage,
+  ) -> Result<(), Error<T, D, O>>
   where
     D: MergeDelegate,
     T: Transport,
@@ -232,6 +235,11 @@ impl QueryResponse {
       }
     }
     Ok(())
+  }
+
+  #[inline]
+  pub(crate) fn acks(&self) {
+    // self.inner.
   }
 }
 
