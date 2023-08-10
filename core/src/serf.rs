@@ -29,16 +29,17 @@ use crate::{
   broadcast::SerfBroadcast,
   clock::{LamportClock, LamportTime},
   coalesce::{coalesced_event, MemberEventCoalescer, UserEventCoalescer},
+  codec::NodeIdCodec,
   coordinate::{Coordinate, CoordinateClient, CoordinateOptions},
   delegate::{DefaultMergeDelegate, MergeDelegate, SerfDelegate},
   error::{Error, JoinError},
-  event::{Event, MemberEvent, MemberEventType},
+  event::{Event, InternalQueryEventType, MemberEvent, MemberEventType},
   internal_query::SerfQueries,
   query::{NodeResponse, QueryParam, QueryResponse},
   snapshot::{open_and_replay_snapshot, Snapshot, SnapshotHandle},
   types::{
-    encode_message, JoinMessage, Leave, MessageType, MessageUserEvent, QueryFlag, QueryMessage,
-    QueryResponseMessage,
+    decode_message, encode_message, JoinMessage, Leave, MessageType, MessageUserEvent, QueryFlag,
+    QueryMessage, QueryResponseMessage,
   },
   KeyManager, Options, QueueOptions,
 };
@@ -75,11 +76,11 @@ pub(crate) struct Queries {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 #[repr(u8)]
 pub enum MemberStatus {
-  None,
-  Alive,
-  Leaving,
-  Left,
-  Failed,
+  None = 0,
+  Alive = 1,
+  Leaving = 2,
+  Left = 3,
+  Failed = 4,
 }
 
 impl core::fmt::Display for MemberStatus {
@@ -101,15 +102,37 @@ impl MemberStatus {
   }
 }
 
-fn serialize_atomic_member_status<S>(
-  status: &Atomic<MemberStatus>,
-  serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-  S: serde::ser::Serializer,
-{
-  let status = status.load(atomic::Ordering::Relaxed);
-  serializer.serialize_u8(status as u8)
+mod serde_member_status {
+  use super::*;
+
+  pub fn serialize<S>(status: &Atomic<MemberStatus>, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: serde::ser::Serializer,
+  {
+    let status = status.load(atomic::Ordering::Relaxed);
+    serializer.serialize_u8(status as u8)
+  }
+
+  pub fn deserialize<'de, D>(deserializer: D) -> Result<Atomic<MemberStatus>, D::Error>
+  where
+    D: serde::de::Deserializer<'de>,
+  {
+    let status = u8::deserialize(deserializer)?;
+    let status = match status {
+      0 => MemberStatus::None,
+      1 => MemberStatus::Alive,
+      2 => MemberStatus::Leaving,
+      3 => MemberStatus::Left,
+      4 => MemberStatus::Failed,
+      _ => {
+        return Err(serde::de::Error::custom(format!(
+          "invalid member status: {}",
+          status
+        )));
+      }
+    };
+    Ok(Atomic::new(status))
+  }
 }
 
 /// Implemented to allow overriding the reconnect timeout for individual members.
@@ -131,11 +154,11 @@ impl ReconnectTimeoutOverrider for NoopReconnectTimeoutOverrider {
 
 /// A single member of the Serf cluster.
 #[viewit::viewit(vis_all = "pub(crate)")]
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Member {
   id: NodeId,
-  tags: Arc<HashMap<SmolStr, SmolStr>>,
-  #[serde(serialize_with = "serialize_atomic_member_status")]
+  tags: HashMap<SmolStr, SmolStr>,
+  #[serde(with = "serde_member_status")]
   status: Atomic<MemberStatus>,
   protocol_version: ProtocolVersion,
   delegate_version: DelegateVersion,
@@ -223,8 +246,8 @@ pub(crate) struct CoordCore {
 #[derive(Default)]
 pub(crate) struct QueryCore {
   responses: HashMap<LamportTime, QueryResponse>,
-  query_min_time: LamportTime,
-  buffer: Vec<Option<QueryResponse>>,
+  min_time: LamportTime,
+  buffer: Vec<Option<Queries>>,
 }
 
 #[derive(Default)]
@@ -572,7 +595,7 @@ where
       }),
       query_broadcasts,
       query_core: Arc::new(RwLock::new(QueryCore {
-        query_min_time,
+        min_time: query_min_time,
         responses: HashMap::new(),
         buffer: query_buffer,
       })),
@@ -818,6 +841,26 @@ where
     payload: Bytes,
     params: Option<QueryParam>,
   ) -> Result<QueryResponse, Error<T, D, O>> {
+    self.query_in(name, payload, params, None).await
+  }
+
+  async fn internal_query(
+    &self,
+    name: SmolStr,
+    payload: Bytes,
+    params: Option<QueryParam>,
+    ty: InternalQueryEventType,
+  ) -> Result<QueryResponse, Error<T, D, O>> {
+    self.query_in(name, payload, params, Some(ty)).await
+  }
+
+  async fn query_in(
+    &self,
+    name: SmolStr,
+    payload: Bytes,
+    params: Option<QueryParam>,
+    ty: Option<InternalQueryEventType>,
+  ) -> Result<QueryResponse, Error<T, D, O>> {
     // Provide default parameters if none given.
     let params = match params {
       Some(params) => params,
@@ -865,7 +908,7 @@ where
       .await;
 
     // Process query locally
-    self.handle_query(q).await;
+    self.handle_query(q, ty).await;
 
     // Start broadcasting the event
     self
@@ -1620,16 +1663,137 @@ where
 
   /// Called when a query broadcast is
   /// received. Returns if the message should be rebroadcast.
-  pub(crate) async fn handle_query(&self, q: QueryMessage) {
-    todo!()
+  pub(crate) async fn handle_query(
+    &self,
+    q: QueryMessage,
+    ty: Option<InternalQueryEventType>,
+  ) -> bool {
+    // Witness a potentially newer time
+    self.inner.query_clock.witness(q.ltime);
+
+    let mut query = self.inner.query_core.write().await;
+
+    // Ignore if it is before our minimum query time
+    if q.ltime < query.min_time {
+      return false;
+    }
+
+    // Check if this message is too old
+    let cur_time = self.inner.query_clock.time();
+    let q_time = LamportTime::new(query.buffer.len() as u64);
+    if cur_time > q_time && q_time < cur_time - q_time {
+      tracing::warn!(
+        target = "ruserf",
+        "received old query {} from time {} (current: {})",
+        q.name,
+        q.ltime,
+        cur_time
+      );
+      return false;
+    }
+
+    // Check if we've already seen this
+    let idx = (q.ltime % q_time).0 as usize;
+    let seen = query.buffer[idx].as_mut();
+    if let Some(seen) = seen {
+      for &prev in seen.query_ids.iter() {
+        if q.id == prev {
+          // Seen this ID already
+          return false;
+        }
+      }
+      seen.query_ids.push(q.id);
+    } else {
+      query.buffer[idx] = Some(Queries {
+        ltime: q.ltime,
+        query_ids: vec![q.id],
+      });
+    }
+
+    // TODO: metrics
+
+    // Check if we should rebroadcast, this may be disabled by a flag
+    let mut rebroadcast = true;
+    if q.no_broadcast() {
+      rebroadcast = false;
+    }
+
+    // Filter the query
+    if !self.should_process_query(&q.filters) {
+      return rebroadcast;
+    }
+
+    // Send ack if requested, without waiting for client to respond()
+    if q.ack() {
+      let ack = QueryResponseMessage {
+        ltime: q.ltime,
+        id: q.id,
+        from: self.inner.memberlist.local_id().clone(),
+        flags: QueryFlag::ACK.bits(),
+        payload: Bytes::new(),
+      };
+
+      match encode_message(MessageType::QueryResponse, &ack) {
+        Ok(raw) => {
+          if let Err(e) = self.inner.memberlist.send(q.from(), raw).await {
+            tracing::error!(target = "ruserf", err=%e, "failed to send ack");
+          }
+
+          if let Err(e) = self
+            .relay_response(q.relay_factor, q.from.clone(), ack)
+            .await
+          {
+            tracing::error!(target = "ruserf", err=%e, "failed to relay ack");
+          }
+        }
+        Err(e) => {
+          tracing::error!(target = "ruserf", err=%e, "failed to format ack");
+        }
+      }
+    }
+
+    if let Some(ref tx) = self.inner.event_tx {
+      let ev = crate::event::QueryEvent {
+        ltime: q.ltime,
+        name: q.name,
+        payload: q.payload,
+        ctx: Arc::new(crate::event::QueryContext {
+          query_timeout: q.timeout,
+          span: Mutex::new(Some(Instant::now())),
+          this: self.clone(),
+        }),
+        id: q.id,
+        from: q.from,
+        relay_factor: q.relay_factor,
+      };
+
+      if let Err(e) = tx
+        .send(match ty {
+          Some(ty) => (ty, ev).into(),
+          None => ev.into(),
+        })
+        .await
+      {
+        tracing::error!(target = "ruserf", err=%e, "failed to send query");
+      }
+    }
+
+    rebroadcast
   }
 
   /// Called when a query response is
   /// received.
   pub(crate) async fn handle_query_response(&self, resp: QueryResponseMessage) {
     // Look for a corresponding QueryResponse
-    let mut qc = self.inner.query_core.write().await;
-    if let Some(query) = qc.responses.get_mut(&resp.ltime) {
+    let qc = self
+      .inner
+      .query_core
+      .read()
+      .await
+      .responses
+      .get(&resp.ltime)
+      .cloned();
+    if let Some(query) = qc {
       // Verify the ID matches
       if query.id != resp.id {
         tracing::warn!(
@@ -1641,42 +1805,7 @@ where
         return;
       }
 
-      // Check if the query is closed
-      if query.finished().await {
-        return;
-      }
-
-      // Process each type of response
-      if resp.ack() {
-        // Exit early if this is a duplicate ack
-        if query.acks.contains(&resp.from) {
-          // TODO: metrics
-          return;
-        }
-
-        // TODO: metrics
-        if let Err(e) = query.send_ack::<T, D, O>(&resp).await {
-          tracing::warn!(target = "ruserf", "{}", e);
-        }
-      } else {
-        // Exit early if this is a duplicate ack
-        if query.responses.contains(&resp.from) {
-          // TODO: metrics
-          return;
-        }
-
-        // TODO: metrics
-
-        if let Err(e) = query
-          .send_response::<T, D, O>(NodeResponse {
-            from: resp.from,
-            payload: resp.payload,
-          })
-          .await
-        {
-          tracing::warn!(target = "ruserf", "{}", e);
-        }
-      }
+      query.handle_query_response::<T, D, O>(resp).await;
     } else {
       tracing::warn!(
         target = "ruserf",
@@ -1706,7 +1835,7 @@ where
       *member = MemberState {
         member: Arc::new(Member {
           id: id.clone(),
-          tags: Arc::new(decode_tags(n.meta())),
+          tags: decode_tags(n.meta()),
           status: Atomic::new(MemberStatus::Alive),
           protocol_version: ProtocolVersion::V0,
           delegate_version: DelegateVersion::V0,
@@ -1745,7 +1874,7 @@ where
       let ms = MemberState {
         member: Arc::new(Member {
           id: id.clone(),
-          tags: Arc::new(decode_tags(n.meta())),
+          tags: decode_tags(n.meta()),
           status: Atomic::new(status),
           // TODO:
           protocol_version: ProtocolVersion::V0,
@@ -2126,7 +2255,7 @@ where
       // Update the member attributes
       ms.member = Arc::new(Member {
         id: id.clone(),
-        tags: Arc::new(decode_tags(n.meta())),
+        tags: decode_tags(n.meta()),
         status: Atomic::new(ms.member.status.load(Ordering::Relaxed)),
         protocol_version: ProtocolVersion::V0,
         delegate_version: DelegateVersion::V0,
@@ -2184,6 +2313,104 @@ where
     existing: Arc<showbiz_core::Node>,
     other: Arc<showbiz_core::Node>,
   ) {
+    // Log a basic warning if the node is not us...
+    if existing.id() != self.inner.memberlist.local_id() {
+      tracing::warn!(
+        target = "ruserf",
+        "node conflict detected between {} and {}",
+        existing.id(),
+        other.id()
+      );
+      return;
+    }
+
+    // The current node is conflicting! This is an error
+    tracing::error!(
+      target = "ruserf",
+      "node id conflicts with another node at {}. node id must be unique! (resolution enabled: {})",
+      other.id(),
+      self.inner.opts.enable_id_conflict_resolution
+    );
+
+    // If automatic resolution is enabled, kick off the resolution
+    if self.inner.opts.enable_id_conflict_resolution {
+      let this = self.clone();
+      <T::Runtime as Runtime>::spawn_detach(async move {
+        use showbiz_core::futures_util::StreamExt;
+
+        // Get the local node
+        let local = this.inner.memberlist.local_node().await;
+        let local_id = local.id();
+        let mut payload = BytesMut::with_capacity(<NodeId as NodeIdCodec>::encoded_len(local_id));
+        <NodeId as NodeIdCodec>::encode(local_id, &mut payload);
+        // Start an id resolution query
+        let ty = InternalQueryEventType::Conflict;
+        let resp = match this
+          .internal_query(SmolStr::new(ty.as_str()), payload.freeze(), None, ty)
+          .await
+        {
+          Ok(resp) => resp,
+          Err(e) => {
+            tracing::error!(target = "ruserf", err=%e, "failed to start node id resolution query");
+            return;
+          }
+        };
+
+        // Counter to determine winner
+        let mut responses = 0usize;
+        let mut matching = 0usize;
+
+        // Gather responses
+        while let Some(r) = resp.response_rx().next().await {
+          // Decode the response
+          if r.payload.is_empty() || r.payload[0] != MessageType::ConflictResponse as u8 {
+            tracing::warn!(
+              target = "ruserf",
+              "invalid conflict query response type: {:?}",
+              r.payload.as_ref()
+            );
+            continue;
+          }
+
+          match decode_message::<Member>(&r.payload[1..]) {
+            Ok(member) => {
+              // Update the counters
+              responses += 1;
+              if member.id().eq(local_id) {
+                matching += 1;
+              }
+            }
+            Err(e) => {
+              tracing::error!(target = "ruserf", err=%e, "failed to decode conflict query response");
+              continue;
+            }
+          }
+        }
+
+        // Query over, determine if we should live
+        let majority = (responses / 2) + 1;
+        if matching >= majority {
+          tracing::info!(
+            target = "ruserf",
+            "majority in node id conflict resolution [{} / {}]",
+            matching,
+            responses
+          );
+          return;
+        }
+
+        // Since we lost the vote, we need to exit
+        tracing::warn!(
+          target = "ruserf",
+          "minority in name conflict resolution, quiting [{} / {}]",
+          matching,
+          responses
+        );
+        if let Err(e) = this.shutdown().await {
+          tracing::error!(target = "ruserf", err=%e, "failed to shutdown");
+        }
+      });
+    }
   }
 
   fn handle_rejoin(showbiz: Showbiz<T, SerfDelegate<T, D, O>>, alive_nodes: Vec<NodeId>) {

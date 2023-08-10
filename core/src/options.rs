@@ -222,7 +222,7 @@ pub struct Options<T: Transport> {
   /// conflict and issues a special query which asks the cluster for the
   /// Name -> IP:Port mapping. If there is a simple majority of votes, that
   /// node stays while the other node will leave the cluster and exit.
-  enable_name_conflict_resolution: bool,
+  enable_id_conflict_resolution: bool,
 
   /// Controls if Serf will maintain an estimate of this
   /// node's network coordinate internally. A network coordinate is useful
@@ -297,7 +297,7 @@ impl<T: Transport> Options<T> {
       showbiz_options: ShowbizOptions::lan(),
       snapshot_path: None,
       rejoin_after_leave: false,
-      enable_name_conflict_resolution: true,
+      enable_id_conflict_resolution: true,
       disable_coordinates: false,
       keyring_file: None,
       max_user_event_size: 512,

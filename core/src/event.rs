@@ -91,6 +91,17 @@ impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<QueryEve
   }
 }
 
+impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider>
+  From<(InternalQueryEventType, QueryEvent<T, D, O>)> for Event<T, D, O>
+{
+  fn from(value: (InternalQueryEventType, QueryEvent<T, D, O>)) -> Self {
+    Self(Either::Left(EventKind::InternalQuery {
+      ty: value.0,
+      query: value.1,
+    }))
+  }
+}
+
 pub(crate) enum EventKind<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> {
   Member(MemberEvent),
   User(UserEvent),

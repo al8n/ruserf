@@ -84,8 +84,10 @@ struct QueryResponseChannel {
   resp_ch: (Sender<NodeResponse>, Receiver<NodeResponse>),
 }
 
-struct QueryResponseCore {
+pub(crate) struct QueryResponseCore {
   closed: bool,
+  acks: HashSet<NodeId>,
+  responses: HashSet<NodeId>,
 }
 
 pub(crate) struct QueryResponseInner {
@@ -109,12 +111,6 @@ pub struct QueryResponse {
 
   #[viewit(getter(vis = "pub(crate)", const, style = "ref"))]
   inner: Arc<QueryResponseInner>,
-
-  #[viewit(getter(skip))]
-  acks: HashSet<NodeId>,
-
-  #[viewit(getter(skip))]
-  responses: HashSet<NodeId>,
 }
 
 impl QueryResponse {
@@ -136,14 +132,14 @@ impl QueryResponse {
       inner: Arc::new(QueryResponseInner {
         core: Mutex::new(QueryResponseCore {
           closed: false,
+          acks,
+          responses: HashSet::with_capacity(num_nodes),
         }),
         channel: QueryResponseChannel {
           ack_ch,
           resp_ch: async_channel::bounded(num_nodes),
         },
       }),
-      acks,
-      responses: HashSet::with_capacity(num_nodes),
     }
   }
 
@@ -187,63 +183,112 @@ impl QueryResponse {
     self.inner.channel.resp_ch.0.close();
   }
 
-  /// Sends a response on the response channel ensuring the channel is not closed.
   #[inline]
-  pub(crate) async fn send_response<T, D, O>(&mut self, nr: NodeResponse) -> Result<(), Error<T, D, O>>
+  pub(crate) async fn handle_query_response<T, D, O>(&self, resp: QueryResponseMessage)
   where
     D: MergeDelegate,
     T: Transport,
     O: ReconnectTimeoutOverrider,
   {
-    let c = self.inner.core.lock().await;
-    if c.closed {
-      return Ok(());
+    // Check if the query is closed
+    let mut c = self.inner.core.lock().await;
+    if c.closed || (Instant::now() > self.deadline) {
+      return;
     }
 
-    let id = nr.from.clone();
-    futures_util::select! {
-      _ = self.inner.channel.resp_ch.0.send(nr).fuse() => {
-        self.responses.insert(id);
-      },
-      default => {
-        return Err(Error::QueryResponseDeliveryFailed);
+    // Process each type of response
+    if resp.ack() {
+      if let Some(Err(e)) = self.send_ack::<T, D, O>(&mut c, &resp).await {
+        tracing::warn!(target = "ruserf", "{}", e);
       }
+    } else if let Some(Err(e)) = self
+      .send_response::<T, D, O>(
+        &mut c,
+        NodeResponse {
+          from: resp.from,
+          payload: resp.payload,
+        },
+      )
+      .await
+    {
+      tracing::warn!(target = "ruserf", "{}", e);
     }
-    Ok(())
+  }
+
+  /// Sends a response on the response channel ensuring the channel is not closed.
+  #[inline]
+  pub(crate) async fn send_response<T, D, O>(
+    &self,
+    c: &mut QueryResponseCore,
+    nr: NodeResponse,
+  ) -> Option<Result<(), Error<T, D, O>>>
+  where
+    D: MergeDelegate,
+    T: Transport,
+    O: ReconnectTimeoutOverrider,
+  {
+    // Exit early if this is a duplicate ack
+    if c.responses.contains(&nr.from) {
+      // TODO: metrics
+      return None;
+    }
+
+    Some({
+      // TODO: metrics
+      if c.closed {
+        Ok(())
+      } else {
+        let id = nr.from.clone();
+        futures_util::select! {
+          _ = self.inner.channel.resp_ch.0.send(nr).fuse() => {
+            c.responses.insert(id);
+            Ok(())
+          },
+          default => {
+            Err(Error::QueryResponseDeliveryFailed)
+          }
+        }
+      }
+    })
   }
 
   /// Sends a response on the ack channel ensuring the channel is not closed.
   #[inline]
   pub(crate) async fn send_ack<T, D, O>(
-    &mut self,
+    &self,
+    c: &mut QueryResponseCore,
     nr: &QueryResponseMessage,
-  ) -> Result<(), Error<T, D, O>>
+  ) -> Option<Result<(), Error<T, D, O>>>
   where
     D: MergeDelegate,
     T: Transport,
     O: ReconnectTimeoutOverrider,
   {
-    let c = self.inner.core.lock().await;
-    if c.closed {
-      return Ok(());
+    // Exit early if this is a duplicate ack
+    if c.acks.contains(&nr.from) {
+      // TODO: metrics
+      return None;
     }
 
-    if let Some((tx, _)) = &self.inner.channel.ack_ch {
-      futures_util::select! {
-        _ = tx.send(nr.from.clone()).fuse() => {
-          self.acks.insert(nr.from.clone());
-        },
-        default => {
-          return Err(Error::QueryResponseDeliveryFailed);
+    Some({
+      // TODO: metrics
+
+      if c.closed {
+        Ok(())
+      } else if let Some((tx, _)) = &self.inner.channel.ack_ch {
+        futures_util::select! {
+          _ = tx.send(nr.from.clone()).fuse() => {
+            c.acks.insert(nr.from.clone());
+            Ok(())
+          },
+          default => {
+            Err(Error::QueryResponseDeliveryFailed)
+          }
         }
+      } else {
+        Ok(())
       }
-    }
-    Ok(())
-  }
-
-  #[inline]
-  pub(crate) fn acks(&self) {
-    // self.inner.
+    })
   }
 }
 
