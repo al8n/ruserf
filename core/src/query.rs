@@ -1,5 +1,6 @@
 use std::{
   collections::{HashMap, HashSet},
+  future::Future,
   sync::{atomic::Ordering, Arc},
   time::{Duration, Instant},
 };
@@ -189,6 +190,8 @@ impl QueryResponse {
     D: MergeDelegate,
     T: Transport,
     O: ReconnectTimeoutOverrider,
+    <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+    <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
   {
     // Check if the query is closed
     let mut c = self.inner.core.lock().await;
@@ -226,6 +229,8 @@ impl QueryResponse {
     D: MergeDelegate,
     T: Transport,
     O: ReconnectTimeoutOverrider,
+    <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+    <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
   {
     // Exit early if this is a duplicate ack
     if c.responses.contains(&nr.from) {
@@ -263,6 +268,8 @@ impl QueryResponse {
     D: MergeDelegate,
     T: Transport,
     O: ReconnectTimeoutOverrider,
+    <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+    <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
   {
     // Exit early if this is a duplicate ack
     if c.acks.contains(&nr.from) {

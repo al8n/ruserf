@@ -3,12 +3,12 @@ pub(crate) use member::*;
 mod user;
 pub(crate) use user::*;
 
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use agnostic::Runtime;
 use async_channel::{bounded, Receiver, Sender};
 use showbiz_core::{
-  futures_util::{self, FutureExt},
+  futures_util::{self, FutureExt, Stream},
   tracing,
   transport::Transport,
 };
@@ -26,16 +26,25 @@ pub(crate) trait Coalescer: Send + Sync + 'static {
 
   fn name(&self) -> &'static str;
 
-  fn handle(&self, event: &Event<Self::Transport, Self::Delegate, Self::Overrider>) -> bool;
+  fn handle(&self, event: &Event<Self::Transport, Self::Delegate, Self::Overrider>) -> bool
+  where
+    <<<Self::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
+    <<<Self::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send;
 
   /// Invoked to coalesce the given event
-  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate, Self::Overrider>);
+  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate, Self::Overrider>)
+  where
+    <<<Self::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
+    <<<Self::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send;
 
   /// Invoked to flush the coalesced events
   async fn flush(
     &mut self,
     out_tx: &Sender<Event<Self::Transport, Self::Delegate, Self::Overrider>>,
-  ) -> Result<(), ClosedOutChannel>;
+  ) -> Result<(), ClosedOutChannel>
+  where
+    <<<Self::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
+    <<<Self::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send;
 }
 
 /// Returns an event channel where the events are coalesced
@@ -46,7 +55,11 @@ pub(crate) fn coalesced_event<C: Coalescer>(
   c_period: Duration,
   q_period: Duration,
   c: C,
-) -> Sender<Event<C::Transport, C::Delegate, C::Overrider>> {
+) -> Sender<Event<C::Transport, C::Delegate, C::Overrider>>
+where
+  <<<C::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<<C::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
   let (in_tx, in_rx) = bounded(1024);
   <<C::Transport as Transport>::Runtime as Runtime>::spawn_detach(coalesce_loop::<C>(
     in_rx,
@@ -68,7 +81,10 @@ async fn coalesce_loop<C: Coalescer>(
   coalesce_peirod: Duration,
   quiescent_period: Duration,
   mut c: C,
-) {
+) where
+  <<<C::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<<C::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
   let mut quiescent = None;
   let mut quantum = None;
   let mut shutdown = false;

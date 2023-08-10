@@ -1,10 +1,10 @@
-use std::{collections::HashMap, sync::OnceLock};
+use std::{collections::HashMap, future::Future, sync::OnceLock};
 
 use agnostic::Runtime;
 use async_channel::Receiver;
 use async_lock::RwLock;
 use showbiz_core::{
-  futures_util::{self, StreamExt},
+  futures_util::{self, Stream, StreamExt},
   security::SecretKey,
   tracing,
   transport::Transport,
@@ -60,7 +60,11 @@ pub struct KeyRequestOptions {
 
 /// `KeyManager` encapsulates all functionality within Serf for handling
 /// encryption keyring changes across a cluster.
-pub struct KeyManager<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> {
+pub struct KeyManager<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
   serf: OnceLock<Serf<T, D, O>>,
   /// The lock is used to serialize keys related handlers
   l: RwLock<()>,

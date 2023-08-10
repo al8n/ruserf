@@ -1,6 +1,7 @@
-use std::{collections::HashMap, marker::PhantomData};
+use std::{collections::HashMap, future::Future, marker::PhantomData};
 
 use either::Either;
+use showbiz_core::futures_util::Stream;
 use smol_str::SmolStr;
 
 use crate::{
@@ -38,6 +39,8 @@ where
   D: MergeDelegate,
   T: Transport,
   O: ReconnectTimeoutOverrider,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   type Delegate = D;
   type Transport = T;

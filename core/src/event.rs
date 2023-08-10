@@ -34,20 +34,29 @@ pub enum EventType {
 
 pub struct Event<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>(
   pub(crate) Either<EventKind<T, D, O>, Arc<EventKind<T, D, O>>>,
-);
+)
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send;
 
 impl<D, T, O> Clone for Event<T, D, O>
 where
   D: MergeDelegate,
   T: Transport,
   O: ReconnectTimeoutOverrider,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn clone(&self) -> Self {
     Self(self.0.clone())
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> Event<T, D, O> {
+impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> Event<T, D, O>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
   pub(crate) fn into_right(self) -> Self {
     match self.0 {
       Either::Left(e) => Self(Either::Right(Arc::new(e))),
@@ -69,6 +78,9 @@ impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> Event<T, D, O
 
 impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<MemberEvent>
   for Event<T, D, O>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(value: MemberEvent) -> Self {
     Self(Either::Left(EventKind::Member(value)))
@@ -77,6 +89,9 @@ impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<MemberEv
 
 impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<UserEvent>
   for Event<T, D, O>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(value: UserEvent) -> Self {
     Self(Either::Left(EventKind::User(value)))
@@ -85,6 +100,9 @@ impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<UserEven
 
 impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<QueryEvent<T, D, O>>
   for Event<T, D, O>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(value: QueryEvent<T, D, O>) -> Self {
     Self(Either::Left(EventKind::Query(value)))
@@ -93,6 +111,9 @@ impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<QueryEve
 
 impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider>
   From<(InternalQueryEventType, QueryEvent<T, D, O>)> for Event<T, D, O>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(value: (InternalQueryEventType, QueryEvent<T, D, O>)) -> Self {
     Self(Either::Left(EventKind::InternalQuery {
@@ -102,7 +123,11 @@ impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider>
   }
 }
 
-pub(crate) enum EventKind<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> {
+pub(crate) enum EventKind<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
   Member(MemberEvent),
   User(UserEvent),
   Query(QueryEvent<T, D, O>),
@@ -117,6 +142,8 @@ where
   D: MergeDelegate,
   T: Transport,
   O: ReconnectTimeoutOverrider,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn clone(&self) -> Self {
     match self {
@@ -131,7 +158,11 @@ where
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> EventKind<T, D, O> {
+impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> EventKind<T, D, O>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
   #[inline]
   pub const fn member(event: MemberEvent) -> Self {
     Self::Member(event)
@@ -150,6 +181,9 @@ impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> EventKind<T, 
 
 impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<MemberEvent>
   for EventKind<T, D, O>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(event: MemberEvent) -> Self {
     Self::Member(event)
@@ -158,6 +192,9 @@ impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<MemberEv
 
 impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<UserEvent>
   for EventKind<T, D, O>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(event: UserEvent) -> Self {
     Self::User(event)
@@ -166,6 +203,9 @@ impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<UserEven
 
 impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<QueryEvent<T, D, O>>
   for EventKind<T, D, O>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(event: QueryEvent<T, D, O>) -> Self {
     Self::Query(event)
@@ -290,27 +330,32 @@ impl InternalQueryEventType {
   }
 }
 
-#[viewit::viewit]
-pub(crate) struct QueryContext<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> {
-  query_timeout: Duration,
-  span: Mutex<Option<Instant>>,
-  this: Serf<T, D, O>,
+pub(crate) struct QueryContext<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
+  pub(crate) query_timeout: Duration,
+  pub(crate) span: Mutex<Option<Instant>>,
+  pub(crate) this: Serf<T, D, O>,
 }
 
 /// Query is the struct used by EventQuery type events
-#[viewit::viewit(vis_all = "pub(crate)", setters(prefix = "with"))]
-pub struct QueryEvent<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> {
-  ltime: LamportTime,
-  name: SmolStr,
-  payload: Bytes,
+pub struct QueryEvent<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
+  pub(crate) ltime: LamportTime,
+  pub(crate) name: SmolStr,
+  pub(crate) payload: Bytes,
 
-  #[viewit(getter(skip), setter(skip))]
-  ctx: Arc<QueryContext<T, D, O>>,
-  id: u32,
+  pub(crate) ctx: Arc<QueryContext<T, D, O>>,
+  pub(crate) id: u32,
   /// source node
-  from: NodeId,
+  pub(crate) from: NodeId,
   /// Number of duplicate responses to relay back to sender
-  relay_factor: u8,
+  pub(crate) relay_factor: u8,
 }
 
 impl<D, T, O> AsRef<QueryEvent<T, D, O>> for QueryEvent<T, D, O>
@@ -318,6 +363,8 @@ where
   D: MergeDelegate,
   T: Transport,
   O: ReconnectTimeoutOverrider,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn as_ref(&self) -> &QueryEvent<T, D, O> {
     self
@@ -329,6 +376,8 @@ where
   D: MergeDelegate,
   T: Transport,
   O: ReconnectTimeoutOverrider,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn clone(&self) -> Self {
     Self {
@@ -348,6 +397,8 @@ where
   D: MergeDelegate,
   T: Transport,
   O: ReconnectTimeoutOverrider,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "query")

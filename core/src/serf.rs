@@ -1,5 +1,5 @@
 use std::{
-  collections::{hash_map::Entry, HashMap},
+  collections::HashMap,
   future::Future,
   sync::{
     atomic::{AtomicBool, Ordering},
@@ -35,7 +35,7 @@ use crate::{
   error::{Error, JoinError},
   event::{Event, InternalQueryEventType, MemberEvent, MemberEventType},
   internal_query::SerfQueries,
-  query::{NodeResponse, QueryParam, QueryResponse},
+  query::{QueryParam, QueryResponse},
   snapshot::{open_and_replay_snapshot, Snapshot, SnapshotHandle},
   types::{
     decode_message, encode_message, JoinMessage, Leave, MessageType, MessageUserEvent, QueryFlag,
@@ -272,15 +272,18 @@ pub(crate) struct EventCore {
   buffer: Vec<Option<UserEvents>>,
 }
 
-#[viewit::viewit]
-pub(crate) struct SerfCore<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> {
+pub(crate) struct SerfCore<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
   clock: LamportClock,
   event_clock: LamportClock,
   query_clock: LamportClock,
 
-  broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>>,
-  memberlist: Showbiz<T, SerfDelegate<T, D, O>>,
-  members: Arc<RwLock<Members>>,
+  pub(crate) broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>>,
+  pub(crate) memberlist: Showbiz<T, SerfDelegate<T, D, O>>,
+  pub(crate) members: Arc<RwLock<Members>>,
 
   event_tx: Option<async_channel::Sender<Event<T, D, O>>>,
   event_broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>>,
@@ -290,7 +293,7 @@ pub(crate) struct SerfCore<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOv
   query_broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>>,
   query_core: Arc<RwLock<QueryCore>>,
 
-  opts: Options<T>,
+  pub(crate) opts: Options<T>,
 
   state: parking_lot::Mutex<SerfState>,
 
@@ -311,6 +314,8 @@ where
   T: Transport,
   D: MergeDelegate,
   O: ReconnectTimeoutOverrider,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn drop(&mut self) {
     use showbiz_core::pollster::FutureExt as _;
@@ -343,11 +348,18 @@ pub struct Serf<
   T: Transport,
   D: MergeDelegate = DefaultMergeDelegate,
   O: ReconnectTimeoutOverrider = NoopReconnectTimeoutOverrider,
-> {
+> where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
   pub(crate) inner: Arc<SerfCore<D, T, O>>,
 }
 
-impl<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> Clone for Serf<T, D, O> {
+impl<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> Clone for Serf<T, D, O>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
   fn clone(&self) -> Self {
     Self {
       inner: self.inner.clone(),
@@ -1239,7 +1251,7 @@ where
   async fn broadcast_join(&self, ltime: LamportTime) -> Result<(), Error<T, D, O>> {
     // Construct message to update our lamport clock
     let msg = JoinMessage::new(ltime, self.inner.memberlist.local_id().clone());
-    self.inner.clock().witness(ltime);
+    self.inner.clock.witness(ltime);
 
     // Process update locally
     self.handle_node_join_intent(&msg).await;
@@ -1466,7 +1478,11 @@ where
   }
 }
 
-struct Reconnector<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> {
+struct Reconnector<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
   members: Arc<RwLock<Members>>,
   memberlist: Showbiz<T, SerfDelegate<T, D, O>>,
   shutdown_rx: async_channel::Receiver<()>,
@@ -2495,9 +2511,13 @@ fn upsert_intent(
 }
 
 /// Used to encode a tag map
-fn encode_tags<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>(
+pub(crate) fn encode_tags<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>(
   tag: &HashMap<SmolStr, SmolStr>,
-) -> Result<Bytes, Error<T, D, O>> {
+) -> Result<Bytes, Error<T, D, O>>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
   struct EncodeHelper(BytesMut);
 
   impl std::io::Write for EncodeHelper {
@@ -2524,7 +2544,7 @@ fn encode_tags<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>(
 }
 
 /// Used to decode a tag map
-fn decode_tags(src: &[u8]) -> HashMap<SmolStr, SmolStr> {
+pub(crate) fn decode_tags(src: &[u8]) -> HashMap<SmolStr, SmolStr> {
   // Decode the tags
   let r = std::io::Cursor::new(&src[1..]);
   let mut de = rmp_serde::Deserializer::new(r);

@@ -2,6 +2,7 @@ use std::{
   borrow::Cow,
   collections::HashSet,
   fs::{File, OpenOptions},
+  future::Future,
   io::{BufRead, BufReader, BufWriter, Seek, Write},
   mem,
   path::PathBuf,
@@ -18,7 +19,7 @@ use either::Either;
 use rand::seq::SliceRandom;
 use showbiz_core::{
   bytes::{BufMut, BytesMut},
-  futures_util::{self, FutureExt},
+  futures_util::{self, FutureExt, Stream},
   metrics, tracing,
   transport::Transport,
   NodeId,
@@ -294,7 +295,11 @@ impl SnapshotHandle {
 
 /// Responsible for ingesting events and persisting
 /// them to disk, and providing a recovery mechanism at start time.
-pub(crate) struct Snapshot<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> {
+pub(crate) struct Snapshot<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+where
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+{
   alive_nodes: HashSet<NodeId>,
   clock: LamportClock,
   fh: Option<BufWriter<File>>,
@@ -318,7 +323,8 @@ pub(crate) struct Snapshot<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOv
 
 impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> Snapshot<T, D, O>
 where
-  <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   #[allow(clippy::type_complexity)]
   pub(crate) fn from_replay_result(
@@ -576,7 +582,7 @@ where
   /// Used to handle a single query event
   fn process_query_event(&mut self, e: &QueryEvent<T, D, O>) {
     // Ignore old clocks
-    let ltime = *e.ltime();
+    let ltime = e.ltime;
     if ltime <= self.last_event_clock {
       return;
     }

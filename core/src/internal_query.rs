@@ -4,7 +4,7 @@ use agnostic::Runtime;
 use async_channel::{bounded, Receiver, Sender};
 use either::Either;
 use showbiz_core::{
-  futures_util::{self, FutureExt},
+  futures_util::{self, FutureExt, Stream},
   security::SecretKey,
   tracing,
   transport::Transport,
@@ -33,6 +33,8 @@ where
   D: MergeDelegate,
   T: Transport,
   O: ReconnectTimeoutOverrider,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   in_rx: Receiver<Event<T, D, O>>,
   out_tx: Sender<Event<T, D, O>>,
@@ -132,7 +134,7 @@ where
   async fn handle_conflict(ev: impl AsRef<QueryEvent<T, D, O>> + Send) {
     let q = ev.as_ref();
     // The target node id is the payload
-    let id = match NodeId::decode(q.payload()) {
+    let id = match NodeId::decode(&q.payload) {
       Ok(id) => id,
       Err(e) => {
         tracing::error!(target = "ruserf", err = %e, "conflict handler: failed to decode node id");
@@ -409,7 +411,7 @@ where
   }
 
   async fn send_key_response(q: &QueryEvent<T, D, O>, resp: &mut NodeKeyResponse) {
-    match q.name().as_str() {
+    match q.name.as_str() {
       "ruserf-list-keys" => {
         let (raw, qresp) = match Self::key_list_response_with_correct_size(q, resp) {
           Ok((raw, qresp)) => (raw, qresp),
