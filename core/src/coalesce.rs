@@ -17,7 +17,6 @@ use super::{delegate::MergeDelegate, event::Event, serf::ReconnectTimeoutOverrid
 
 pub(crate) struct ClosedOutChannel;
 
-#[cfg(feature = "async")]
 #[showbiz_core::async_trait::async_trait]
 pub(crate) trait Coalescer: Send + Sync + 'static {
   type Delegate: MergeDelegate;

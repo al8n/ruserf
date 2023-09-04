@@ -133,6 +133,7 @@ pub(crate) struct Leave {
 
 /// Used when doing a state exchange. This
 /// is a relatively large message, but is sent infrequently
+#[viewit::viewit]
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PushPull {
   /// Current node lamport time
@@ -144,7 +145,26 @@ pub(crate) struct PushPull {
   /// Lamport time for event clock
   event_ltime: LamportTime,
   /// Recent events
-  events: Vec<UserEvents>,
+  events: Vec<Option<UserEvents>>,
+  /// Lamport time for query clock
+  query_ltime: LamportTime,
+}
+
+/// Used when doing a state exchange. This
+/// is a relatively large message, but is sent infrequently
+#[viewit::viewit]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub(crate) struct PushPullRef<'a> {
+  /// Current node lamport time
+  ltime: LamportTime,
+  /// Maps the node to its status time
+  status_ltimes: HashMap<NodeId, LamportTime>,
+  /// List of left nodes
+  left_members: Vec<NodeId>,
+  /// Lamport time for event clock
+  event_ltime: LamportTime,
+  /// Recent events
+  events: &'a [Option<UserEvents>],
   /// Lamport time for query clock
   query_ltime: LamportTime,
 }

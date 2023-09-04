@@ -231,16 +231,16 @@ impl SerfNodeCalculator {
   }
 }
 
-#[showbiz_core::async_trait::async_trait]
 impl NodeCalculator for SerfNodeCalculator {
-  async fn num_nodes(&self) -> usize {
-    self.members.read().await.states.len()
+  fn num_nodes(&self) -> usize {
+    use pollster::FutureExt as _;
+    self.members.read().block_on().states.len()
   }
 }
 
 pub(crate) struct CoordCore {
-  client: CoordinateClient,
-  cache: parking_lot::RwLock<HashMap<Name, Coordinate>>,
+  pub(crate) client: CoordinateClient,
+  pub(crate) cache: parking_lot::RwLock<HashMap<Name, Coordinate>>,
 }
 
 #[derive(Default)]
@@ -254,7 +254,7 @@ pub(crate) struct QueryCore {
 pub(crate) struct Members {
   pub(crate) states: HashMap<NodeId, MemberState>,
   recent_intents: HashMap<NodeId, NodeIntent>,
-  left_members: Vec<MemberState>,
+  pub(crate) left_members: Vec<MemberState>,
   failed_members: Vec<MemberState>,
 }
 
@@ -267,6 +267,7 @@ impl Members {
   }
 }
 
+#[viewit::viewit]
 pub(crate) struct EventCore {
   min_time: LamportTime,
   buffer: Vec<Option<UserEvents>>,
@@ -277,20 +278,20 @@ where
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  clock: LamportClock,
-  event_clock: LamportClock,
-  query_clock: LamportClock,
+  pub(crate) clock: LamportClock,
+  pub(crate) event_clock: LamportClock,
+  pub(crate) query_clock: LamportClock,
 
   pub(crate) broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>>,
+  pub(crate) event_broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>>,
+  pub(crate) query_broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>>,
+
   pub(crate) memberlist: Showbiz<T, SerfDelegate<T, D, O>>,
   pub(crate) members: Arc<RwLock<Members>>,
-
   event_tx: Option<async_channel::Sender<Event<T, D, O>>>,
-  event_broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>>,
   event_join_ignore: AtomicBool,
-  event_core: RwLock<EventCore>,
 
-  query_broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>>,
+  pub(crate) event_core: RwLock<EventCore>,
   query_core: Arc<RwLock<QueryCore>>,
 
   pub(crate) opts: Options<T>,
@@ -306,7 +307,7 @@ where
   shutdown_rx: async_channel::Receiver<()>,
   reconnector: Option<Arc<O>>,
 
-  coord_core: Option<Arc<CoordCore>>,
+  pub(crate) coord_core: Option<Arc<CoordCore>>,
 }
 
 impl<T, D, O> Drop for SerfCore<D, T, O>
@@ -1565,7 +1566,7 @@ impl QueueChecker {
       loop {
         futures_util::select! {
           _ = R::sleep(self.opts.check_interval).fuse() => {
-            let numq = self.queue.num_queued().await;
+            let numq = self.queue.num_queued();
             // TODO: metrics
             if numq >= self.opts.depth_warning {
               tracing::warn!(target = "ruserf", "queue {} depth: {}", self.name, numq);

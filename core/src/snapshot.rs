@@ -207,7 +207,7 @@ pub(crate) fn open_and_replay_snapshot<P: AsRef<std::path::Path>>(
         alive_nodes.insert(id);
       }
       SnapshotRecord::NOT_ALIVE => {
-        let id = NodeIdCodec::decode(&src[1..]).map_err(SnapshotError::Replay)?;
+        let id = <NodeId as NodeIdCodec>::decode(&src[1..]).map_err(SnapshotError::Replay)?;
         alive_nodes.remove(&id);
       }
       SnapshotRecord::CLOCK => {
@@ -802,7 +802,7 @@ where
           self.alive_nodes.insert(id);
         }
         SnapshotRecord::NOT_ALIVE => {
-          let id = NodeIdCodec::decode(&src[1..]).map_err(SnapshotError::Replay)?;
+          let id = <NodeId as NodeIdCodec>::decode(&src[1..]).map_err(SnapshotError::Replay)?;
           self.alive_nodes.remove(&id);
         }
         SnapshotRecord::CLOCK => {

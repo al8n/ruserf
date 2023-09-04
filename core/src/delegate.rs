@@ -1,3 +1,8 @@
+use crate::{
+  coordinate::Coordinate,
+  types::{encode_message, MessageType, PushPull, PushPullRef},
+};
+
 use super::*;
 
 use std::{
@@ -8,8 +13,13 @@ use std::{
 use agnostic::Runtime;
 use atomic::Atomic;
 use showbiz_core::{
-  async_trait, bytes::Bytes, delegate::Delegate as ShowbizDelegate, futures_util::Stream, tracing,
-  transport::Transport, Message, Node, NodeId,
+  async_trait,
+  bytes::{BufMut, Bytes, BytesMut},
+  delegate::Delegate as ShowbizDelegate,
+  futures_util::Stream,
+  tracing,
+  transport::Transport,
+  Message, Node, NodeId,
 };
 
 #[derive(thiserror::Error)]
@@ -34,6 +44,11 @@ where
     core::fmt::Display::fmt(self, f)
   }
 }
+
+// PingVersion is an internal version for the ping message, above the normal
+// versioning we get from the protocol version. This enables small updates
+// to the ping message without a full protocol bump.
+const PING_VERSION: u8 = 1;
 
 pub(crate) struct SerfDelegate<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
 where
@@ -116,17 +131,80 @@ where
 
   async fn get_broadcasts(
     &self,
-    _overhead: usize,
-    _limit: usize,
+    overhead: usize,
+    limit: usize,
   ) -> Result<Vec<Message>, Self::Error> {
-    Ok(Vec::new())
+    let this = self.this();
+    let mut msgs = this.inner.broadcasts.get_broadcasts(overhead, limit).await;
+
+    // Determine the bytes used already
+    let mut bytes_used = 0;
+    for msg in msgs.iter() {
+      bytes_used += msg.len() + 1 + overhead; // +1 for showbiz message type
+                                              // TODO: metrics
+    }
+
+    // Get any additional query broadcasts
+    let query_msgs = this
+      .inner
+      .query_broadcasts
+      .get_broadcasts(overhead, limit - bytes_used)
+      .await;
+    for msg in query_msgs.iter() {
+      bytes_used += msg.len() + 1 + overhead; // +1 for showbiz message type
+                                              // TODO: metrics
+    }
+
+    // Get any additional event broadcasts
+    let event_msgs = this
+      .inner
+      .event_broadcasts
+      .get_broadcasts(overhead, limit - bytes_used)
+      .await;
+    for msg in query_msgs.iter() {
+      bytes_used += msg.len() + 1 + overhead; // +1 for showbiz message type
+                                              // TODO: metrics
+    }
+
+    msgs.extend(query_msgs);
+    msgs.extend(event_msgs);
+    Ok(msgs)
   }
 
   async fn local_state(&self, _join: bool) -> Result<Bytes, Self::Error> {
-    Ok(Bytes::new())
+    let this = self.this();
+    let members = this.inner.members.read().await;
+    let events = this.inner.event_core.read().await;
+
+    // Create the message to send
+    let pp = PushPullRef {
+      ltime: this.inner.clock.time(),
+      status_ltimes: members
+        .states
+        .iter()
+        .map(|(k, v)| (k.clone(), v.status_time))
+        .collect(),
+      left_members: members
+        .left_members
+        .iter()
+        .map(|v| v.member.id.clone())
+        .collect(),
+      event_ltime: this.inner.event_clock.time(),
+      events: events.buffer.as_slice(),
+      query_ltime: this.inner.query_clock.time(),
+    };
+    drop(members);
+
+    match encode_message(MessageType::PushPull, &pp) {
+      Ok(buf) => Ok(buf.into()),
+      Err(e) => {
+        tracing::error!(target = "ruserf", err=%e, "failed to encode local state");
+        Ok(Bytes::new())
+      }
+    }
   }
 
-  async fn merge_remote_state(&self, _buf: Bytes, _join: bool) -> Result<(), Self::Error> {
+  async fn merge_remote_state(&self, _buf: &[u8], _join: bool) -> Result<(), Self::Error> {
     Ok(())
   }
 
@@ -148,7 +226,10 @@ where
   async fn notify_alive(&self, node: Arc<Node>) -> Result<(), Self::Error> {
     if let Some(ref d) = self.merge_delegate {
       let member = node_to_member(node).map_err(|e| SerfDelegateError::Serf(Box::new(e)))?;
-      return d.notify_merge(vec![member]).await;
+      return d
+        .notify_merge(vec![member])
+        .await
+        .map_err(SerfDelegateError::Merge);
     }
 
     Ok(())
@@ -168,7 +249,8 @@ where
       let peers = peers
         .into_iter()
         .map(node_to_member)
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| SerfDelegateError::Serf(Box::new(e)))?;
       return d
         .notify_merge(peers)
         .await
@@ -178,16 +260,86 @@ where
   }
 
   async fn ack_payload(&self) -> Result<Bytes, Self::Error> {
-    Ok(Bytes::new())
+    if let Some(c) = self.this().inner.coord_core.as_ref() {
+      let mut buf = Vec::new();
+      buf.put_u8(PING_VERSION);
+
+      if let Err(e) = rmp_serde::encode::write(&mut buf, &c.client.get_coordinate()) {
+        tracing::error!(target = "ruserf", err=%e, "failed to encode coordinate");
+      }
+      Ok(buf.into())
+    } else {
+      Ok(Bytes::new())
+    }
   }
 
   async fn notify_ping_complete(
     &self,
-    _node: Arc<Node>,
-    _rtt: std::time::Duration,
-    _payload: Bytes,
+    node: Arc<Node>,
+    rtt: std::time::Duration,
+    payload: Bytes,
   ) -> Result<(), Self::Error> {
-    Ok(())
+    if payload.is_empty() {
+      return Ok(());
+    }
+
+    let this = self.this();
+
+    match this.inner.coord_core {
+      Some(ref c) => {
+        // Verify ping version in the header.
+        if payload[0] != PING_VERSION {
+          tracing::error!(
+            target = "ruserf",
+            "unsupported ping version: {}",
+            payload[0]
+          );
+          return Ok(());
+        }
+
+        // Process the remainder of the message as a coordinate.
+        let coord = match rmp_serde::decode::from_slice::<Coordinate>(&payload[1..]) {
+          Ok(c) => c,
+          Err(e) => {
+            tracing::error!(target = "ruserf", err=%e, "failed to decode coordinate from ping");
+            return Ok(());
+          }
+        };
+
+        // Apply the update.
+        let before = c.client.get_coordinate();
+        match c.client.update(node.id().name(), &before, rtt) {
+          Ok(after) => {
+            // TODO: metrics
+            {
+              // Publish some metrics to give us an idea of how much we are
+              // adjusting each time we update.
+              let _d = before.distance_to(&after).as_secs_f64() * 1.0e3;
+            }
+
+            // Cache the coordinate for the other node, and add our own
+            // to the cache as well since it just got updated. This lets
+            // users call GetCachedCoordinate with our node name, which is
+            // more friendly.
+            let mut cache = c.cache.write();
+            cache.insert(node.id().name().clone(), coord);
+            cache
+              .entry(this.inner.opts.showbiz_options.name().clone())
+              .and_modify(|x| {
+                *x = c.client.get_coordinate();
+              })
+              .or_insert_with(|| c.client.get_coordinate());
+            Ok(())
+          }
+          Err(e) => {
+            // TODO: metrics
+            tracing::error!(target = "ruserf", err=%e, "rejected coordinate from {}", node.id().name());
+            return Ok(());
+          }
+        }
+      }
+      None => Ok(()),
+    }
   }
 
   #[inline]

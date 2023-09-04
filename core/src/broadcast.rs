@@ -20,6 +20,15 @@ impl From<SmolStr> for BroadcastId {
   }
 }
 
+impl core::fmt::Display for BroadcastId {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      BroadcastId::Id(id) => write!(f, "{id}"),
+      BroadcastId::String(s) => write!(f, "{s}"),
+    }
+  }
+}
+
 #[viewit::viewit]
 pub(crate) struct SerfBroadcast {
   id: BroadcastId,
