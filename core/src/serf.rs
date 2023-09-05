@@ -55,15 +55,15 @@ const USER_EVENT_SIZE_LIMIT: usize = 9 * 1024;
 /// Used to buffer events to prevent re-delivery
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct UserEvents {
-  ltime: LamportTime,
-  events: Vec<UserEvent>,
+  pub(crate) ltime: LamportTime,
+  pub(crate) events: Vec<UserEvent>,
 }
 
 /// Stores all the user events at a specific time
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct UserEvent {
-  name: SmolStr,
-  payload: Bytes,
+  pub(crate) name: SmolStr,
+  pub(crate) payload: Bytes,
 }
 
 /// Stores all the query ids at a specific time
@@ -289,7 +289,7 @@ where
   pub(crate) memberlist: Showbiz<T, SerfDelegate<T, D, O>>,
   pub(crate) members: Arc<RwLock<Members>>,
   event_tx: Option<async_channel::Sender<Event<T, D, O>>>,
-  event_join_ignore: AtomicBool,
+  pub(crate) event_join_ignore: AtomicBool,
 
   pub(crate) event_core: RwLock<EventCore>,
   query_core: Arc<RwLock<QueryCore>>,
@@ -730,7 +730,7 @@ where
   /// Used to provide operator debugging information
   #[inline]
   pub async fn stats(&self) -> Stats {
-    let members = self.inner.members.read().await;
+    let _members = self.inner.members.read().await;
     todo!()
   }
 
@@ -836,7 +836,6 @@ where
       .inner
       .event_broadcasts
       .queue_broadcast(SerfBroadcast {
-        id: name.into(),
         msg: raw,
         notify_tx: None,
       })
@@ -928,7 +927,6 @@ where
       .inner
       .broadcasts
       .queue_broadcast(SerfBroadcast {
-        id: name.into(),
         msg: raw,
         notify_tx: None,
       })
@@ -1058,7 +1056,7 @@ where
     if self.has_alive_members().await {
       let (notify_tx, notify_rx) = async_channel::bounded(1);
       self
-        .broadcast(MessageType::Leave, msg.node.clone(), &msg, Some(notify_tx))
+        .broadcast(MessageType::Leave, &msg, Some(notify_tx))
         .await?;
 
       futures_util::select! {
@@ -1227,7 +1225,6 @@ where
   async fn broadcast(
     &self,
     t: MessageType,
-    node: NodeId,
     msg: impl Serialize,
     notify_tx: Option<async_channel::Sender<()>>,
   ) -> Result<(), Error<T, D, O>> {
@@ -1237,7 +1234,6 @@ where
       .inner
       .broadcasts
       .queue_broadcast(SerfBroadcast {
-        id: node.into(),
         msg: raw,
         notify_tx,
       })
@@ -1259,7 +1255,7 @@ where
 
     // Start broadcasting the update
     if let Err(e) = self
-      .broadcast(MessageType::Join, msg.node.clone(), &msg, None)
+      .broadcast(MessageType::Join, &msg, None)
       .await
     {
       tracing::warn!(target = "ruserf", err=%e, "failed to broadcast join intent");
@@ -1332,7 +1328,7 @@ where
     // Broadcast the remove
     let (ntx, nrx) = async_channel::bounded(1);
     self
-      .broadcast(MessageType::Leave, msg.node.clone(), &msg, Some(ntx))
+      .broadcast(MessageType::Leave, &msg, Some(ntx))
       .await?;
 
     // Wait for the broadcast

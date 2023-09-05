@@ -14,7 +14,7 @@ use showbiz_core::{
   futures_util::{self, FutureExt},
   humantime_serde, tracing,
   transport::Transport,
-  Name, NodeId,
+  NodeId,
 };
 
 use crate::{

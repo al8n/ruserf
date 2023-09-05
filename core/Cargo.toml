@@ -23,6 +23,7 @@ agnostic = { workspace = true }
 base64 = "0.21"
 bitflags = "2.3"
 either = "1.9"
+indexmap = { version = "1.9", features = ["serde-1"] }
 once_cell = "1.18" # remove this dependency when [feature(lazy_cell)] is stabilized
 pin-project-lite = "0.2"
 pollster = "0.3"

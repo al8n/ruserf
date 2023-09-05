@@ -3,6 +3,7 @@ use std::{
   time::{Duration, Instant},
 };
 
+use indexmap::IndexSet;
 use rmp_serde::{
   decode::Error as DecodeError, encode::Error as EncodeError, Deserializer as RmpDeserializer,
   Serializer as RmpSerializer,
@@ -141,7 +142,7 @@ pub(crate) struct PushPull {
   /// Maps the node to its status time
   status_ltimes: HashMap<NodeId, LamportTime>,
   /// List of left nodes
-  left_members: Vec<NodeId>,
+  left_members: IndexSet<NodeId>,
   /// Lamport time for event clock
   event_ltime: LamportTime,
   /// Recent events
@@ -160,7 +161,7 @@ pub(crate) struct PushPullRef<'a> {
   /// Maps the node to its status time
   status_ltimes: HashMap<NodeId, LamportTime>,
   /// List of left nodes
-  left_members: Vec<NodeId>,
+  left_members: IndexSet<NodeId>,
   /// Lamport time for event clock
   event_ltime: LamportTime,
   /// Recent events
@@ -256,7 +257,7 @@ impl QueryResponseMessage {
 #[serde(transparent)]
 #[repr(transparent)]
 pub(crate) struct RelayHeader {
-  dest: NodeId,
+  pub(crate) dest: NodeId,
 }
 
 #[viewit::viewit]
@@ -289,6 +290,14 @@ where
   T::deserialize(&mut RmpDeserializer::new(src))
 }
 
+pub(crate) fn decode_message_from_reader<T, R>(src: &mut R) -> Result<T, DecodeError>
+where
+  T: DeserializeOwned,
+  R: std::io::Read,
+{
+  T::deserialize(&mut RmpDeserializer::new(src))
+}
+
 /// Wraps a message in the `MessageType::Relay`, adding the length and
 /// address of the end recipient to the front of the message
 pub(crate) fn encode_relay_message<T>(
@@ -315,4 +324,18 @@ pub(crate) fn encode_filter(f: FilterTypeRef<'_>) -> Result<Bytes, EncodeError> 
     FilterTypeRef::Node(nodes) => rmp_serde::to_vec(nodes).map(Into::into),
     FilterTypeRef::Tag(t) => rmp_serde::to_vec(&t).map(Into::into),
   }
+}
+
+#[test]
+fn test_x() {
+  let id = NodeId::new("test".try_into().unwrap(), "127.0.0.1:8080".parse().unwrap());
+  let data = encode_relay_message(MessageType::Leave, id.clone(), &Leave {
+    ltime: LamportTime(0),
+    node: NodeId::new("test1".try_into().unwrap(), "127.0.0.1:8080".parse().unwrap()),
+    prune: false,
+  }).unwrap();
+
+  let header = decode_message::<RelayHeader>(&data[1..]).unwrap();
+  assert_eq!(header.dest, id);
+  println!("{}", header.dest);
 }

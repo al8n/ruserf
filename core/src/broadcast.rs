@@ -1,37 +1,17 @@
 use async_channel::Sender;
-use showbiz_core::{async_trait, broadcast::Broadcast, Message, NodeId};
-use smol_str::SmolStr;
+use showbiz_core::{async_trait, broadcast::Broadcast, Message};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub(crate) enum BroadcastId {
-  Id(NodeId),
-  String(SmolStr),
-}
-
-impl From<NodeId> for BroadcastId {
-  fn from(value: NodeId) -> Self {
-    Self::Id(value)
-  }
-}
-
-impl From<SmolStr> for BroadcastId {
-  fn from(value: SmolStr) -> Self {
-    Self::String(value)
-  }
-}
+pub(crate) struct BroadcastId;
 
 impl core::fmt::Display for BroadcastId {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      BroadcastId::Id(id) => write!(f, "{id}"),
-      BroadcastId::String(s) => write!(f, "{s}"),
-    }
+  fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    Ok(())
   }
 }
 
 #[viewit::viewit]
 pub(crate) struct SerfBroadcast {
-  id: BroadcastId,
   msg: Message,
   notify_tx: Option<Sender<()>>,
 }
@@ -40,8 +20,8 @@ pub(crate) struct SerfBroadcast {
 impl Broadcast for SerfBroadcast {
   type Id = BroadcastId;
 
-  fn id(&self) -> &Self::Id {
-    &self.id
+  fn id(&self) -> Option<&Self::Id> {
+    None
   }
 
   fn invalidates(&self, _other: &Self) -> bool {
