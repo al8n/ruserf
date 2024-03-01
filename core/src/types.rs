@@ -4,12 +4,12 @@ use std::{
 };
 
 use indexmap::IndexSet;
-use rmp_serde::{
-  decode::Error as DecodeError, encode::Error as EncodeError, Deserializer as RmpDeserializer,
-  Serializer as RmpSerializer,
+use memberlist_core::{
+  bytes::Bytes,
+  transport::{Address, Id, Node},
+  types::Message,
+  util::{OneOrMore, TinyVec},
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use showbiz_core::{bytes::Bytes, Message, NodeId};
 use smol_str::SmolStr;
 
 use crate::{clock::LamportTime, query::QueryResponse, UserEvents};
@@ -67,29 +67,16 @@ bitflags::bitflags! {
 /// Used with a queryFilter to specify the type of
 /// filter we are sending
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) enum FilterType {
-  Node(Vec<NodeId>),
+pub enum Filter<I, A> {
+  /// Filter by nodes
+  Node(Node<I, A>),
+  /// Filter by tag
   Tag(Tag),
 }
 
-impl FilterType {
+impl<I, A> Filter<I, A> {
   pub(crate) const NODE: u8 = 0;
   pub(crate) const TAG: u8 = 1;
-
-  pub(crate) fn as_ref(&self) -> FilterTypeRef {
-    match self {
-      FilterType::Node(nodes) => FilterTypeRef::Node(nodes),
-      FilterType::Tag(t) => FilterTypeRef::Tag(TagRef {
-        tag: t.tag.as_str(),
-        expr: t.expr.as_str(),
-      }),
-    }
-  }
-}
-
-pub(crate) enum FilterTypeRef<'a> {
-  Node(&'a [NodeId]),
-  Tag(TagRef<'a>),
 }
 
 // impl FilterType {
@@ -110,14 +97,15 @@ pub(crate) enum FilterTypeRef<'a> {
 /// The message broadcasted after we join to
 /// associated the node with a lamport clock
 #[viewit::viewit]
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct JoinMessage {
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub(crate) struct JoinMessage<I, A> {
   ltime: LamportTime,
-  node: NodeId,
+  node: Node<I, A>,
 }
 
-impl JoinMessage {
-  pub fn new(ltime: LamportTime, node: NodeId) -> Self {
+impl<I, A> JoinMessage<I, A> {
+  pub fn new(ltime: LamportTime, node: Node<I, A>) -> Self {
     Self { ltime, node }
   }
 }
@@ -125,24 +113,26 @@ impl JoinMessage {
 /// The message broadcasted to signal the intentional to
 /// leave.
 #[viewit::viewit]
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Leave {
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub(crate) struct Leave<I> {
   ltime: LamportTime,
-  node: NodeId,
+  node: I,
   prune: bool,
 }
 
 /// Used when doing a state exchange. This
 /// is a relatively large message, but is sent infrequently
 #[viewit::viewit]
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct PushPull {
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub(crate) struct PushPull<I, A> {
   /// Current node lamport time
   ltime: LamportTime,
   /// Maps the node to its status time
-  status_ltimes: HashMap<NodeId, LamportTime>,
+  status_ltimes: HashMap<Node<I, A>, LamportTime>,
   /// List of left nodes
-  left_members: IndexSet<NodeId>,
+  left_members: IndexSet<Node<I, A>>,
   /// Lamport time for event clock
   event_ltime: LamportTime,
   /// Recent events
@@ -154,14 +144,15 @@ pub(crate) struct PushPull {
 /// Used when doing a state exchange. This
 /// is a relatively large message, but is sent infrequently
 #[viewit::viewit]
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
-pub(crate) struct PushPullRef<'a> {
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub(crate) struct PushPullRef<'a, I, A> {
   /// Current node lamport time
   ltime: LamportTime,
   /// Maps the node to its status time
-  status_ltimes: HashMap<NodeId, LamportTime>,
+  status_ltimes: HashMap<Node<I, A>, LamportTime>,
   /// List of left nodes
-  left_members: IndexSet<NodeId>,
+  left_members: IndexSet<Node<I, A>>,
   /// Lamport time for event clock
   event_ltime: LamportTime,
   /// Recent events
@@ -172,7 +163,8 @@ pub(crate) struct PushPullRef<'a> {
 
 /// Used for user-generated events
 #[viewit::viewit]
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct MessageUserEvent {
   ltime: LamportTime,
   name: SmolStr,
@@ -182,16 +174,17 @@ pub(crate) struct MessageUserEvent {
 }
 
 #[viewit::viewit]
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct QueryMessage {
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub(crate) struct QueryMessage<I, A> {
   /// Event lamport time
   ltime: LamportTime,
   /// query id, randomly generated
   id: u32,
   /// source node
-  from: NodeId,
+  from: Node<I, A>,
   /// Potential query filters
-  filters: Vec<Bytes>,
+  filters: TinyVec<Bytes>,
   /// Used to provide various flags
   flags: u32,
   /// Used to set the number of duplicate relayed responses
@@ -204,7 +197,7 @@ pub(crate) struct QueryMessage {
   payload: Bytes,
 }
 
-impl QueryMessage {
+impl<I, A> QueryMessage<I, A> {
   /// checks if the ack flag is set
   #[inline]
   pub(crate) fn ack(&self) -> bool {
@@ -218,7 +211,7 @@ impl QueryMessage {
   }
 
   #[inline]
-  pub(crate) fn response(&self, num_nodes: usize) -> QueryResponse {
+  pub(crate) fn response(&self, num_nodes: usize) -> QueryResponse<I, A> {
     QueryResponse::new(
       self.id,
       self.ltime,
@@ -230,21 +223,22 @@ impl QueryMessage {
 }
 
 #[viewit::viewit]
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct QueryResponseMessage {
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct QueryResponseMessage<I, A> {
   /// Event lamport time
   ltime: LamportTime,
   /// query id
   id: u32,
   /// node
-  from: NodeId,
+  from: Node<I, A>,
   /// Used to provide various flags
   flags: u32,
   /// Optional response payload
   payload: Bytes,
 }
 
-impl QueryResponseMessage {
+impl<I, A> QueryResponseMessage<I, A> {
   /// checks if the ack flag is set
   #[inline]
   pub(crate) fn ack(&self) -> bool {
@@ -253,89 +247,93 @@ impl QueryResponseMessage {
 }
 
 /// Used to store the end destination of a relayed message
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 #[repr(transparent)]
-pub(crate) struct RelayHeader {
-  pub(crate) dest: NodeId,
+pub(crate) struct RelayHeader<I, A> {
+  pub(crate) dest: Node<I, A>,
 }
 
 #[viewit::viewit]
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct Tag {
   tag: SmolStr,
   expr: SmolStr,
 }
 
 #[viewit::viewit]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct TagRef<'a> {
   tag: &'a str,
   expr: &'a str,
 }
 
-pub(crate) fn encode_message<T>(t: MessageType, msg: &T) -> Result<Message, EncodeError>
-where
-  T: Serialize + ?Sized,
-{
-  let mut wr = Message::with_capacity(128);
-  wr.put_u8(t as u8);
-  msg.serialize(&mut RmpSerializer::new(&mut wr)).map(|_| wr)
-}
+// pub(crate) fn encode_message<T>(t: MessageType, msg: &T) -> Result<Message, EncodeError>
+// where
+//   T: Serialize + ?Sized,
+// {
+//   let mut wr = Message::with_capacity(128);
+//   wr.put_u8(t as u8);
+//   msg.serialize(&mut RmpSerializer::new(&mut wr)).map(|_| wr)
+// }
 
-pub(crate) fn decode_message<T>(src: &[u8]) -> Result<T, DecodeError>
-where
-  T: DeserializeOwned,
-{
-  T::deserialize(&mut RmpDeserializer::new(src))
-}
+// pub(crate) fn decode_message<T>(src: &[u8]) -> Result<T, DecodeError>
+// where
+//   T: DeserializeOwned,
+// {
+//   T::deserialize(&mut RmpDeserializer::new(src))
+// }
 
-pub(crate) fn decode_message_from_reader<T, R>(src: &mut R) -> Result<T, DecodeError>
-where
-  T: DeserializeOwned,
-  R: std::io::Read,
-{
-  T::deserialize(&mut RmpDeserializer::new(src))
-}
+// pub(crate) fn decode_message_from_reader<T, R>(src: &mut R) -> Result<T, DecodeError>
+// where
+//   T: DeserializeOwned,
+//   R: std::io::Read,
+// {
+//   T::deserialize(&mut RmpDeserializer::new(src))
+// }
 
-/// Wraps a message in the `MessageType::Relay`, adding the length and
-/// address of the end recipient to the front of the message
-pub(crate) fn encode_relay_message<T>(
-  t: MessageType,
-  dest: NodeId,
-  msg: &T,
-) -> Result<Message, EncodeError>
-where
-  T: Serialize + ?Sized,
-{
-  let mut wr = Message::with_capacity(128);
-  wr.put_u8(MessageType::Relay as u8);
-  {
-    let ser = &mut RmpSerializer::new(&mut wr);
-    RelayHeader { dest }.serialize(ser)?;
-  }
+// /// Wraps a message in the `MessageType::Relay`, adding the length and
+// /// address of the end recipient to the front of the message
+// pub(crate) fn encode_relay_message<T>(
+//   t: MessageType,
+//   dest: Node,
+//   msg: &T,
+// ) -> Result<Message, EncodeError>
+// where
+//   T: Serialize + ?Sized,
+// {
+//   let mut wr = Message::with_capacity(128);
+//   wr.put_u8(MessageType::Relay as u8);
+//   {
+//     let ser = &mut RmpSerializer::new(&mut wr);
+//     RelayHeader { dest }.serialize(ser)?;
+//   }
 
-  wr.put_u8(t as u8);
-  msg.serialize(&mut RmpSerializer::new(&mut wr)).map(|_| wr)
-}
+//   wr.put_u8(t as u8);
+//   msg.serialize(&mut RmpSerializer::new(&mut wr)).map(|_| wr)
+// }
 
-pub(crate) fn encode_filter(f: FilterTypeRef<'_>) -> Result<Bytes, EncodeError> {
-  match f {
-    FilterTypeRef::Node(nodes) => rmp_serde::to_vec(nodes).map(Into::into),
-    FilterTypeRef::Tag(t) => rmp_serde::to_vec(&t).map(Into::into),
-  }
-}
+// pub(crate) fn encode_filter(f: FilterTypeRef<'_>) -> Result<Bytes, EncodeError> {
+//   // match f {
+//   //   FilterTypeRef::Node(nodes) => rmp_serde::to_vec(nodes).map(Into::into),
+//   //   FilterTypeRef::Tag(t) => rmp_serde::to_vec(&t).map(Into::into),
+//   // }
+//   todo!()
+// }
 
-#[test]
-fn test_x() {
-  let id = NodeId::new("test".try_into().unwrap(), "127.0.0.1:8080".parse().unwrap());
-  let data = encode_relay_message(MessageType::Leave, id.clone(), &Leave {
-    ltime: LamportTime(0),
-    node: NodeId::new("test1".try_into().unwrap(), "127.0.0.1:8080".parse().unwrap()),
-    prune: false,
-  }).unwrap();
+// #[test]
+// fn test_x() {
+//   let id = NodeId::new("test".try_into().unwrap(), "127.0.0.1:8080".parse().unwrap());
+//   let data = encode_relay_message(MessageType::Leave, id.clone(), &Leave {
+//     ltime: LamportTime(0),
+//     node: NodeId::new("test1".try_into().unwrap(), "127.0.0.1:8080".parse().unwrap()),
+//     prune: false,
+//   }).unwrap();
 
-  let header = decode_message::<RelayHeader>(&data[1..]).unwrap();
-  assert_eq!(header.dest, id);
-  println!("{}", header.dest);
-}
+//   let header = decode_message::<RelayHeader>(&data[1..]).unwrap();
+//   assert_eq!(header.dest, id);
+//   println!("{}", header.dest);
+// }

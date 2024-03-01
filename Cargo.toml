@@ -14,5 +14,7 @@ license = "MPL-2.0"
 
 [workspace.dependencies]
 agnostic = { path = "../agnostic/agnostic", features = ["net"] }
+futures = "0.3"
 serde = { version = "1", features = ["derive"] }
+humantime-serde = "1"
 

@@ -3,22 +3,20 @@ use std::future::Future;
 use agnostic::Runtime;
 use async_channel::{bounded, Receiver, Sender};
 use either::Either;
-use showbiz_core::{
-  futures_util::{self, FutureExt, Stream},
-  security::SecretKey,
+use futures::{FutureExt, Stream};
+use memberlist_core::{
+  bytes::Bytes,
   tracing,
-  transport::Transport,
-  Message, NodeId,
+  transport::{AddressResolver, Transport},
 };
 use smol_str::SmolStr;
 
 use crate::{
-  codec::NodeIdCodec,
-  delegate::MergeDelegate,
+  delegate::Delegate,
   error::Error,
   event::{Event, EventKind, InternalQueryEventType, QueryEvent},
   types::{decode_message, encode_message, MessageType, QueryResponseMessage},
-  KeyRequest, ReconnectTimeoutOverrider,
+  KeyRequest,
 };
 
 /// Used to compute the max number of keys in a list key
@@ -28,31 +26,26 @@ use crate::{
 /// computation and in case of changes, the value can be adjusted.
 const MIN_ENCODED_KEY_LENGTH: usize = 25;
 
-pub(crate) struct SerfQueries<T, D, O>
+pub(crate) struct SerfQueries<T, D>
 where
-  D: MergeDelegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  O: ReconnectTimeoutOverrider,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  in_rx: Receiver<Event<T, D, O>>,
-  out_tx: Sender<Event<T, D, O>>,
+  in_rx: Receiver<Event<T, D>>,
+  out_tx: Sender<Event<T, D>>,
   shutdown_rx: Receiver<()>,
 }
 
-impl<D, T, O> SerfQueries<T, D, O>
+impl<D, T> SerfQueries<T, D>
 where
-  D: MergeDelegate,
-  O: ReconnectTimeoutOverrider,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  pub(crate) fn new(
-    out_tx: Sender<Event<T, D, O>>,
-    shutdown_rx: Receiver<()>,
-  ) -> Sender<Event<T, D, O>> {
+  pub(crate) fn new(out_tx: Sender<Event<T, D>>, shutdown_rx: Receiver<()>) -> Sender<Event<T, D>> {
     let (in_tx, in_rx) = bounded(1024);
     let this = Self {
       in_rx,
@@ -67,7 +60,7 @@ where
   fn stream(self) {
     <T::Runtime as Runtime>::spawn_detach(async move {
       loop {
-        futures_util::select! {
+        futures::select! {
           ev = self.in_rx.recv().fuse() => {
             match ev {
               Ok(ev) => {
@@ -95,7 +88,7 @@ where
     });
   }
 
-  async fn handle_query(ev: Event<T, D, O>) {
+  async fn handle_query(ev: Event<T, D>) {
     macro_rules! handle_query {
       ($ev: expr) => {{
         match $ev {
@@ -131,7 +124,7 @@ where
   /// invoked when we get a query that is attempting to
   /// disambiguate a name conflict. They payload is a node name, and the response
   /// should the address we believe that node is at, if any.
-  async fn handle_conflict(ev: impl AsRef<QueryEvent<T, D, O>> + Send) {
+  async fn handle_conflict(ev: impl AsRef<QueryEvent<T, D>> + Send) {
     let q = ev.as_ref();
     // The target node id is the payload
     let id = match NodeId::decode(&q.payload) {
@@ -186,7 +179,7 @@ where
   /// the memberlist keyring. This type of query may fail if the provided key does
   /// not fit the constraints that memberlist enforces. If the query fails, the
   /// response will contain the error message so that it may be relayed.
-  async fn handle_install_key(ev: impl AsRef<QueryEvent<T, D, O>> + Send) {
+  async fn handle_install_key(ev: impl AsRef<QueryEvent<T, D>> + Send) {
     let q = ev.as_ref();
     let mut response = NodeKeyResponse::default();
     let req = match decode_message::<KeyRequest>(&q.payload[1..]) {
@@ -232,7 +225,7 @@ where
     }
   }
 
-  async fn handle_use_key(ev: impl AsRef<QueryEvent<T, D, O>> + Send) {
+  async fn handle_use_key(ev: impl AsRef<QueryEvent<T, D>> + Send) {
     let q = ev.as_ref();
     let mut response = NodeKeyResponse::default();
 
@@ -285,7 +278,7 @@ where
     }
   }
 
-  async fn handle_remove_key(ev: impl AsRef<QueryEvent<T, D, O>> + Send) {
+  async fn handle_remove_key(ev: impl AsRef<QueryEvent<T, D>> + Send) {
     let q = ev.as_ref();
     let mut response = NodeKeyResponse::default();
     let req = match decode_message::<KeyRequest>(&q.payload[1..]) {
@@ -339,7 +332,7 @@ where
 
   /// Invoked when a query is received to return a list of all
   /// installed keys the Serf instance knows of.
-  async fn handle_list_keys(ev: impl AsRef<QueryEvent<T, D, O>> + Send) {
+  async fn handle_list_keys(ev: impl AsRef<QueryEvent<T, D>> + Send) {
     let q = ev.as_ref();
     let mut response = NodeKeyResponse::default();
     if !q.ctx.this.encryption_enabled() {
@@ -373,9 +366,15 @@ where
   }
 
   fn key_list_response_with_correct_size(
-    q: &QueryEvent<T, D, O>,
+    q: &QueryEvent<T, D>,
     resp: &mut NodeKeyResponse,
-  ) -> Result<(Message, QueryResponseMessage), Error<T, D, O>> {
+  ) -> Result<
+    (
+      Bytes,
+      QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+    ),
+    Error<T, D>,
+  > {
     let actual = resp.keys.len();
 
     // if the provided list of keys is smaller then the max allowed, just iterate over it
@@ -410,7 +409,7 @@ where
     Err(Error::FailTruncateResponse)
   }
 
-  async fn send_key_response(q: &QueryEvent<T, D, O>, resp: &mut NodeKeyResponse) {
+  async fn send_key_response(q: &QueryEvent<T, D>, resp: &mut NodeKeyResponse) {
     match q.name.as_str() {
       "ruserf-list-keys" => {
         let (raw, qresp) = match Self::key_list_response_with_correct_size(q, resp) {
@@ -441,6 +440,7 @@ where
 
 #[viewit::viewit]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct NodeKeyResponse {
   /// Indicates true/false if there were errors or not
   result: bool,

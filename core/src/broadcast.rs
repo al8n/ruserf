@@ -1,5 +1,5 @@
 use async_channel::Sender;
-use showbiz_core::{async_trait, broadcast::Broadcast, Message};
+use memberlist_core::{broadcast::Broadcast, bytes::Bytes, types::Message};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub(crate) struct BroadcastId;
@@ -11,14 +11,14 @@ impl core::fmt::Display for BroadcastId {
 }
 
 #[viewit::viewit]
-pub(crate) struct SerfBroadcast {
-  msg: Message,
+pub(crate) struct SerfBroadcast<I, A> {
+  msg: Message<I, A>,
   notify_tx: Option<Sender<()>>,
 }
 
-#[cfg_attr(not(feature = "nightly"), async_trait::async_trait)]
-impl Broadcast for SerfBroadcast {
+impl<I, A> Broadcast for SerfBroadcast<I, A> {
   type Id = BroadcastId;
+  type Message = Bytes;
 
   fn id(&self) -> Option<&Self::Id> {
     None
@@ -28,26 +28,18 @@ impl Broadcast for SerfBroadcast {
     false
   }
 
-  fn message(&self) -> &Message {
+  fn message(&self) -> &Self::Message {
     &self.msg
   }
 
-  #[cfg(not(feature = "nightly"))]
   async fn finished(&self) {
     if let Some(ref tx) = self.notify_tx {
       tx.close();
     }
   }
 
-  #[cfg(feature = "nightly")]
-  fn finished<'a>(
-    &'a self,
-  ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'a {
-    async move {
-      if let Some(ref tx) = self.notify_tx {
-        tx.close();
-      }
-    }
+  fn encoded_len(msg: &Self::Message) -> usize {
+    todo!()
   }
 }
 

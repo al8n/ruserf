@@ -1,9 +1,7 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use arc_swap::ArcSwapOption;
-use showbiz_core::{
-  humantime_serde, transport::Transport, Options as ShowbizOptions, ProtocolVersion,
-};
+pub use memberlist_core::{DelegateVersion, Options as MemberlistOptions, ProtocolVersion};
 use smol_str::SmolStr;
 
 fn tags(
@@ -14,8 +12,8 @@ fn tags(
 
 /// The configuration for creating a Serf instance.
 #[viewit::viewit(getters(vis_all = "pub"), setters(vis_all = "pub", prefix = "with"))]
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct Options<T: Transport> {
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Options {
   /// The tags for this role, if any. This is used to provide arbitrary
   /// key/value metadata per-node. For example, a "role" tag may be used to
   /// differentiate "load-balancer" from a "web" role as parts of the same cluster.
@@ -33,7 +31,7 @@ pub struct Options<T: Transport> {
     ),
     setter(skip)
   )]
-  #[serde(with = "tags_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "tags_serde"))]
   tags: Arc<ArcSwapOption<HashMap<SmolStr, SmolStr>>>,
 
   /// The protocol version to speak
@@ -43,7 +41,7 @@ pub struct Options<T: Transport> {
   /// message to be sent to the cluster. Broadcast messages are used for
   /// things like leave messages and force remove messages. If this is not
   /// set, a timeout of 5 seconds will be set.
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   broadcast_timeout: Duration,
 
   /// For our leave (node dead) message to propagate
@@ -51,7 +49,7 @@ pub struct Options<T: Transport> {
   /// service any probes from other nodes before they learn about us
   /// leaving and stop probing. Otherwise, we risk getting node failures as
   /// we leave.
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   leave_propagate_delay: Duration,
 
   /// The settings below relate to Serf's event coalescence feature. Serf
@@ -68,7 +66,7 @@ pub struct Options<T: Transport> {
   /// For example, if this is set to 5 seconds, then all events received
   /// within 5 seconds that can be coalesced will be.
   ///
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   coalesce_period: Duration,
 
   /// specifies the duration of time where if no events
@@ -77,40 +75,40 @@ pub struct Options<T: Transport> {
   /// seconds, then the events will be coalesced and dispatched if no
   /// new events are received within 2 seconds of the last event. Otherwise,
   /// every event will always be delayed by at least 10 seconds.
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   quiescent_period: Duration,
 
   /// The settings below relate to Serf's user event coalescing feature.
   /// The settings operate like above but only affect user messages and
   /// not the Member* messages that Serf generates.
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   user_coalesce_period: Duration,
   /// The settings below relate to Serf's user event coalescing feature.
   /// The settings operate like above but only affect user messages and
   /// not the Member* messages that Serf generates.
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   user_quiescent_period: Duration,
 
   /// The interval when the reaper runs. If this is not
   /// set (it is zero), it will be set to a reasonable default.
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   reap_interval: Duration,
 
   /// The interval when we attempt to reconnect
   /// to failed nodes. If this is not set (it is zero), it will be set
   /// to a reasonable default.
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   reconnect_interval: Duration,
 
   /// The amount of time to attempt to reconnect to
   /// a failed node before giving up and considering it completely gone.
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   reconnect_timeout: Duration,
 
   /// The amount of time to keep around nodes
   /// that gracefully left as tombstones for syncing state with other
   /// Serf nodes.
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   tombstone_timeout: Duration,
 
   /// The amount of time less than which we consider a node
@@ -118,12 +116,12 @@ pub struct Options<T: Transport> {
   /// This should be set less than a typical reboot time, but large enough
   /// to see actual events, given our expected detection times for a failed
   /// node.
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   flap_timeout: Duration,
 
   /// The interval at which we check the message
   /// queue to apply the warning and max depth.
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   queue_check_interval: Duration,
 
   /// Used to generate warning message if the
@@ -148,7 +146,7 @@ pub struct Options<T: Transport> {
   /// Serf broadcasts an intent that arrives before the Memberlist event.
   /// It is important that this not be too short to avoid continuous
   /// rebroadcasting of dead events.
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   recent_intent_timeout: Duration,
 
   /// Used to control how many events are buffered.
@@ -195,7 +193,7 @@ pub struct Options<T: Transport> {
   /// The memberlist configuration that Serf will
   /// use to do the underlying membership management and gossip.
   #[viewit(getter(const, style = "ref"))]
-  showbiz_options: ShowbizOptions<T>,
+  memberlist_options: MemberlistOptions,
 
   /// If provided is used to snapshot live nodes as well
   /// as lamport clock values. When Serf is started with a snapshot,
@@ -247,18 +245,18 @@ pub struct Options<T: Transport> {
   // reconnect_timeout_override: ,
 }
 
-impl<T: Transport> Default for Options<T> {
+impl Default for Options {
   #[inline]
   fn default() -> Self {
     Self::new()
   }
 }
 
-impl<T: Transport> Clone for Options<T> {
+impl Clone for Options {
   #[inline]
   fn clone(&self) -> Self {
     Self {
-      showbiz_options: self.showbiz_options.clone(),
+      memberlist_options: self.memberlist_options.clone(),
       keyring_file: self.keyring_file.clone(),
       snapshot_path: self.snapshot_path.clone(),
       tags: self.tags.clone(),
@@ -267,7 +265,7 @@ impl<T: Transport> Clone for Options<T> {
   }
 }
 
-impl<T: Transport> Options<T> {
+impl Options {
   #[inline]
   pub fn new() -> Self {
     Self {
@@ -294,7 +292,7 @@ impl<T: Transport> Options<T> {
       query_timeout_mult: 16,
       query_response_size_limit: 1024,
       query_size_limit: 1024,
-      showbiz_options: ShowbizOptions::lan(),
+      memberlist_options: MemberlistOptions::lan(),
       snapshot_path: None,
       rejoin_after_leave: false,
       enable_id_conflict_resolution: true,
@@ -340,7 +338,7 @@ pub(crate) struct QueueOptions {
   pub(crate) check_interval: Duration,
   pub(crate) depth_warning: usize,
   #[cfg(feature = "metrics")]
-  pub(crate) metric_labels: Arc<Vec<showbiz_core::metrics::Label>>,
+  pub(crate) metric_labels: memberlist_core::util::MetricLabels,
 }
 
 mod tags_serde {

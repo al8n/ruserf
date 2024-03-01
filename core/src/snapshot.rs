@@ -6,7 +6,6 @@ use std::{
   io::{BufRead, BufReader, BufWriter, Seek, Write},
   mem,
   path::PathBuf,
-  sync::Arc,
   time::{Duration, Instant},
 };
 
@@ -16,21 +15,21 @@ use std::os::unix::prelude::OpenOptionsExt;
 use agnostic::Runtime;
 use async_channel::{Receiver, Sender};
 use either::Either;
-use rand::seq::SliceRandom;
-use showbiz_core::{
+use futures::{FutureExt, Stream};
+use memberlist_core::{
   bytes::{BufMut, BytesMut},
-  futures_util::{self, FutureExt, Stream},
-  metrics, tracing,
-  transport::Transport,
-  NodeId,
+  tracing,
+  transport::{AddressResolver, Id, Node, Transformable, Transport},
+  util::TinyVec,
+  CheapClone,
 };
+use rand::seq::SliceRandom;
 
 use crate::{
   clock::{LamportClock, LamportTime},
-  codec::NodeIdCodec,
-  delegate::MergeDelegate,
+  delegate::{Delegate, TransformDelegate},
   event::{Event, EventKind, MemberEvent, MemberEventType, QueryEvent, UserEvent},
-  ReconnectTimeoutOverrider,
+  invalid_data_io_error,
 };
 
 /// How often we force a flush of the snapshot file
@@ -90,9 +89,9 @@ pub enum SnapshotError {
   Replay(std::io::Error),
 }
 
-enum SnapshotRecord<'a> {
-  Alive(Cow<'a, NodeId>),
-  NotAlive(Cow<'a, NodeId>),
+enum SnapshotRecord<'a, I, A> {
+  Alive(Cow<'a, Node<I, A>>),
+  NotAlive(Cow<'a, Node<I, A>>),
   Clock(LamportTime),
   EventClock(LamportTime),
   QueryClock(LamportTime),
@@ -101,7 +100,13 @@ enum SnapshotRecord<'a> {
   Comment,
 }
 
-impl<'a> SnapshotRecord<'a> {
+const MAX_INLINED_BYTES: usize = 64;
+
+impl<'a, I, A> SnapshotRecord<'a, I, A>
+where
+  I: Id,
+  A: CheapClone + Send + Sync + 'static,
+{
   const ALIVE: u8 = 0;
   const NOT_ALIVE: u8 = 1;
   const CLOCK: u8 = 2;
@@ -111,16 +116,28 @@ impl<'a> SnapshotRecord<'a> {
   const LEAVE: u8 = 6;
   const COMMENT: u8 = 7;
 
-  fn encode<W: Write>(&self, w: &mut W) -> std::io::Result<usize> {
+  fn encode<T: TransformDelegate<Id = I, Address = A>, W: Write>(
+    &self,
+    w: &mut W,
+  ) -> std::io::Result<usize> {
     macro_rules! encode {
-      ($id: ident::$status: ident) => {{
-        let id = $id.as_ref();
-        let encoded_id_len = NodeIdCodec::encoded_len(id);
-        let mut buf = BytesMut::with_capacity(2 + encoded_id_len);
-        buf.put_u8(Self::$status);
-        id.encode(&mut buf);
-        buf.put_u8(b'\n');
-        w.write_all(&buf).map(|_| 2 + encoded_id_len)
+      ($node: ident::$status: ident) => {{
+        let node = $node.as_ref();
+        let encoded_node_len = T::node_encoded_len(node);
+        let encoded_len = 2 + encoded_node_len;
+        if encoded_len <= MAX_INLINED_BYTES {
+          let mut buf = [0u8; MAX_INLINED_BYTES];
+          buf[0] = Self::$status;
+          T::encode_node(node, &mut buf[1..])?;
+          buf[1 + encoded_node_len] = b'\n';
+          w.write_all(&buf[..encoded_len]).map(|_| encoded_len)
+        } else {
+          let mut buf = BytesMut::with_capacity(encoded_len);
+          buf.put_u8(Self::$status);
+          T::encode_node(node, &mut buf)?;
+          buf.put_u8(b'\n');
+          w.write_all(&buf).map(|_| encoded_len)
+        }
       }};
       ($t: ident($status: ident)) => {{
         const N: usize = 2 * mem::size_of::<u8>() + mem::size_of::<u64>();
@@ -149,8 +166,8 @@ impl<'a> SnapshotRecord<'a> {
 }
 
 #[viewit::viewit]
-pub(crate) struct ReplayResult {
-  alive_nodes: HashSet<NodeId>,
+pub(crate) struct ReplayResult<I, A> {
+  alive_nodes: HashSet<Node<I, A>>,
   last_clock: LamportTime,
   last_event_clock: LamportTime,
   last_query_clock: LamportTime,
@@ -159,10 +176,15 @@ pub(crate) struct ReplayResult {
   path: PathBuf,
 }
 
-pub(crate) fn open_and_replay_snapshot<P: AsRef<std::path::Path>>(
+pub(crate) fn open_and_replay_snapshot<
+  I,
+  A,
+  T: TransformDelegate<Id = I, Address = A>,
+  P: AsRef<std::path::Path>,
+>(
   p: &P,
   rejoin_after_leave: bool,
-) -> Result<ReplayResult, SnapshotError> {
+) -> Result<ReplayResult<I, A>, SnapshotError> {
   // Try to open the file
   #[cfg(unix)]
   let fh = OpenOptions::new()
@@ -203,11 +225,12 @@ pub(crate) fn open_and_replay_snapshot<P: AsRef<std::path::Path>>(
     // Match on the prefix
     match src[0] {
       SnapshotRecord::ALIVE => {
-        let id = NodeIdCodec::decode(&src[1..]).map_err(SnapshotError::Replay)?;
+        let id = TransformDelegate::decode(&src[1..]).map_err(SnapshotError::Replay)?;
         alive_nodes.insert(id);
       }
       SnapshotRecord::NOT_ALIVE => {
-        let id = <NodeId as NodeIdCodec>::decode(&src[1..]).map_err(SnapshotError::Replay)?;
+        let id =
+          T::decode_node(&src[1..]).map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
         alive_nodes.remove(&id);
       }
       SnapshotRecord::CLOCK => {
@@ -286,7 +309,7 @@ impl SnapshotHandle {
   /// Used to remove known nodes to prevent a restart from
   /// causing a join. Otherwise nodes will re-join after leaving!
   pub(crate) async fn leave(&self) {
-    futures_util::select! {
+    futures::select! {
       _ = self.leave_tx.send(()).fuse() => {},
       _ = self.shutdown_rx.recv().fuse() => {},
     }
@@ -295,12 +318,14 @@ impl SnapshotHandle {
 
 /// Responsible for ingesting events and persisting
 /// them to disk, and providing a recovery mechanism at start time.
-pub(crate) struct Snapshot<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+pub(crate) struct Snapshot<T, D>
 where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  alive_nodes: HashSet<NodeId>,
+  alive_nodes: HashSet<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
   clock: LamportClock,
   fh: Option<BufWriter<File>>,
   last_flush: Instant,
@@ -313,29 +338,38 @@ where
   path: PathBuf,
   offset: u64,
   rejoin_after_leave: bool,
-  stream_rx: Receiver<Event<T, D, O>>,
+  stream_rx: Receiver<Event<T, D>>,
   shutdown_rx: Receiver<()>,
   wait_tx: Sender<()>,
   last_attempted_compaction: Instant,
   #[cfg(feature = "metrics")]
-  metric_labels: Arc<Vec<metrics::Label>>,
+  metric_labels: memberlist_core::util::MetricLabels,
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> Snapshot<T, D, O>
+impl<D, T> Snapshot<T, D>
 where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   #[allow(clippy::type_complexity)]
   pub(crate) fn from_replay_result(
-    replay_result: ReplayResult,
+    replay_result: ReplayResult<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     min_compact_size: u64,
     rejoin_after_leave: bool,
     clock: LamportClock,
-    out_tx: Option<Sender<Event<T, D, O>>>,
+    out_tx: Option<Sender<Event<T, D>>>,
     shutdown_rx: Receiver<()>,
-    #[cfg(feature = "metrics")] metric_labels: Arc<Vec<metrics::Label>>,
-  ) -> Result<(Sender<Event<T, D, O>>, Vec<NodeId>, SnapshotHandle), SnapshotError> {
+    #[cfg(feature = "metrics")] metric_labels: memberlist_core::util::MetricLabels,
+  ) -> Result<
+    (
+      Sender<Event<T, D>>,
+      TinyVec<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+      SnapshotHandle,
+    ),
+    SnapshotError,
+  > {
     let (in_tx, in_rx) = async_channel::bounded(EVENT_CH_SIZE);
     let (stream_tx, stream_rx) = async_channel::bounded(EVENT_CH_SIZE);
     let (leave_tx, leave_rx) = async_channel::bounded(1);
@@ -400,22 +434,22 @@ where
   /// A long running routine that is used to copy events
   /// to the output channel and the internal event handler.
   async fn tee_stream(
-    in_rx: Receiver<Event<T, D, O>>,
-    stream_tx: Sender<Event<T, D, O>>,
-    out_tx: Option<Sender<Event<T, D, O>>>,
+    in_rx: Receiver<Event<T, D>>,
+    stream_tx: Sender<Event<T, D>>,
+    out_tx: Option<Sender<Event<T, D>>>,
     shutdown_rx: Receiver<()>,
   ) {
     macro_rules! flush_event {
       ($event:ident) => {{
         // Forward to the internal stream, do not block
-        futures_util::select! {
+        futures::select! {
           _ = stream_tx.send($event.clone()).fuse() => {}
           default => {}
         }
 
         // Forward the event immediately, do not block
         if let Some(ref out_tx) = out_tx {
-          futures_util::select! {
+          futures::select! {
             _ = out_tx.send($event).fuse() => {}
             default => {}
           }
@@ -424,7 +458,7 @@ where
     }
 
     loop {
-      futures_util::select! {
+      futures::select! {
         ev = in_rx.recv().fuse() => {
           match ev {
             Ok(ev) => {
@@ -445,7 +479,7 @@ where
 
     // Drain any remaining events before exiting
     loop {
-      futures_util::select! {
+      futures::select! {
         ev = in_rx.recv().fuse() => {
           match ev {
             Ok(ev) => {
@@ -493,7 +527,7 @@ where
     }
 
     loop {
-      futures_util::select! {
+      futures::select! {
         _ = self.leave_rx.recv().fuse() => {
           self.leaving = true;
 
@@ -520,20 +554,20 @@ where
             },
           }
         }
-        _ = futures_util::StreamExt::next(&mut clock_ticker).fuse() => {
+        _ = futures::StreamExt::next(&mut clock_ticker).fuse() => {
           self.update_clock();
         }
         _ = self.shutdown_rx.recv().fuse() => {
           // Setup a timeout
           let flush_timeout = <T::Runtime as Runtime>::sleep(SHUTDOWN_FLUSH_TIMEOUT);
-          futures_util::pin_mut!(flush_timeout);
+          futures::pin_mut!(flush_timeout);
 
           // snapshot the clock
           self.update_clock();
 
           // Clear out the buffers
           loop {
-            futures_util::select! {
+            futures::select! {
               ev = self.stream_rx.recv().fuse() => {
                 match ev {
                   Ok(ev) => flush_event!(self <- ev),
@@ -580,7 +614,7 @@ where
   }
 
   /// Used to handle a single query event
-  fn process_query_event(&mut self, e: &QueryEvent<T, D, O>) {
+  fn process_query_event(&mut self, e: &QueryEvent<T, D>) {
     // Ignore old clocks
     let ltime = e.ltime;
     if ltime <= self.last_event_clock {
@@ -592,7 +626,10 @@ where
   }
 
   /// Used to handle a single member event
-  fn process_member_event(&mut self, e: &MemberEvent) {
+  fn process_member_event(
+    &mut self,
+    e: &MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) {
     match e.ty {
       MemberEventType::Join => {
         for m in e.members() {
@@ -624,7 +661,10 @@ where
     }
   }
 
-  fn try_append(&mut self, l: SnapshotRecord<'_>) {
+  fn try_append(
+    &mut self,
+    l: SnapshotRecord<'_, T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) {
     if let Err(e) = self.append_line(l) {
       tracing::error!(target = "ruserf", err = %e, "failed to update snapshot");
       if self.last_attempted_compaction.elapsed() > SNAPSHOT_ERROR_RECOVERY_INTERVAL {
@@ -645,7 +685,10 @@ where
     }
   }
 
-  fn append_line(&mut self, l: SnapshotRecord<'_>) -> Result<(), SnapshotError> {
+  fn append_line(
+    &mut self,
+    l: SnapshotRecord<'_, T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> Result<(), SnapshotError> {
     // TODO: metrics
     let f = self.fh.as_mut().unwrap();
     let n = l.encode(f).map_err(SnapshotError::Write)?;
@@ -798,11 +841,13 @@ where
       // Match on the prefix
       match src[0] {
         SnapshotRecord::ALIVE => {
-          let id = NodeIdCodec::decode(&src[1..]).map_err(SnapshotError::Replay)?;
+          let id = <D as TransformDelegate>::decode_node(&src[1..])
+            .map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
           self.alive_nodes.insert(id);
         }
         SnapshotRecord::NOT_ALIVE => {
-          let id = <NodeId as NodeIdCodec>::decode(&src[1..]).map_err(SnapshotError::Replay)?;
+          let id = <D as TransformDelegate>::decode_node(&src[1..])
+            .map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
           self.alive_nodes.remove(&id);
         }
         SnapshotRecord::CLOCK => {

@@ -1,6 +1,7 @@
 use std::{
   collections::HashMap,
   future::Future,
+  hash::Hash,
   sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -12,26 +13,27 @@ use agnostic::Runtime;
 use async_graphql::async_trait::async_trait;
 use async_lock::{Mutex, RwLock};
 use atomic::Atomic;
-use rand::{Rng, SeedableRng};
-use serde::{Deserialize, Serialize};
-use showbiz_core::{
+use futures::{FutureExt, Stream};
+use memberlist_core::{
   bytes::{BufMut, Bytes, BytesMut},
   delegate::Delegate,
-  futures_util::{self, FutureExt, Stream},
-  queue::{NodeCalculator, TransmitLimitedQueue},
+  queue::TransmitLimitedQueue,
   tracing,
-  transport::Transport,
-  Address, DelegateVersion, Name, NodeId, ProtocolVersion, Showbiz, META_MAX_SIZE,
+  transport::{Address, AddressResolver, Id, MaybeResolvedAddress, Node, Transport},
+  types::NodeState,
+  util::{OneOrMore, SmallVec, TinyVec},
+  CheapClone, DelegateVersion, Memberlist, ProtocolVersion, META_MAX_SIZE,
 };
+use rand::{Rng, SeedableRng};
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::{
   broadcast::SerfBroadcast,
   clock::{LamportClock, LamportTime},
   coalesce::{coalesced_event, MemberEventCoalescer, UserEventCoalescer},
-  codec::NodeIdCodec,
   coordinate::{Coordinate, CoordinateClient, CoordinateOptions},
-  delegate::{DefaultMergeDelegate, MergeDelegate, SerfDelegate},
+  delegate::{CompositeDelegate, MergeDelegate},
   error::{Error, JoinError},
   event::{Event, InternalQueryEventType, MemberEvent, MemberEventType},
   internal_query::SerfQueries,
@@ -43,6 +45,9 @@ use crate::{
   },
   KeyManager, Options, QueueOptions,
 };
+
+mod delegate;
+pub(crate) use delegate::SerfDelegate;
 
 const MAGIC_BYTE: u8 = 255;
 
@@ -135,30 +140,14 @@ mod serde_member_status {
   }
 }
 
-/// Implemented to allow overriding the reconnect timeout for individual members.
-#[async_trait]
-pub trait ReconnectTimeoutOverrider: Send + Sync + 'static {
-  async fn reconnect_timeout(&self, member: &Member, timeout: Duration) -> Duration;
-}
-
-/// Noop implementation of `ReconnectTimeoutOverrider`.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoopReconnectTimeoutOverrider;
-
-#[async_trait]
-impl ReconnectTimeoutOverrider for NoopReconnectTimeoutOverrider {
-  async fn reconnect_timeout(&self, _member: &Member, timeout: Duration) -> Duration {
-    timeout
-  }
-}
-
 /// A single member of the Serf cluster.
 #[viewit::viewit(vis_all = "pub(crate)")]
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct Member {
-  id: NodeId,
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Member<I, A> {
+  node: Node<I, A>,
   tags: HashMap<SmolStr, SmolStr>,
-  #[serde(with = "serde_member_status")]
+  #[cfg_attr(feature = "serde", serde(with = "serde_member_status"))]
   status: Atomic<MemberStatus>,
   protocol_version: ProtocolVersion,
   delegate_version: DelegateVersion,
@@ -169,15 +158,15 @@ pub struct Member {
 /// when that member was marked as leaving.
 #[viewit::viewit]
 #[derive(Clone)]
-pub(crate) struct MemberState {
-  member: Arc<Member>,
+pub(crate) struct MemberState<I, A> {
+  member: Arc<Member<I, A>>,
   /// lamport clock time of last received message
   status_time: LamportTime,
   /// wall clock time of leave
   leave_time: Instant,
 }
 
-impl MemberState {
+impl<I, A> MemberState<I, A> {
   fn zero_leave_time() -> Instant {
     static ZERO: once_cell::sync::Lazy<Instant> =
       once_cell::sync::Lazy::new(|| Instant::now() - std::time::UNIX_EPOCH.elapsed().unwrap());
@@ -220,47 +209,47 @@ impl core::fmt::Display for SerfState {
   }
 }
 
-#[derive(Clone)]
-pub(crate) struct SerfNodeCalculator {
-  members: Arc<RwLock<Members>>,
-}
+// #[derive(Clone)]
+// pub(crate) struct SerfNodeCalculator {
+//   members: Arc<RwLock<Members>>,
+// }
 
-impl SerfNodeCalculator {
-  pub(crate) fn new(members: Arc<RwLock<Members>>) -> Self {
-    Self { members }
-  }
-}
+// impl SerfNodeCalculator {
+//   pub(crate) fn new(members: Arc<RwLock<Members>>) -> Self {
+//     Self { members }
+//   }
+// }
 
-impl NodeCalculator for SerfNodeCalculator {
-  fn num_nodes(&self) -> usize {
-    use pollster::FutureExt as _;
-    self.members.read().block_on().states.len()
-  }
-}
+// impl NodeCalculator for SerfNodeCalculator {
+//   fn num_nodes(&self) -> usize {
+//     use pollster::FutureExt as _;
+//     self.members.read().block_on().states.len()
+//   }
+// }
 
-pub(crate) struct CoordCore {
-  pub(crate) client: CoordinateClient,
-  pub(crate) cache: parking_lot::RwLock<HashMap<Name, Coordinate>>,
+pub(crate) struct CoordCore<I> {
+  pub(crate) client: CoordinateClient<I>,
+  pub(crate) cache: parking_lot::RwLock<HashMap<I, Coordinate>>,
 }
 
 #[derive(Default)]
-pub(crate) struct QueryCore {
-  responses: HashMap<LamportTime, QueryResponse>,
+pub(crate) struct QueryCore<I, A> {
+  responses: HashMap<LamportTime, QueryResponse<I, A>>,
   min_time: LamportTime,
   buffer: Vec<Option<Queries>>,
 }
 
 #[derive(Default)]
-pub(crate) struct Members {
-  pub(crate) states: HashMap<NodeId, MemberState>,
-  recent_intents: HashMap<NodeId, NodeIntent>,
-  pub(crate) left_members: Vec<MemberState>,
-  failed_members: Vec<MemberState>,
+pub(crate) struct Members<I, A> {
+  pub(crate) states: HashMap<I, MemberState<I, A>>,
+  recent_intents: HashMap<I, NodeIntent>,
+  pub(crate) left_members: OneOrMore<MemberState<I, A>>,
+  failed_members: OneOrMore<MemberState<I, A>>,
 }
 
-impl Members {
-  fn recent_intent(&self, node: &NodeId, ty: MessageType) -> Option<LamportTime> {
-    match self.recent_intents.get(node) {
+impl<I: Eq + Hash, A: Eq + Hash> Members<I, A> {
+  fn recent_intent(&self, id: &I, ty: MessageType) -> Option<LamportTime> {
+    match self.recent_intents.get(id) {
       Some(intent) if intent.ty == ty => Some(intent.ltime),
       _ => None,
     }
@@ -273,8 +262,13 @@ pub(crate) struct EventCore {
   buffer: Vec<Option<UserEvents>>,
 }
 
-pub(crate) struct SerfCore<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider>
-where
+pub(crate) struct SerfCore<
+  T: Transport,
+  D = CompositeDelegate<
+    <T as Transport>::Id,
+    <<T as Transport>::Resolver as AddressResolver>::ResolvedAddress,
+  >,
+> where
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
@@ -282,44 +276,49 @@ where
   pub(crate) event_clock: LamportClock,
   pub(crate) query_clock: LamportClock,
 
-  pub(crate) broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>>,
-  pub(crate) event_broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>>,
-  pub(crate) query_broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>>,
+  pub(crate) broadcasts: Arc<
+    TransmitLimitedQueue<SerfBroadcast<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+  >,
+  pub(crate) event_broadcasts: Arc<
+    TransmitLimitedQueue<SerfBroadcast<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+  >,
+  pub(crate) query_broadcasts: Arc<
+    TransmitLimitedQueue<SerfBroadcast<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+  >,
 
-  pub(crate) memberlist: Showbiz<T, SerfDelegate<T, D, O>>,
-  pub(crate) members: Arc<RwLock<Members>>,
-  event_tx: Option<async_channel::Sender<Event<T, D, O>>>,
+  pub(crate) memberlist: Memberlist<T, SerfDelegate<T, D>>,
+  pub(crate) members:
+    Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
+  event_tx: Option<async_channel::Sender<Event<T, D>>>,
   pub(crate) event_join_ignore: AtomicBool,
 
   pub(crate) event_core: RwLock<EventCore>,
-  query_core: Arc<RwLock<QueryCore>>,
+  query_core: Arc<RwLock<QueryCore<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
 
-  pub(crate) opts: Options<T>,
+  pub(crate) opts: Options,
 
   state: parking_lot::Mutex<SerfState>,
 
   join_lock: Mutex<()>,
 
   snapshot: Option<SnapshotHandle>,
-  key_manager: KeyManager<T, D, O>,
+  key_manager: KeyManager<T, D>,
 
   shutdown_tx: async_channel::Sender<()>,
   shutdown_rx: async_channel::Receiver<()>,
-  reconnector: Option<Arc<O>>,
 
-  pub(crate) coord_core: Option<Arc<CoordCore>>,
+  pub(crate) coord_core: Option<Arc<CoordCore<T::Id>>>,
 }
 
-impl<T, D, O> Drop for SerfCore<D, T, O>
+impl<T, D, O, W> Drop for SerfCore<D, T, O, W>
 where
   T: Transport,
-  D: MergeDelegate,
-  O: ReconnectTimeoutOverrider,
+  D: Delegate,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn drop(&mut self) {
-    use showbiz_core::pollster::FutureExt as _;
+    use pollster::FutureExt as _;
 
     let mut s = self.state.lock();
     if *s != SerfState::Left {
@@ -347,16 +346,20 @@ where
 #[repr(transparent)]
 pub struct Serf<
   T: Transport,
-  D: MergeDelegate = DefaultMergeDelegate,
-  O: ReconnectTimeoutOverrider = NoopReconnectTimeoutOverrider,
+  D = CompositeDelegate<
+    <T as Transport>::Id,
+    <<T as Transport>::Resolver as AddressResolver>::ResolvedAddress,
+  >,
 > where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  pub(crate) inner: Arc<SerfCore<D, T, O>>,
+  pub(crate) inner: Arc<SerfCore<T, D>>,
 }
 
-impl<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> Clone for Serf<T, D, O>
+impl<T: Transport, D: Delegate> Clone for Serf<T, D>
 where
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
@@ -374,90 +377,63 @@ where
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  pub async fn new(
-    opts: Options<T>,
-  ) -> Result<Self, Error<T, DefaultMergeDelegate, NoopReconnectTimeoutOverrider>> {
+  pub async fn new(opts: Options<T>) -> Result<Self, Error<T>> {
     Self::new_in(None, None, None, opts).await
   }
 
   pub async fn with_event_sender(
-    ev: async_channel::Sender<Event<T, DefaultMergeDelegate, NoopReconnectTimeoutOverrider>>,
+    ev: async_channel::Sender<Event<T>>,
     opts: Options<T>,
-  ) -> Result<Self, Error<T, DefaultMergeDelegate, NoopReconnectTimeoutOverrider>> {
+  ) -> Result<Self, Error<T>> {
     Self::new_in(Some(ev), None, None, opts).await
-  }
-}
-
-impl<T, O> Serf<T, DefaultMergeDelegate, O>
-where
-  O: ReconnectTimeoutOverrider,
-  T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
-  pub async fn with_reconnect_timeout_overrider(
-    overrider: O,
-    opts: Options<T>,
-  ) -> Result<Self, Error<T, DefaultMergeDelegate, O>> {
-    Self::new_in(None, None, Some(overrider), opts).await
-  }
-
-  pub async fn with_event_sender_and_reconnect_timeout_overrider(
-    ev: async_channel::Sender<Event<T, DefaultMergeDelegate, O>>,
-    overrider: O,
-    opts: Options<T>,
-  ) -> Result<Self, Error<T, DefaultMergeDelegate, O>> {
-    Self::new_in(Some(ev), None, Some(overrider), opts).await
   }
 }
 
 impl<T, D> Serf<T, D>
 where
-  D: MergeDelegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   pub async fn with_delegate(
+    transport: T,
     delegate: D,
-    opts: Options<T>,
-  ) -> Result<Self, Error<T, D, NoopReconnectTimeoutOverrider>> {
-    Self::new_in(None, Some(delegate), None, opts).await
+    opts: Options,
+  ) -> Result<Self, Error<T, D>> {
+    Self::new_in(None, Some(delegate), opts).await
   }
 
   pub async fn with_event_sender_and_delegate(
-    ev: async_channel::Sender<Event<T, D, NoopReconnectTimeoutOverrider>>,
+    ev: async_channel::Sender<Event<T, D>>,
     delegate: D,
     opts: Options<T>,
-  ) -> Result<Self, Error<T, D, NoopReconnectTimeoutOverrider>> {
-    Self::new_in(Some(ev), Some(delegate), None, opts).await
+  ) -> Result<Self, Error<T, D>> {
+    Self::new_in(Some(ev), Some(delegate), opts).await
   }
 }
 
 // ------------------------------------Public methods------------------------------------
-impl<T, D, O> Serf<T, D, O>
+impl<T, D> Serf<T, D>
 where
-  D: MergeDelegate,
-  O: ReconnectTimeoutOverrider,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  pub async fn with_event_sender_and_delegate_and_overrider(
-    ev: async_channel::Sender<Event<T, D, O>>,
+  pub async fn with_event_sender_and_delegate(
+    ev: async_channel::Sender<Event<T, D>>,
     delegate: D,
-    overrider: O,
     opts: Options<T>,
-  ) -> Result<Self, Error<T, D, O>> {
-    Self::new_in(Some(ev), Some(delegate), Some(overrider), opts).await
+  ) -> Result<Self, Error<T, D>> {
+    Self::new_in(Some(ev), Some(delegate), opts).await
   }
 
   async fn new_in(
-    ev: Option<async_channel::Sender<Event<T, D, O>>>,
+    ev: Option<async_channel::Sender<Event<T, D>>>,
     delegate: Option<D>,
-    reconnector: Option<O>,
-    opts: Options<T>,
-  ) -> Result<Self, Error<T, D, O>> {
+    opts: Options,
+  ) -> Result<Self, Error<T, D>> {
     if opts.max_user_event_size > USER_EVENT_SIZE_LIMIT {
       return Err(Error::UserEventLimitTooLarge(USER_EVENT_SIZE_LIMIT));
     }
@@ -592,7 +568,7 @@ where
     // Create the underlying memberlist that will manage membership
     // and failure detection for the Serf instance.
     let memberlist =
-      Showbiz::with_delegate(SerfDelegate::new(delegate), opts.showbiz_options.clone()).await?;
+      Memberlist::with_delegate(SerfDelegate::new(delegate), opts.showbiz_options.clone()).await?;
     let c = SerfCore {
       clock,
       event_clock,
@@ -626,7 +602,6 @@ where
         })
       }),
       event_tx,
-      reconnector: reconnector.map(Arc::new),
     };
     let this = Serf { inner: Arc::new(c) };
     // update delegate
@@ -637,7 +612,7 @@ where
     delegate
       .notify_join(local_node)
       .await
-      .map_err(|e| showbiz_core::error::Error::delegate(e))?;
+      .map_err(|e| memberlist_core::error::Error::delegate(e))?;
 
     // update key manager
     let that = this.clone();
@@ -763,11 +738,11 @@ where
   pub async fn set_tags(
     &self,
     tags: impl Iterator<Item = (SmolStr, SmolStr)>,
-  ) -> Result<(), Error<T, D, O>> {
+  ) -> Result<(), Error<T, D>> {
     let tags = tags.collect();
     // Check that the meta data length is okay
-    if encode_tags(&tags)?.len() > showbiz_core::META_MAX_SIZE {
-      return Err(Error::TagsTooLarge(showbiz_core::META_MAX_SIZE));
+    if encode_tags(&tags)?.len() > META_MAX_SIZE {
+      return Err(Error::TagsTooLarge(META_MAX_SIZE));
     }
     // update the config
     if !tags.is_empty() {
@@ -794,7 +769,7 @@ where
     name: SmolStr,
     payload: Bytes,
     coalesce: bool,
-  ) -> Result<(), Error<T, D, O>> {
+  ) -> Result<(), Error<T, D>> {
     let payload_size_before_encoding = name.len() + payload.len();
 
     // Check size before encoding to prevent needless encoding and return early if it's over the specified limit.
@@ -852,7 +827,7 @@ where
     name: SmolStr,
     payload: Bytes,
     params: Option<QueryParam>,
-  ) -> Result<QueryResponse, Error<T, D, O>> {
+  ) -> Result<QueryResponse, Error<T, D>> {
     self.query_in(name, payload, params, None).await
   }
 
@@ -862,7 +837,7 @@ where
     payload: Bytes,
     params: Option<QueryParam>,
     ty: InternalQueryEventType,
-  ) -> Result<QueryResponse, Error<T, D, O>> {
+  ) -> Result<QueryResponse, Error<T, D>> {
     self.query_in(name, payload, params, Some(ty)).await
   }
 
@@ -872,7 +847,7 @@ where
     payload: Bytes,
     params: Option<QueryParam>,
     ty: Option<InternalQueryEventType>,
-  ) -> Result<QueryResponse, Error<T, D, O>> {
+  ) -> Result<QueryResponse, Error<T, D>> {
     // Provide default parameters if none given.
     let params = match params {
       Some(params) => params,
@@ -939,9 +914,12 @@ where
   /// user messages sent prior to the join will be ignored.
   pub async fn join_many(
     &self,
-    existing: impl Iterator<Item = (Address, Name)>,
+    existing: impl Iterator<Item = Node<T::Id, MaybeResolvedAddress<T>>>,
     ignore_old: bool,
-  ) -> Result<Vec<NodeId>, JoinError<T, D, O>> {
+  ) -> Result<
+    SmallVec<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+    JoinError<T, D>,
+  > {
     // Do a quick state check
     let current_state = self.state();
     if current_state != SerfState::Alive {
@@ -1019,7 +997,7 @@ where
   /// Gracefully exits the cluster. It is safe to call this multiple
   /// times.
   /// If the Leave broadcast timeout, Leave() will try to finish the sequence as best effort.
-  pub async fn leave(&self) -> Result<(), Error<T, D, O>> {
+  pub async fn leave(&self) -> Result<(), Error<T, D>> {
     // Check the current state
     {
       let mut s = self.inner.state.lock();
@@ -1059,7 +1037,7 @@ where
         .broadcast(MessageType::Leave, &msg, Some(notify_tx))
         .await?;
 
-      futures_util::select! {
+      futures::select! {
         _ = notify_rx.recv().fuse() => {
           // We got a response, so we are done
         }
@@ -1107,7 +1085,10 @@ where
   /// immediately, instead of waiting for the reaper to eventually reclaim it.
   /// This also has the effect that Serf will no longer attempt to reconnect
   /// to this node.
-  pub async fn remove_failed_node(&self, node: NodeId) -> Result<(), Error<T, D, O>> {
+  pub async fn remove_failed_node(
+    &self,
+    node: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> Result<(), Error<T, D>> {
     self.force_leave(node, false).await
   }
 
@@ -1115,7 +1096,10 @@ where
   /// immediately, instead of waiting for the reaper to eventually reclaim it.
   /// This also has the effect that Serf will no longer attempt to reconnect
   /// to this node.
-  pub async fn remove_failed_node_prune(&self, node: NodeId) -> Result<(), Error<T, D, O>> {
+  pub async fn remove_failed_node_prune(
+    &self,
+    node: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> Result<(), Error<T, D>> {
     self.force_leave(node, true).await
   }
 
@@ -1127,7 +1111,7 @@ where
   /// exit as a node failure.
   ///
   /// It is safe to call this method multiple times.
-  pub async fn shutdown(&self) -> Result<(), Error<T, D, O>> {
+  pub async fn shutdown(&self) -> Result<(), Error<T, D>> {
     {
       let mut s = self.inner.state.lock();
       match *s {
@@ -1156,7 +1140,7 @@ where
   }
 
   /// Returns the network coordinate of the local node.
-  pub fn get_cooridate(&self) -> Result<Coordinate, Error<T, D, O>> {
+  pub fn get_cooridate(&self) -> Result<Coordinate, Error<T, D>> {
     if let Some(ref coord) = self.inner.coord_core {
       return Ok(coord.client.get_coordinate());
     }
@@ -1166,9 +1150,9 @@ where
 
   /// Returns the network coordinate for the node with the given
   /// name. This will only be valid if `disable_coordinates` is set to `false`.
-  pub fn get_cached_coordinate(&self, name: &Name) -> Result<Option<Coordinate>, Error<T, D, O>> {
+  pub fn get_cached_coordinate(&self, id: &T::Id) -> Result<Option<Coordinate>, Error<T, D>> {
     if let Some(ref coord) = self.inner.coord_core {
-      return Ok(coord.cache.read().get(name).cloned());
+      return Ok(coord.cache.read().get(id).cloned());
     }
 
     Err(Error::CoordinatesDisabled)
@@ -1177,10 +1161,9 @@ where
 
 // ---------------------------------Private Methods-------------------------------
 
-impl<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> Serf<T, D, O>
+impl<T, D> Serf<T, D>
 where
-  D: MergeDelegate,
-  O: ReconnectTimeoutOverrider,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
@@ -1227,7 +1210,7 @@ where
     t: MessageType,
     msg: impl Serialize,
     notify_tx: Option<async_channel::Sender<()>>,
-  ) -> Result<(), Error<T, D, O>> {
+  ) -> Result<(), Error<T, D>> {
     let raw = encode_message(t, &msg)?;
 
     self
@@ -1245,7 +1228,7 @@ where
   /// given clock value. It is used on either join, or if
   /// we need to refute an older leave intent. Cannot be called
   /// with the memberLock held.
-  async fn broadcast_join(&self, ltime: LamportTime) -> Result<(), Error<T, D, O>> {
+  async fn broadcast_join(&self, ltime: LamportTime) -> Result<(), Error<T, D>> {
     // Construct message to update our lamport clock
     let msg = JoinMessage::new(ltime, self.inner.memberlist.local_id().clone());
     self.inner.clock.witness(ltime);
@@ -1254,10 +1237,7 @@ where
     self.handle_node_join_intent(&msg).await;
 
     // Start broadcasting the update
-    if let Err(e) = self
-      .broadcast(MessageType::Join, &msg, None)
-      .await
-    {
+    if let Err(e) = self.broadcast(MessageType::Join, &msg, None).await {
       tracing::warn!(target = "ruserf", err=%e, "failed to broadcast join intent");
       return Err(e);
     }
@@ -1309,7 +1289,11 @@ where
   /// immediately, instead of waiting for the reaper to eventually reclaim it.
   /// This also has the effect that Serf will no longer attempt to reconnect
   /// to this node.
-  async fn force_leave(&self, node: NodeId, prune: bool) -> Result<(), Error<T, D, O>> {
+  async fn force_leave(
+    &self,
+    node: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+    prune: bool,
+  ) -> Result<(), Error<T, D>> {
     // Construct the message to broadcast
     let msg = Leave {
       ltime: self.inner.clock.time(),
@@ -1327,12 +1311,10 @@ where
 
     // Broadcast the remove
     let (ntx, nrx) = async_channel::bounded(1);
-    self
-      .broadcast(MessageType::Leave, &msg, Some(ntx))
-      .await?;
+    self.broadcast(MessageType::Leave, &msg, Some(ntx)).await?;
 
     // Wait for the broadcast
-    futures_util::select! {
+    futures::select! {
       _ = nrx.recv().fuse() => Ok(()),
       _ = <T::Runtime as Runtime>::sleep(self.inner.opts.broadcast_timeout).fuse() => Err(Error::RemovalBroadcastTimeout),
     }
@@ -1355,18 +1337,17 @@ pub struct Stats {
   encrypted: bool,
 }
 
-struct Reaper<T, D, O>
+struct Reaper<T, D>
 where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-  D: MergeDelegate,
-  O: ReconnectTimeoutOverrider,
 {
-  coord_core: Option<Arc<CoordCore>>,
-  reconnector: Option<Arc<O>>,
-  members: Arc<RwLock<Members>>,
-  event_tx: Option<async_channel::Sender<Event<T, D, O>>>,
+  coord_core: Option<Arc<CoordCore<T::Id>>>,
+  delegate: Arc<D>,
+  members: Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
+  event_tx: Option<async_channel::Sender<Event<T, D>>>,
   shutdown_rx: async_channel::Receiver<()>,
   reap_interval: Duration,
   reconnect_timeout: Duration,
@@ -1429,18 +1410,17 @@ macro_rules! reap {
   }};
 }
 
-impl<T, D, O> Reaper<T, D, O>
+impl<T, D> Reaper<T, D>
 where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-  D: MergeDelegate,
-  O: ReconnectTimeoutOverrider,
 {
   fn spawn(self) {
     <T::Runtime as Runtime>::spawn_detach(async move {
       loop {
-        futures_util::select! {
+        futures::select! {
           _ = <T::Runtime as Runtime>::sleep(self.reap_interval).fuse() => {
             let mut ms = self.members.write().await;
             Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.reconnector.as_deref(), self.coord_core.as_deref(), self.reconnect_timeout).await;
@@ -1456,7 +1436,7 @@ where
 
   async fn reap_failed(
     old: &mut Members,
-    event_tx: Option<&async_channel::Sender<Event<T, D, O>>>,
+    event_tx: Option<&async_channel::Sender<Event<T, D>>>,
     reconnector: Option<&O>,
     coord: Option<&CoordCore>,
     timeout: Duration,
@@ -1466,7 +1446,7 @@ where
 
   async fn reap_left(
     old: &mut Members,
-    event_tx: Option<&async_channel::Sender<Event<T, D, O>>>,
+    event_tx: Option<&async_channel::Sender<Event<T, D>>>,
     reconnector: Option<&O>,
     coord: Option<&CoordCore>,
     timeout: Duration,
@@ -1475,31 +1455,32 @@ where
   }
 }
 
-struct Reconnector<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+struct Reconnector<T, D>
 where
+  T: Transport,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  members: Arc<RwLock<Members>>,
-  memberlist: Showbiz<T, SerfDelegate<T, D, O>>,
+  members: Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
+  memberlist: Memberlist<T, SerfDelegate<T, D>>,
   shutdown_rx: async_channel::Receiver<()>,
   reconnect_interval: Duration,
 }
 
-impl<T, D, O> Reconnector<T, D, O>
+impl<T, D> Reconnector<T, D>
 where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-  D: MergeDelegate,
-  O: ReconnectTimeoutOverrider,
 {
   fn spawn(self) {
     let mut rng = rand::rngs::StdRng::from_rng(rand::thread_rng()).unwrap();
 
     <T::Runtime as Runtime>::spawn_detach(async move {
       loop {
-        futures_util::select! {
+        futures::select! {
           _ = <T::Runtime as Runtime>::sleep(self.reconnect_interval).fuse() => {
             let mu = self.members.read().await;
             let num_failed = mu.failed_members.len();
@@ -1545,22 +1526,22 @@ where
   }
 }
 
-struct QueueChecker {
+struct QueueChecker<I, A> {
   name: &'static str,
-  queue: Arc<TransmitLimitedQueue<SerfBroadcast, SerfNodeCalculator>>,
-  members: Arc<RwLock<Members>>,
+  queue: Arc<TransmitLimitedQueue<SerfBroadcast<I, A>>>,
+  members: Arc<RwLock<Members<I, A>>>,
   opts: QueueOptions,
   shutdown_rx: async_channel::Receiver<()>,
 }
 
-impl QueueChecker {
+impl<I, A> QueueChecker<I, A> {
   fn spawn<R: Runtime>(self)
   where
     <<R as Runtime>::Sleep as Future>::Output: Send,
   {
     R::spawn_detach(async move {
       loop {
-        futures_util::select! {
+        futures::select! {
           _ = R::sleep(self.opts.check_interval).fuse() => {
             let numq = self.queue.num_queued();
             // TODO: metrics
@@ -1597,10 +1578,9 @@ impl QueueChecker {
 }
 
 // ---------------------------------Hanlders Methods-------------------------------
-impl<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider> Serf<T, D, O>
+impl<T, D> Serf<T, D>
 where
-  D: MergeDelegate,
-  O: ReconnectTimeoutOverrider,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
@@ -1678,7 +1658,7 @@ where
   /// received. Returns if the message should be rebroadcast.
   pub(crate) async fn handle_query(
     &self,
-    q: QueryMessage,
+    q: QueryMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     ty: Option<InternalQueryEventType>,
   ) -> bool {
     // Witness a potentially newer time
@@ -1741,7 +1721,7 @@ where
       let ack = QueryResponseMessage {
         ltime: q.ltime,
         id: q.id,
-        from: self.inner.memberlist.local_id().clone(),
+        from: self.inner.memberlist.advertise_node(),
         flags: QueryFlag::ACK.bits(),
         payload: Bytes::new(),
       };
@@ -1796,7 +1776,10 @@ where
 
   /// Called when a query response is
   /// received.
-  pub(crate) async fn handle_query_response(&self, resp: QueryResponseMessage) {
+  pub(crate) async fn handle_query_response(
+    &self,
+    resp: QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) {
     // Look for a corresponding QueryResponse
     let qc = self
       .inner
@@ -1818,7 +1801,7 @@ where
         return;
       }
 
-      query.handle_query_response::<T, D, O>(resp).await;
+      query.handle_query_response::<T, D>(resp).await;
     } else {
       tracing::warn!(
         target = "ruserf",
@@ -1832,13 +1815,16 @@ where
 
   /// Called when a node join event is received
   /// from memberlist.
-  pub(crate) async fn handle_node_join(&self, n: Arc<showbiz_core::Node>) {
+  pub(crate) async fn handle_node_join(
+    &self,
+    n: Arc<NodeState<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+  ) {
     let mut members = self.inner.members.write().await;
 
     // TODO: message dropper?
 
-    let id = n.id();
-    let (old_status, fut) = if let Some(member) = members.states.get_mut(id) {
+    let node = n.node();
+    let (old_status, fut) = if let Some(member) = members.states.get_mut(&node) {
       let old_status = member.member.status.load(Ordering::Acquire);
       let dead_time = member.leave_time.elapsed();
       if old_status == MemberStatus::Failed && dead_time < self.inner.opts.flap_timeout {
@@ -1847,7 +1833,7 @@ where
 
       *member = MemberState {
         member: Arc::new(Member {
-          id: id.clone(),
+          node,
           tags: decode_tags(n.meta()),
           status: Atomic::new(MemberStatus::Alive),
           protocol_version: ProtocolVersion::V0,
@@ -1968,7 +1954,10 @@ where
     }
   }
 
-  pub(crate) async fn handle_node_leave(&self, n: Arc<showbiz_core::Node>) {
+  pub(crate) async fn handle_node_leave(
+    &self,
+    n: Arc<NodeState<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+  ) {
     let mut members = self.inner.members.write().await;
 
     let Some(member_state) = members.states.get_mut(n.id()) else {
@@ -2261,7 +2250,10 @@ where
 
   /// Called when a node meta data update
   /// has taken place
-  pub(crate) async fn handle_node_update(&self, n: Arc<showbiz_core::Node>) {
+  pub(crate) async fn handle_node_update(
+    &self,
+    n: Arc<NodeState<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+  ) {
     let mut members = self.inner.members.write().await;
     let id = n.id();
     if let Some(ms) = members.states.get_mut(id) {
@@ -2323,8 +2315,8 @@ where
   /// will reject the "new" node mapping, but we can still be notified.
   pub(crate) async fn handle_node_conflict(
     &self,
-    existing: Arc<showbiz_core::Node>,
-    other: Arc<showbiz_core::Node>,
+    existing: Arc<NodeState<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+    other: Arc<NodeState<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
   ) {
     // Log a basic warning if the node is not us...
     if existing.id() != self.inner.memberlist.local_id() {
@@ -2349,8 +2341,6 @@ where
     if self.inner.opts.enable_id_conflict_resolution {
       let this = self.clone();
       <T::Runtime as Runtime>::spawn_detach(async move {
-        use showbiz_core::futures_util::StreamExt;
-
         // Get the local node
         let local = this.inner.memberlist.local_node().await;
         let local_id = local.id();
@@ -2426,11 +2416,14 @@ where
     }
   }
 
-  fn handle_rejoin(showbiz: Showbiz<T, SerfDelegate<T, D, O>>, alive_nodes: Vec<NodeId>) {
+  fn handle_rejoin(
+    memberlist: Memberlist<T, SerfDelegate<T, D>>,
+    alive_nodes: TinyVec<Node<T::Id, MaybeResolvedAddress<T>>>,
+  ) {
     <T::Runtime as Runtime>::spawn_detach(async move {
       for prev in alive_nodes {
         // Do not attempt to join ourself
-        if prev.eq(showbiz.local_id()) {
+        if prev.id().eq(memberlist.local_id()) {
           continue;
         }
 
@@ -2439,7 +2432,7 @@ where
           "attempting re-join to previously known node {}",
           prev
         );
-        if let Err(e) = showbiz.join_node(&prev).await {
+        if let Err(e) = memberlist.join(prev).await {
           tracing::warn!(
             target = "ruserf",
             "failed to re-join to previously known node {}: {}",
@@ -2466,25 +2459,28 @@ where
 
 /// Used to remove an old member from a list of old
 /// members.
-fn remove_old_member(old: &mut Vec<MemberState>, id: &NodeId) {
+fn remove_old_member<I, A>(old: &mut Vec<MemberState<I, A>>, id: &Node<I, A>) {
   old.retain(|m| m.member.id() != id);
 }
 
 /// Clears out any intents that are older than the timeout. Make sure
 /// the memberLock is held when passing in the Serf instance's recentIntents
 /// member.
-fn reap_intents(intents: &mut HashMap<NodeId, NodeIntent>, timeout: Duration) {
+fn reap_intents<I>(intents: &mut HashMap<I, NodeIntent>, timeout: Duration) {
   intents.retain(|_, intent| intent.wall_time.elapsed() <= timeout);
 }
 
-fn upsert_intent(
-  intents: &mut HashMap<NodeId, NodeIntent>,
-  node: &NodeId,
+fn upsert_intent<I, A>(
+  intents: &mut HashMap<I, NodeIntent>,
+  node: &I,
   t: MessageType,
   ltime: LamportTime,
   stamper: impl FnOnce() -> Instant,
-) -> bool {
-  match intents.entry(node.clone()) {
+) -> bool
+where
+  I: CheapClone + Eq + core::hash::Hash,
+{
+  match intents.entry(node.cheap_clone()) {
     std::collections::hash_map::Entry::Occupied(mut ent) => {
       let intent = ent.get_mut();
       if ltime > intent.ltime {
@@ -2507,49 +2503,49 @@ fn upsert_intent(
   }
 }
 
-/// Used to encode a tag map
-pub(crate) fn encode_tags<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>(
-  tag: &HashMap<SmolStr, SmolStr>,
-) -> Result<Bytes, Error<T, D, O>>
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
-  struct EncodeHelper(BytesMut);
+// /// Used to encode a tag map
+// pub(crate) fn encode_tags<T: Transport, D: MergeDelegate, O: ReconnectDelegate>(
+//   tag: &HashMap<SmolStr, SmolStr>,
+// ) -> Result<Bytes, Error<T, D, O>>
+// where
+//   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+//   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+// {
+//   struct EncodeHelper(BytesMut);
 
-  impl std::io::Write for EncodeHelper {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-      self.0.put_slice(buf);
-      Ok(buf.len())
-    }
+//   impl std::io::Write for EncodeHelper {
+//     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+//       self.0.put_slice(buf);
+//       Ok(buf.len())
+//     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
-      Ok(())
-    }
-  }
+//     fn flush(&mut self) -> std::io::Result<()> {
+//       Ok(())
+//     }
+//   }
 
-  let mut buf = EncodeHelper(BytesMut::with_capacity(128));
-  // Use a magic byte prefix and msgpack encode the tags
-  buf.0.put_u8(MAGIC_BYTE);
-  match tag.serialize(&mut rmp_serde::Serializer::new(&mut buf)) {
-    Ok(_) => Ok(buf.0.freeze()),
-    Err(e) => {
-      tracing::error!(target = "reserf", err=%e, "failed to encode tags");
-      Err(Error::Encode(e))
-    }
-  }
-}
+//   let mut buf = EncodeHelper(BytesMut::with_capacity(128));
+//   // Use a magic byte prefix and msgpack encode the tags
+//   buf.0.put_u8(MAGIC_BYTE);
+//   match tag.serialize(&mut rmp_serde::Serializer::new(&mut buf)) {
+//     Ok(_) => Ok(buf.0.freeze()),
+//     Err(e) => {
+//       tracing::error!(target = "reserf", err=%e, "failed to encode tags");
+//       Err(Error::Encode(e))
+//     }
+//   }
+// }
 
-/// Used to decode a tag map
-pub(crate) fn decode_tags(src: &[u8]) -> HashMap<SmolStr, SmolStr> {
-  // Decode the tags
-  let r = std::io::Cursor::new(&src[1..]);
-  let mut de = rmp_serde::Deserializer::new(r);
-  match HashMap::<SmolStr, SmolStr>::deserialize(&mut de) {
-    Ok(tags) => tags,
-    Err(e) => {
-      tracing::error!(target = "reserf", err=%e, "failed to decode tags");
-      HashMap::new()
-    }
-  }
-}
+// /// Used to decode a tag map
+// pub(crate) fn decode_tags(src: &[u8]) -> HashMap<SmolStr, SmolStr> {
+//   // Decode the tags
+//   let r = std::io::Cursor::new(&src[1..]);
+//   let mut de = rmp_serde::Deserializer::new(r);
+//   match HashMap::<SmolStr, SmolStr>::deserialize(&mut de) {
+//     Ok(tags) => tags,
+//     Err(e) => {
+//       tracing::error!(target = "reserf", err=%e, "failed to decode tags");
+//       HashMap::new()
+//     }
+//   }
+// }

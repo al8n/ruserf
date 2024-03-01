@@ -3,38 +3,39 @@ use std::{collections::HashMap, future::Future, sync::OnceLock};
 use agnostic::Runtime;
 use async_channel::Receiver;
 use async_lock::RwLock;
-use showbiz_core::{
-  futures_util::{self, Stream, StreamExt},
-  security::SecretKey,
+use futures::{Stream, StreamExt};
+use memberlist_core::{
+  // security::SecretKey,
   tracing,
-  transport::Transport,
-  NodeId,
+  transport::{AddressResolver, Transport},
 };
 use smol_str::SmolStr;
 
 use crate::{
-  delegate::MergeDelegate,
+  delegate::{Delegate, MergeDelegate},
   error::Error,
   event::InternalQueryEventType,
   internal_query::NodeKeyResponse,
   query::{NodeResponse, QueryResponse},
   types::{decode_message, encode_message, MessageType},
-  ReconnectTimeoutOverrider, Serf,
+  Serf,
 };
 
 /// KeyRequest is used to contain input parameters which get broadcasted to all
 /// nodes as part of a key query operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub(crate) struct KeyRequest {
   pub(crate) key: Option<SecretKey>,
 }
 
 /// KeyResponse is used to relay a query for a list of all keys in use.
 #[derive(Default)]
-pub struct KeyResponse {
+pub struct KeyResponse<I> {
   /// Map of node id to response message
-  messages: HashMap<NodeId, SmolStr>,
+  messages: HashMap<I, SmolStr>,
   /// Total nodes memberlist knows of
   num_nodes: usize,
   /// Total responses received
@@ -60,23 +61,24 @@ pub struct KeyRequestOptions {
 
 /// `KeyManager` encapsulates all functionality within Serf for handling
 /// encryption keyring changes across a cluster.
-pub struct KeyManager<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+pub struct KeyManager<T, D>
 where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  serf: OnceLock<Serf<T, D, O>>,
+  serf: OnceLock<Serf<T, D>>,
   /// The lock is used to serialize keys related handlers
   l: RwLock<()>,
 }
 
-impl<T, D, O> KeyManager<T, D, O>
+impl<T, D> KeyManager<T, D>
 where
-  D: MergeDelegate,
-  O: ReconnectTimeoutOverrider,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as std::future::Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
+  <<T::Runtime as Runtime>::Interval as futures::Stream>::Item: Send,
 {
   pub(crate) fn new() -> Self {
     Self {
@@ -85,7 +87,7 @@ where
     }
   }
 
-  pub(crate) fn store(&self, serf: Serf<T, D, O>) {
+  pub(crate) fn store(&self, serf: Serf<T, D>) {
     // No error handling here, because we never call this in parallel
     let _ = self.serf.set(serf);
   }
@@ -97,7 +99,7 @@ where
     &self,
     key: SecretKey,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<T, D, O>> {
+  ) -> Result<KeyResponse, Error<T, D>> {
     let _mu = self.l.write().await;
     self
       .handle_key_request(Some(key), InternalQueryEventType::InstallKey, opts)
@@ -111,7 +113,7 @@ where
     &self,
     key: SecretKey,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<T, D, O>> {
+  ) -> Result<KeyResponse, Error<T, D>> {
     let _mu = self.l.write().await;
     self
       .handle_key_request(Some(key), InternalQueryEventType::UseKey, opts)
@@ -125,7 +127,7 @@ where
     &self,
     key: SecretKey,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<T, D, O>> {
+  ) -> Result<KeyResponse, Error<T, D>> {
     let _mu = self.l.write().await;
     self
       .handle_key_request(Some(key), InternalQueryEventType::RemoveKey, opts)
@@ -137,7 +139,7 @@ where
   /// operators to ensure that there are no lingering keys installed on any agents.
   /// Since having multiple keys installed can cause performance penalties in some
   /// cases, it's important to verify this information and remove unneeded keys.
-  pub async fn list_keys(&self) -> Result<KeyResponse, Error<T, D, O>> {
+  pub async fn list_keys(&self) -> Result<KeyResponse, Error<T, D>> {
     let _mu = self.l.read().await;
     self
       .handle_key_request(None, InternalQueryEventType::ListKey, None)
@@ -149,7 +151,7 @@ where
     key: Option<SecretKey>,
     ty: InternalQueryEventType,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<T, D, O>> {
+  ) -> Result<KeyResponse, Error<T, D>> {
     // Encode the query request
     let req =
       encode_message(MessageType::KeyRequest, &KeyRequest { key }).map_err(Error::Encode)?;

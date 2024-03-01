@@ -8,38 +8,39 @@ use std::{
 use agnostic::Runtime;
 use async_channel::{Receiver, Sender};
 use async_lock::Mutex;
-use serde::{Deserialize, Serialize};
-use showbiz_core::{
+use futures::FutureExt;
+use memberlist_core::{
   bytes::Bytes,
-  futures_util::{self, FutureExt},
-  humantime_serde, tracing,
-  transport::Transport,
-  NodeId,
+  tracing,
+  transport::{AddressResolver, Node, Transport},
+  util::{OneOrMore, SmallVec, TinyVec},
 };
+use smol_str::SmolStr;
 
 use crate::{
   clock::LamportTime,
   delegate::MergeDelegate,
   error::Error,
   types::{
-    decode_message, encode_filter, encode_relay_message, FilterType, FilterTypeRef, MessageType,
-    QueryResponseMessage, Tag, TagRef,
+    encode_filter, FilterType, FilterTypeRef, MessageType, QueryResponseMessage, Tag, TagRef,
   },
-  Member, MemberStatus, ReconnectTimeoutOverrider, Serf,
+  Filter, Member, MemberStatus, ReconnectDelegate, Serf, Wire,
 };
 
 /// Provided to [`Serf::query`] to configure the parameters of the
 /// query. If not provided, sane defaults will be used.
 #[viewit::viewit]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueryParam {
-  /// If provided, we restrict the nodes that should respond to those
-  /// with names in this list
-  filter_nodes: Vec<NodeId>,
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct QueryParam<I, A> {
+  // /// If provided, we restrict the nodes that should respond to those
+  // /// with names in this list
+  // filter_nodes: Vec<Node<I, A>>,
 
-  /// Maps a tag name to a regular expression that is applied
-  /// to restrict the nodes that should respond
-  filter_tags: HashMap<String, String>,
+  // /// Maps a tag name to a regular expression that is applied
+  // /// to restrict the nodes that should respond
+  // filter_tags: HashMap<SmolStr, SmolStr>,
+  filters: OneOrMore<Filter<I, A>>,
 
   /// If true, we are requesting an delivery acknowledgement from
   /// every node that meets the filter requirement. This means nodes
@@ -53,54 +54,45 @@ pub struct QueryParam {
 
   /// The timeout limits how long the query is left open. If not provided,
   /// then a default timeout is used based on the configuration of Serf
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   timeout: Duration,
 }
 
-impl QueryParam {
+impl<I, A> QueryParam<I, A> {
   /// Used to convert the filters into the wire format
-  pub(crate) fn encode_filters(&self) -> Result<Vec<Bytes>, rmp_serde::encode::Error> {
-    let mut filters = Vec::with_capacity(self.filter_nodes.len() + self.filter_tags.len());
-
-    // Add the node filter
-    if !self.filter_nodes.is_empty() {
-      let filter = FilterTypeRef::Node(&self.filter_nodes);
-      filters.push(encode_filter(filter)?);
-    }
-
-    // Add the tag filter
-    for (t, expr) in self.filter_tags.iter() {
-      let filter = FilterTypeRef::Tag(TagRef { tag: t, expr });
-      filters.push(encode_filter(filter)?);
+  pub(crate) fn encode_filters<W: Wire>(&self) -> Result<SmallVec<Bytes>, W::Error> {
+    let mut filters = TinyVec::with_capacity(self.filters.len());
+    for filter in self.filters.iter() {
+      filters.push(W::encode_filter(filter)?);
     }
 
     Ok(filters)
   }
 }
 
-struct QueryResponseChannel {
+struct QueryResponseChannel<I, A> {
   /// Used to send the name of a node for which we've received an ack
-  ack_ch: Option<(Sender<NodeId>, Receiver<NodeId>)>,
+  ack_ch: Option<(Sender<Node<I, A>>, Receiver<Node<I, A>>)>,
   /// Used to send a response from a node
-  resp_ch: (Sender<NodeResponse>, Receiver<NodeResponse>),
+  resp_ch: (Sender<NodeResponse<I, A>>, Receiver<NodeResponse<I, A>>),
 }
 
-pub(crate) struct QueryResponseCore {
+pub(crate) struct QueryResponseCore<I, A> {
   closed: bool,
-  acks: HashSet<NodeId>,
-  responses: HashSet<NodeId>,
+  acks: HashSet<Node<I, A>>,
+  responses: HashSet<Node<I, A>>,
 }
 
-pub(crate) struct QueryResponseInner {
-  core: Mutex<QueryResponseCore>,
-  channel: QueryResponseChannel,
+pub(crate) struct QueryResponseInner<I, A> {
+  core: Mutex<QueryResponseCore<I, A>>,
+  channel: QueryResponseChannel<I, A>,
 }
 
 /// Returned for each new Query. It is used to collect
 /// Ack's as well as responses and to provide those back to a client.
 #[viewit::viewit(vis_all = "pub(crate)")]
 #[derive(Clone)]
-pub struct QueryResponse {
+pub struct QueryResponse<I, A> {
   /// The duration of the query
   deadline: Instant,
 
@@ -111,10 +103,10 @@ pub struct QueryResponse {
   ltime: LamportTime,
 
   #[viewit(getter(vis = "pub(crate)", const, style = "ref"))]
-  inner: Arc<QueryResponseInner>,
+  inner: Arc<QueryResponseInner<I, A>>,
 }
 
-impl QueryResponse {
+impl<I, A> QueryResponse<I, A> {
   #[inline]
   pub fn new(id: u32, ltime: LamportTime, num_nodes: usize, deadline: Instant, ack: bool) -> Self {
     let (ack_ch, acks) = if ack {
@@ -148,14 +140,14 @@ impl QueryResponse {
   /// Channel will be closed when the query is finished. This is nil,
   /// if the query did not specify RequestAck.
   #[inline]
-  pub fn ack_rx(&self) -> Option<async_channel::Receiver<NodeId>> {
+  pub fn ack_rx(&self) -> Option<async_channel::Receiver<Node<I, A>>> {
     self.inner.channel.ack_ch.as_ref().map(|(_, r)| r.clone())
   }
 
   /// Returns a channel that can be used to listen for responses.
   /// Channel will be closed when the query is finished.
   #[inline]
-  pub fn response_rx(&self) -> async_channel::Receiver<NodeResponse> {
+  pub fn response_rx(&self) -> async_channel::Receiver<NodeResponse<I, A>> {
     self.inner.channel.resp_ch.1.clone()
   }
 
@@ -185,13 +177,15 @@ impl QueryResponse {
   }
 
   #[inline]
-  pub(crate) async fn handle_query_response<T, D, O>(&self, resp: QueryResponseMessage)
-  where
+  pub(crate) async fn handle_query_response<T, D, O>(
+    &self,
+    resp: QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) where
     D: MergeDelegate,
     T: Transport,
-    O: ReconnectTimeoutOverrider,
+    O: ReconnectDelegate,
     <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
+    <<T::Runtime as Runtime>::Interval as futures::Stream>::Item: Send,
   {
     // Check if the query is closed
     let mut c = self.inner.core.lock().await;
@@ -228,9 +222,9 @@ impl QueryResponse {
   where
     D: MergeDelegate,
     T: Transport,
-    O: ReconnectTimeoutOverrider,
+    O: ReconnectDelegate,
     <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
+    <<T::Runtime as Runtime>::Interval as futures::Stream>::Item: Send,
   {
     // Exit early if this is a duplicate ack
     if c.responses.contains(&nr.from) {
@@ -244,7 +238,7 @@ impl QueryResponse {
         Ok(())
       } else {
         let id = nr.from.clone();
-        futures_util::select! {
+        futures::select! {
           _ = self.inner.channel.resp_ch.0.send(nr).fuse() => {
             c.responses.insert(id);
             Ok(())
@@ -267,9 +261,9 @@ impl QueryResponse {
   where
     D: MergeDelegate,
     T: Transport,
-    O: ReconnectTimeoutOverrider,
+    O: ReconnectDelegate,
     <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
+    <<T::Runtime as Runtime>::Interval as futures::Stream>::Item: Send,
   {
     // Exit early if this is a duplicate ack
     if c.acks.contains(&nr.from) {
@@ -283,7 +277,7 @@ impl QueryResponse {
       if c.closed {
         Ok(())
       } else if let Some((tx, _)) = &self.inner.channel.ack_ch {
-        futures_util::select! {
+        futures::select! {
           _ = tx.send(nr.from.clone()).fuse() => {
             c.acks.insert(nr.from.clone());
             Ok(())
@@ -301,19 +295,20 @@ impl QueryResponse {
 
 /// Used to represent a single response from a node
 #[viewit::viewit]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct NodeResponse {
-  from: NodeId,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct NodeResponse<I, A> {
+  from: Node<I, A>,
   payload: Bytes,
 }
 
 impl<T, D, O> Serf<T, D, O>
 where
   D: MergeDelegate,
-  O: ReconnectTimeoutOverrider,
+  O: ReconnectDelegate,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as std::future::Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
+  <<T::Runtime as Runtime>::Interval as futures::Stream>::Item: Send,
 {
   /// Returns the default timeout value for a query
   /// Computed as
@@ -331,8 +326,7 @@ where
   /// Used to return the default query parameters
   pub async fn default_query_param(&self) -> QueryParam {
     QueryParam {
-      filter_nodes: vec![],
-      filter_tags: HashMap::new(),
+      filters: OneOrMore::new(),
       request_ack: false,
       relay_factor: 0,
       timeout: self.default_query_timeout().await,
@@ -347,9 +341,12 @@ where
       }
 
       match filter[0] {
-        FilterType::NODE => {
+        Filter::NODE => {
           // Decode the filter
-          let nodes = match decode_message::<Vec<NodeId>>(&filter[1..]) {
+          let nodes = match decode_message::<
+            Vec<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+          >(&filter[1..])
+          {
             Ok(nodes) => nodes,
             Err(err) => {
               tracing::warn!(target = "ruserf", err=%err, "failed to decode node filter");
@@ -365,7 +362,7 @@ where
             return false;
           }
         }
-        FilterType::TAG => {
+        Filter::TAG => {
           // Decode the filter
           let filter = match decode_message::<Tag>(&filter[1..]) {
             Ok(filter) => filter,
@@ -412,8 +409,8 @@ where
   pub(crate) async fn relay_response(
     &self,
     relay_factor: u8,
-    node_id: NodeId,
-    resp: QueryResponseMessage,
+    node_id: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+    resp: QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
   ) -> Result<(), Error<T, D, O>> {
     if relay_factor == 0 {
       return Ok(());
@@ -439,7 +436,7 @@ where
             Some(m.member.clone())
           }
         })
-        .collect::<Vec<_>>()
+        .collect::<TinyVec<_>>()
     };
 
     if members.is_empty() {
@@ -471,7 +468,7 @@ where
       }
     });
 
-    let errs = futures_util::future::join_all(futs)
+    let errs = futures::future::join_all(futs)
       .await
       .into_iter()
       .filter_map(|rst| {
@@ -492,7 +489,7 @@ where
 }
 
 #[inline]
-fn random_members(k: usize, mut members: Vec<Arc<Member>>) -> Vec<Arc<Member>> {
+fn random_members<I, A>(k: usize, mut members: Vec<Arc<Member<I, A>>>) -> Vec<Arc<Member<I, A>>> {
   let n = members.len();
   if n == 0 {
     return Vec::new();

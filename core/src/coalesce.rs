@@ -7,40 +7,43 @@ use std::{future::Future, time::Duration};
 
 use agnostic::Runtime;
 use async_channel::{bounded, Receiver, Sender};
-use showbiz_core::{
-  futures_util::{self, FutureExt, Stream},
+use futures::{FutureExt, Stream};
+use memberlist_core::{
   tracing,
-  transport::Transport,
+  transport::{AddressResolver, Transport},
 };
 
-use super::{delegate::MergeDelegate, event::Event, serf::ReconnectTimeoutOverrider};
+use crate::delegate::Delegate;
+
+use super::{delegate::MergeDelegate, event::Event};
 
 pub(crate) struct ClosedOutChannel;
 
-#[showbiz_core::async_trait::async_trait]
 pub(crate) trait Coalescer: Send + Sync + 'static {
-  type Delegate: MergeDelegate;
+  type Delegate: Delegate<
+    Id = <Self::Transport as Transport>::Id,
+    Address = <<Self::Transport as Transport>::Resolver as AddressResolver>::ResolvedAddress,
+  >;
   type Transport: Transport;
-  type Overrider: ReconnectTimeoutOverrider;
 
   fn name(&self) -> &'static str;
 
-  fn handle(&self, event: &Event<Self::Transport, Self::Delegate, Self::Overrider>) -> bool
+  fn handle(&self, event: &Event<Self::Transport, Self::Delegate>) -> bool
   where
     <<<Self::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
     <<<Self::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send;
 
   /// Invoked to coalesce the given event
-  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate, Self::Overrider>)
+  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate>)
   where
     <<<Self::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
     <<<Self::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send;
 
   /// Invoked to flush the coalesced events
-  async fn flush(
+  fn flush(
     &mut self,
-    out_tx: &Sender<Event<Self::Transport, Self::Delegate, Self::Overrider>>,
-  ) -> Result<(), ClosedOutChannel>
+    out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
+  ) -> impl Future<Output = Result<(), ClosedOutChannel>> + Send
   where
     <<<Self::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
     <<<Self::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send;
@@ -49,12 +52,12 @@ pub(crate) trait Coalescer: Send + Sync + 'static {
 /// Returns an event channel where the events are coalesced
 /// using the given coalescer.
 pub(crate) fn coalesced_event<C: Coalescer>(
-  out_tx: Sender<Event<C::Transport, C::Delegate, C::Overrider>>,
+  out_tx: Sender<Event<C::Transport, C::Delegate>>,
   shutdown_rx: Receiver<()>,
   c_period: Duration,
   q_period: Duration,
   c: C,
-) -> Sender<Event<C::Transport, C::Delegate, C::Overrider>>
+) -> Sender<Event<C::Transport, C::Delegate>>
 where
   <<<C::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<<C::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send,
@@ -74,8 +77,8 @@ where
 /// A simple long-running routine that manages the high-level
 /// flow of coalescing based on quiescence and a maximum quantum period.
 async fn coalesce_loop<C: Coalescer>(
-  in_rx: Receiver<Event<C::Transport, C::Delegate, C::Overrider>>,
-  out_tx: Sender<Event<C::Transport, C::Delegate, C::Overrider>>,
+  in_rx: Receiver<Event<C::Transport, C::Delegate>>,
+  out_tx: Sender<Event<C::Transport, C::Delegate>>,
   shutdown_rx: Receiver<()>,
   coalesce_peirod: Duration,
   quiescent_period: Duration,
@@ -89,7 +92,7 @@ async fn coalesce_loop<C: Coalescer>(
   let mut shutdown = false;
 
   loop {
-    futures_util::select! {
+    futures::select! {
       ev = in_rx.recv().fuse() => {
         let Ok(ev) = ev else {
           // if we receive an error, it means the channel is closed. We should return
