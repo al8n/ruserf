@@ -14,7 +14,7 @@ A highly customable, adaptable, runtime agnostic and WASM/WASI friendly Gossip p
 Port and improve [HashiCorp's serf](https://github.com/hashicorp/serf) to Rust.
 
 [<img alt="github" src="https://img.shields.io/badge/github-al8n/ruserf-8da0cb?style=for-the-badge&logo=Github" height="22">][Github-url]
-<img alt="LoC" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fal8n%2Fd29ceff54c025fe4e8b144a51efb9324%2Fraw%2Fruserf" height="22">
+<img alt="LoC" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fal8n%2F9632112cb0a7fb0112e6c74778398c35%2Fraw%2Fruserf" height="22">
 [<img alt="Build" src="https://img.shields.io/github/actions/workflow/status/al8n/ruserf/coverage.yml?logo=Github-Actions&style=for-the-badge" height="22">][CI-url]
 [<img alt="codecov" src="https://img.shields.io/codecov/c/gh/al8n/ruserf?style=for-the-badge&token=6R3QFWRWHL&logo=codecov" height="22">][codecov-url]
 
