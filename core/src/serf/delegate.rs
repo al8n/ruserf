@@ -1,59 +1,32 @@
 use crate::{
   broadcast::SerfBroadcast,
   clock::LamportTime,
-  coordinate::Coordinate,
-  types::{
-    JoinMessage, Leave, MessageType, MessageUserEvent, PushPull, PushPullRef, QueryMessage,
-    QueryResponseMessage, RelayHeader,
-  },
+  delegate::{Delegate, TransformDelegate},
+  error::{DelegateError, Error},
+  types::{JoinMessage, Leave, MessageUserEvent, PushPullRef, SerfMessage},
+  Member, MemberStatus, MessageType, Serf,
 };
-
-use super::*;
 
 use std::{
   future::Future,
   sync::{Arc, OnceLock},
 };
 
-use agnostic::Runtime;
 use atomic::{Atomic, Ordering};
 use futures::Stream;
+use indexmap::IndexSet;
 use memberlist_core::{
+  agnostic::Runtime,
   bytes::{Buf, BufMut, Bytes},
-  delegate::{Delegate as MemberlistDelegate, MergeDelegate as MemberlistMergeDelegate, *},
+  delegate::{
+    AliveDelegate, ConflictDelegate, Delegate as MemberlistDelegate, EventDelegate,
+    MergeDelegate as MemberlistMergeDelegate, NodeDelegate, PingDelegate,
+  },
   tracing,
-  transport::{AddressResolver, Id, Transport},
-  types::{NodeState, SmallVec, State},
-  util::TinyVec,
-  CheapClone, DelegateVersion, ProtocolVersion, META_MAX_SIZE,
+  transport::{AddressResolver, Node, Transport},
+  types::{DelegateVersion, Meta, NodeState, ProtocolVersion, SmallVec, State},
+  CheapClone, META_MAX_SIZE,
 };
-
-// #[derive(thiserror::Error)]
-// pub enum SerfDelegateError<T, D>
-// where
-//   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-//   T: Transport,
-//   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-//   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-// {
-//   #[error("{0}")]
-//   Serf(Box<crate::error::Error<T, D>>),
-//   #[error("{0}")]
-//   Merge(D::Error),
-// }
-
-// impl<D, T> core::fmt::Debug
-//   for SerfDelegateError<T, D>
-// where
-//   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-//   T: Transport,
-//   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-//   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-// {
-//   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//     core::fmt::Display::fmt(self, f)
-//   }
-// }
 
 // PingVersion is an internal version for the ping message, above the normal
 // versioning we get from the protocol version. This enables small updates
@@ -99,28 +72,46 @@ impl<D, T> NodeDelegate for SerfDelegate<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
+  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  fn node_meta(&self, limit: usize) -> Bytes {
+  async fn node_meta(&self, limit: usize) -> Meta {
     match self.this().inner.opts.tags() {
       Some(tags) => {
-        let role_bytes = match encode_tags::<T, D>(&tags) {
-          Ok(b) => b,
-          Err(e) => {
-            tracing::error!(target = "ruserf", err=%e, "failed to encode tags");
-            return Bytes::new();
-          }
-        };
-
-        if role_bytes.len() > limit {
+        let encoded_len = <D as TransformDelegate>::tags_encoded_len(&tags);
+        let limit = limit.min(Meta::MAX_SIZE);
+        if encoded_len > limit {
           panic!(
             "node tags {:?} exceeds length limit of {} bytes",
-            tags.as_ref(),
-            limit
+            tags, limit
           );
         }
-        role_bytes
+
+        let mut role_bytes = vec![0; encoded_len];
+        match <D as TransformDelegate>::encode_tags(&tags, &mut role_bytes) {
+          Ok(len) => {
+            debug_assert_eq!(
+              len, encoded_len,
+              "expected encoded len {} mismatch the actual encoded len {}",
+              encoded_len, len
+            );
+
+            if len > limit {
+              panic!(
+                "node tags {:?} exceeds length limit of {} bytes",
+                tags, limit
+              );
+            }
+
+            role_bytes.try_into().unwrap()
+          }
+          Err(e) => {
+            tracing::error!(target = "ruserf", err=%e, "failed to encode tags");
+            Meta::empty()
+          }
+        }
       }
-      None => Bytes::new(),
+      None => Meta::empty(),
     }
   }
 
@@ -136,124 +127,129 @@ where
     let mut rebroadcast = None;
     let mut rebroadcast_queue = &this.inner.broadcasts;
 
-    let t = msg[0];
-
-    match () {
-      () if t == MessageType::Leave as u8 => match decode_message::<Leave>(&msg[1..]) {
-        Ok(leave) => {
-          tracing::debug!(
-            target = "ruserf",
-            "message type: {}",
-            MessageType::Leave.as_str()
-          );
-          rebroadcast = this
-            .handle_node_leave_intent(&leave)
-            .await
-            .then(|| msg.clone());
-        }
-        Err(e) => {
-          tracing::error!(target = "ruserf", err=%e, "failed to decode leave message");
-        }
-      },
-      () if t == MessageType::Join as u8 => match decode_message::<JoinMessage>(&msg[1..]) {
-        Ok(join) => {
-          tracing::debug!(
-            target = "ruserf",
-            "message type: {}",
-            MessageType::Join.as_str()
-          );
-          rebroadcast = this
-            .handle_node_join_intent(&join)
-            .await
-            .then(|| msg.clone());
-        }
-        Err(e) => {
-          tracing::error!(target = "ruserf", err=%e, "failed to decode join message");
-        }
-      },
-      () if t == MessageType::UserEvent as u8 => {
-        match decode_message::<MessageUserEvent>(&msg[1..]) {
-          Ok(ue) => {
-            tracing::debug!(
-              target = "ruserf",
-              "message type: {}",
-              MessageType::UserEvent.as_str()
-            );
-            rebroadcast = this.handle_user_event(ue).await.then(|| msg.clone());
-            rebroadcast_queue = &this.inner.event_broadcasts;
-          }
-          Err(e) => {
-            tracing::error!(target = "ruserf", err=%e, "failed to decode user event message");
-          }
-        }
-      }
-      () if t == MessageType::Query as u8 => match decode_message::<QueryMessage>(&msg[1..]) {
-        Ok(q) => {
-          tracing::debug!(
-            target = "ruserf",
-            "message type: {}",
-            MessageType::Query.as_str()
-          );
-          rebroadcast = this.handle_query(q, None).await.then(|| msg.clone());
-          rebroadcast_queue = &this.inner.query_broadcasts;
-        }
-        Err(e) => {
-          tracing::error!(target = "ruserf", err=%e, "failed to decode query message");
-        }
-      },
-      () if t == MessageType::QueryResponse as u8 => {
-        match decode_message::<QueryResponseMessage>(&msg[1..]) {
-          Ok(q) => {
-            tracing::debug!(
-              target = "ruserf",
-              "message type: {}",
-              MessageType::QueryResponse.as_str()
-            );
-            this.handle_query_response(q).await;
-          }
-          Err(e) => {
-            tracing::error!(target = "ruserf", err=%e, "failed to decode query response message");
-          }
-        }
-      }
-      () if t == MessageType::Relay as u8 => {
-        let mut reader = std::io::Cursor::new(&msg[1..]);
-        match decode_message_from_reader::<RelayHeader, _>(&mut reader) {
-          Ok(header) => {
-            tracing::debug!(
-              target = "ruserf",
-              "message type: {}",
-              MessageType::Relay.as_str()
-            );
-            // The remaining contents are the message itself, so forward that
-            let cnt = reader.position() as usize;
-            msg.advance(cnt + 1);
-
-            tracing::debug!(
-              target = "ruserf",
-              "relaying response to addr: {}",
-              header.dest
-            );
-            if let Err(e) = this.inner.memberlist.send(&header.dest, msg.clone()).await {
-              tracing::error!(target = "ruserf", err=%e, "failed to forwarding message to {}", header.dest);
+    match <D as TransformDelegate>::check_message_type(&msg) {
+      Some(ty) => match ty {
+        MessageType::Leave => match <D as TransformDelegate>::decode_message(&msg) {
+          Ok(l) => {
+            if let SerfMessage::Leave(l) = &l {
+              tracing::debug!(target = "ruserf", "leave message",);
+              rebroadcast = this.handle_node_leave_intent(l).await.then(|| msg.clone());
+            } else {
+              tracing::warn!(
+                target = "ruserf",
+                "receive unexpected message: {}",
+                l.as_str()
+              );
             }
           }
           Err(e) => {
-            tracing::error!(target = "ruserf", err=%e, "failed to decode relay message");
+            tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
           }
+        },
+        MessageType::Join => match <D as TransformDelegate>::decode_message(&msg) {
+          Ok(j) => {
+            if let SerfMessage::Join(j) = &j {
+              tracing::debug!(target = "ruserf", "join message",);
+              rebroadcast = this.handle_node_join_intent(j).await.then(|| msg.clone());
+            } else {
+              tracing::warn!(
+                target = "ruserf",
+                "receive unexpected message: {}",
+                j.as_str()
+              );
+            }
+          }
+          Err(e) => {
+            tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
+          }
+        },
+        MessageType::UserEvent => match <D as TransformDelegate>::decode_message(&msg) {
+          Ok(ue) => {
+            if let SerfMessage::UserEvent(ue) = ue {
+              tracing::debug!(target = "ruserf", "user event message",);
+              rebroadcast = this.handle_user_event(ue).await.then(|| msg.clone());
+              rebroadcast_queue = &this.inner.event_broadcasts;
+            } else {
+              tracing::warn!(
+                target = "ruserf",
+                "receive unexpected message: {}",
+                ue.as_str()
+              );
+            }
+          }
+          Err(e) => {
+            tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
+          }
+        },
+        MessageType::Query => match <D as TransformDelegate>::decode_message(&msg) {
+          Ok(q) => {
+            if let SerfMessage::Query(q) = q {
+              tracing::debug!(target = "ruserf", "query message",);
+              rebroadcast = this.handle_query(q, None).await.then(|| msg.clone());
+              rebroadcast_queue = &this.inner.query_broadcasts;
+            } else {
+              tracing::warn!(
+                target = "ruserf",
+                "receive unexpected message: {}",
+                q.as_str()
+              );
+            }
+          }
+          Err(e) => {
+            tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
+          }
+        },
+        MessageType::QueryResponse => match <D as TransformDelegate>::decode_message(&msg) {
+          Ok(qr) => {
+            if let SerfMessage::QueryResponse(qr) = qr {
+              tracing::debug!(target = "ruserf", "query response message",);
+              this.handle_query_response(qr).await;
+            } else {
+              tracing::warn!(
+                target = "ruserf",
+                "receive unexpected message: {}",
+                qr.as_str()
+              );
+            }
+          }
+          Err(e) => {
+            tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
+          }
+        },
+        MessageType::Relay => match <D as TransformDelegate>::decode_node(&msg) {
+          Ok((consumed, n)) => {
+            tracing::debug!(target = "ruserf", "relay message",);
+            tracing::debug!(target = "ruserf", "relaying response to node: {}", n);
+            msg.advance(consumed);
+            if let Err(e) = this.inner.memberlist.send(n.address(), msg.clone()).await {
+              tracing::error!(target = "ruserf", err=%e, "failed to forwarding message to {}", n);
+            }
+          }
+          Err(e) => {
+            tracing::warn!(target = "ruserf", err=%e, "failed to decode relay destination");
+          }
+        },
+        ty => {
+          tracing::warn!(
+            target = "ruserf",
+            "receive unexpected message: {}",
+            ty.as_str()
+          );
         }
-      }
-      _ => {
-        tracing::warn!(target = "ruserf", "received message of unknown type: {}", t);
+      },
+      None => {
+        tracing::warn!(target = "ruserf", "receive unknown message type",);
       }
     }
 
     if let Some(msg) = rebroadcast {
       rebroadcast_queue
-        .queue_broadcast(SerfBroadcast {
-          msg,
-          notify_tx: None,
-        })
+        .queue_broadcast(
+          SerfBroadcast::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> {
+            msg,
+            notify_tx: None,
+          },
+        )
         .await;
     }
   }
@@ -302,26 +298,37 @@ where
     let events = this.inner.event_core.read().await;
 
     // Create the message to send
+    let status_ltimes = members
+      .states
+      .iter()
+      .map(|(k, v)| (k.cheap_clone(), v.status_time))
+      .collect();
+    let left_members = members
+      .left_members
+      .iter()
+      .map(|v| v.member.node().cheap_clone())
+      .collect::<IndexSet<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>();
     let pp = PushPullRef {
       ltime: this.inner.clock.time(),
-      status_ltimes: members
-        .states
-        .iter()
-        .map(|(k, v)| (k.clone(), v.status_time))
-        .collect(),
-      left_members: members
-        .left_members
-        .iter()
-        .map(|v| v.member.id.clone())
-        .collect(),
+      status_ltimes: &status_ltimes,
+      left_members: &left_members,
       event_ltime: this.inner.event_clock.time(),
       events: events.buffer.as_slice(),
       query_ltime: this.inner.query_clock.time(),
     };
     drop(members);
 
-    match encode_message(MessageType::PushPull, &pp) {
-      Ok(buf) => buf.into(),
+    let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(pp);
+    let mut buf = vec![0; expected_encoded_len];
+    match <D as TransformDelegate>::encode_message(pp, &mut buf) {
+      Ok(encoded_len) => {
+        debug_assert_eq!(
+          expected_encoded_len, encoded_len,
+          "expected encoded len {} mismatch the actual encoded len {}",
+          expected_encoded_len, encoded_len
+        );
+        buf.into()
+      }
       Err(e) => {
         tracing::error!(target = "ruserf", err=%e, "failed to encode local state");
         Bytes::new()
@@ -329,116 +336,135 @@ where
     }
   }
 
-  async fn merge_remote_state(&self, buf: &[u8], is_join: bool) {
+  async fn merge_remote_state(&self, buf: Bytes, is_join: bool) {
     if buf.is_empty() {
       tracing::error!(target = "ruserf", "remote state is zero bytes");
       return;
     }
 
     // Check the message type
-    if buf[0] != MessageType::PushPull as u8 {
+    let Some(ty) = <D as TransformDelegate>::check_message_type(&buf) else {
       tracing::error!(
         target = "ruserf",
         "remote state has bad type prefix {}",
         buf[0]
       );
       return;
-    }
+    };
 
     // TODO: messageDropper
-
-    // Attempt a decode
-    match decode_message::<PushPull>(&buf[1..]) {
-      Ok(pp) => {
-        let this = self.this();
-        // Witness the Lamport clocks first.
-        // We subtract 1 since no message with that clock has been sent yet
-        if pp.ltime > LamportTime::ZERO {
-          this.inner.clock.witness(pp.ltime - LamportTime(1));
-        }
-        if pp.event_ltime > LamportTime::ZERO {
-          this
-            .inner
-            .event_clock
-            .witness(pp.event_ltime - LamportTime(1));
-        }
-        if pp.query_ltime > LamportTime::ZERO {
-          this
-            .inner
-            .query_clock
-            .witness(pp.query_ltime - LamportTime(1));
-        }
-
-        // Process the left nodes first to avoid the LTimes from incrementing
-        // in the wrong order. Note that we don't have the actual Lamport time
-        // for the leave message, so we go one past the join time, since the
-        // leave must have been accepted after that to get onto the left members
-        // list. If we didn't do this then the message would not get processed.
-        for id in &pp.left_members {
-          if let Some(&ltime) = pp.status_ltimes.get(id) {
-            this
-              .handle_node_leave_intent(&Leave {
-                ltime,
-                node: id.clone(),
-                prune: false,
-              })
-              .await;
-          } else {
-            tracing::error!(
-              target = "ruserf",
-              "{} is in left members, but cannot find the lamport time for it in status",
-              id
-            );
+    match ty {
+      MessageType::PushPull => {
+        match <D as TransformDelegate>::decode_message(&buf) {
+          Err(e) => {
+            tracing::error!(target = "ruserf", err=%e, "failed to decode remote state");
           }
-        }
+          Ok(msg) => {
+            match msg {
+              SerfMessage::PushPull(pp) => {
+                let this = self.this();
+                // Witness the Lamport clocks first.
+                // We subtract 1 since no message with that clock has been sent yet
+                if pp.ltime > LamportTime::ZERO {
+                  this.inner.clock.witness(pp.ltime - LamportTime(1));
+                }
+                if pp.event_ltime > LamportTime::ZERO {
+                  this
+                    .inner
+                    .event_clock
+                    .witness(pp.event_ltime - LamportTime(1));
+                }
+                if pp.query_ltime > LamportTime::ZERO {
+                  this
+                    .inner
+                    .query_clock
+                    .witness(pp.query_ltime - LamportTime(1));
+                }
 
-        // Update any other LTimes
-        for (id, ltime) in pp.status_ltimes {
-          // Skip the left nodes
-          if pp.left_members.contains(&id) {
-            continue;
-          }
+                // Process the left nodes first to avoid the LTimes from incrementing
+                // in the wrong order. Note that we don't have the actual Lamport time
+                // for the leave message, so we go one past the join time, since the
+                // leave must have been accepted after that to get onto the left members
+                // list. If we didn't do this then the message would not get processed.
+                for id in &pp.left_members {
+                  if let Some(&ltime) = pp.status_ltimes.get(id) {
+                    this
+                      .handle_node_leave_intent(&Leave {
+                        ltime,
+                        node: id.clone(),
+                        prune: false,
+                      })
+                      .await;
+                  } else {
+                    tracing::error!(
+                      target = "ruserf",
+                      "{} is in left members, but cannot find the lamport time for it in status",
+                      id
+                    );
+                  }
+                }
 
-          // Create an artificial join message
-          this
-            .handle_node_join_intent(&JoinMessage { ltime, node: id })
-            .await;
-        }
+                // Update any other LTimes
+                for (id, ltime) in pp.status_ltimes {
+                  // Skip the left nodes
+                  if pp.left_members.contains(&id) {
+                    continue;
+                  }
 
-        // If we are doing a join, and eventJoinIgnore is set
-        // then we set the eventMinTime to the EventLTime. This
-        // prevents any of the incoming events from being processed
-        let event_join_ignore = this.inner.event_join_ignore.load(Ordering::Acquire);
-        if is_join && event_join_ignore {
-          let mut ec = this.inner.event_core.write().await;
-          if pp.event_ltime > ec.min_time {
-            ec.min_time = pp.event_ltime;
-          }
-        }
+                  // Create an artificial join message
+                  this
+                    .handle_node_join_intent(&JoinMessage { ltime, node: id })
+                    .await;
+                }
 
-        // Process all the events
-        for events in pp.events {
-          match events {
-            Some(events) => {
-              for e in events.events {
-                this
-                  .handle_user_event(MessageUserEvent {
-                    ltime: events.ltime,
-                    name: e.name,
-                    payload: e.payload,
-                    cc: false,
-                  })
-                  .await;
+                // If we are doing a join, and eventJoinIgnore is set
+                // then we set the eventMinTime to the EventLTime. This
+                // prevents any of the incoming events from being processed
+                let event_join_ignore = this.inner.event_join_ignore.load(Ordering::Acquire);
+                if is_join && event_join_ignore {
+                  let mut ec = this.inner.event_core.write().await;
+                  if pp.event_ltime > ec.min_time {
+                    ec.min_time = pp.event_ltime;
+                  }
+                }
+
+                // Process all the events
+                for events in pp.events {
+                  match events {
+                    Some(events) => {
+                      for e in events.events {
+                        this
+                          .handle_user_event(MessageUserEvent {
+                            ltime: events.ltime,
+                            name: e.name,
+                            payload: e.payload,
+                            cc: false,
+                          })
+                          .await;
+                      }
+                    }
+                    None => continue,
+                  }
+                }
+              }
+              msg => {
+                tracing::error!(
+                  target = "ruserf",
+                  "remote state has bad type {}",
+                  msg.as_str()
+                );
+                return;
               }
             }
-            None => continue,
           }
         }
-        Ok(())
       }
-      Err(e) => {
-        tracing::error!(target = "ruserf", err=%e, "failed to decode remote state");
-        Ok(())
+      ty => {
+        tracing::error!(
+          target = "ruserf",
+          "remote state has bad type {}",
+          ty.as_str()
+        );
       }
     }
   }
@@ -559,7 +585,9 @@ where
       let mut buf = Vec::new();
       buf.put_u8(PING_VERSION);
 
-      if let Err(e) = rmp_serde::encode::write(&mut buf, &c.client.get_coordinate()) {
+      if let Err(e) =
+        <D as TransformDelegate>::encode_coordinate(&c.client.get_coordinate(), &mut buf[1..])
+      {
         tracing::error!(target = "ruserf", err=%e, "failed to encode coordinate");
       }
       buf.into()
@@ -593,7 +621,7 @@ where
         }
 
         // Process the remainder of the message as a coordinate.
-        let coord = match rmp_serde::decode::from_slice::<Coordinate>(&payload[1..]) {
+        let coord = match <D as TransformDelegate>::decode_coordinate(&payload[1..]) {
           Ok(c) => c,
           Err(e) => {
             tracing::error!(target = "ruserf", err=%e, "failed to decode coordinate from ping");
@@ -673,13 +701,14 @@ where
     MemberStatus::None
   };
 
-  if node.meta().len() > META_MAX_SIZE {
-    return Err(crate::error::Error::TagsTooLarge(node.meta().len()));
+  let meta = node.meta();
+  if meta.len() > META_MAX_SIZE {
+    return Err(crate::error::Error::TagsTooLarge(meta.len()));
   }
 
   Ok(Member {
     node: node.node(),
-    tags: decode_tags(node.meta()),
+    tags: <D as TransformDelegate>::decode_tags(node.meta()),
     status: Atomic::new(status),
     protocol_version: ProtocolVersion::V0,
     delegate_version: DelegateVersion::V0,

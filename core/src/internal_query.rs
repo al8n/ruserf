@@ -1,10 +1,10 @@
 use std::future::Future;
 
-use agnostic::Runtime;
 use async_channel::{bounded, Receiver, Sender};
 use either::Either;
 use futures::{FutureExt, Stream};
 use memberlist_core::{
+  agnostic::Runtime,
   bytes::Bytes,
   tracing,
   transport::{AddressResolver, Transport},
@@ -14,8 +14,8 @@ use smol_str::SmolStr;
 use crate::{
   delegate::Delegate,
   error::Error,
-  event::{Event, EventKind, InternalQueryEventType, QueryEvent},
-  types::{decode_message, encode_message, MessageType, QueryResponseMessage},
+  event::{Event, EventKind, InternalQueryEvent, QueryEvent},
+  types::{QueryResponseMessage, SerfMessage},
   KeyRequest,
 };
 
@@ -93,20 +93,20 @@ where
       ($ev: expr) => {{
         match $ev {
           EventKind::InternalQuery { ty, query: ev } => match ty {
-            InternalQueryEventType::Ping => {}
-            InternalQueryEventType::Conflict => {
+            InternalQueryEvent::Ping => {}
+            InternalQueryEvent::Conflict(v) => {
               Self::handle_conflict(ev).await;
             }
-            InternalQueryEventType::InstallKey => {
+            InternalQueryEvent::InstallKey => {
               Self::handle_install_key(ev).await;
             }
-            InternalQueryEventType::UseKey => {
+            InternalQueryEvent::UseKey => {
               Self::handle_use_key(ev).await;
             }
-            InternalQueryEventType::RemoveKey => {
+            InternalQueryEvent::RemoveKey => {
               Self::handle_remove_key(ev).await;
             }
-            InternalQueryEventType::ListKey => {
+            InternalQueryEvent::ListKey => {
               Self::handle_list_keys(ev).await;
             }
           },
@@ -154,7 +154,7 @@ where
 
     // Encode the response
     match out {
-      Some(state) => match encode_message(MessageType::ConflictResponse, state.member()) {
+      Some(state) => match encode_message(SerfMessage::ConflictResponse, state.member()) {
         Ok(msg) => {
           if let Err(e) = q.respond(msg.into()).await {
             tracing::error!(target="ruserf", err=%e, "failed to respond to conflict query");
@@ -383,13 +383,13 @@ where
       (q.ctx.this.inner.opts.query_response_size_limit / MIN_ENCODED_KEY_LENGTH).min(actual);
 
     for i in (0..=max_list_keys).rev() {
-      let buf = encode_message(MessageType::KeyResponse, resp)?;
+      let buf = encode_message(SerfMessage::KeyResponse, resp)?;
 
       // create response
       let qresp = q.create_response(buf.into());
 
       // encode response
-      let raw = encode_message(MessageType::QueryResponse, &qresp)?;
+      let raw = encode_message(SerfMessage::QueryResponse, &qresp)?;
 
       // Check the size limit
       if q.check_response_size(raw.as_slice()).is_err() {
@@ -424,7 +424,7 @@ where
           tracing::error!(target="ruserf", err=%e, "failed to respond to key query");
         }
       }
-      _ => match encode_message(MessageType::KeyResponse, resp) {
+      _ => match encode_message(SerfMessage::KeyResponse, resp) {
         Ok(msg) => {
           if let Err(e) = q.respond(msg.into()).await {
             tracing::error!(target="ruserf", err=%e, "failed to respond to key query");
@@ -440,6 +440,7 @@ where
 
 #[viewit::viewit]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg(feature = "encryption")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct NodeKeyResponse {
   /// Indicates true/false if there were errors or not
@@ -447,7 +448,7 @@ pub(crate) struct NodeKeyResponse {
   /// Contains error messages or other information
   msg: SmolStr,
   /// Used in listing queries to relay a list of installed keys
-  keys: Vec<SecretKey>,
+  keys: memberlist_core::types::SecretKeys,
   /// Used in listing queries to relay the primary key
-  primary_key: Option<SecretKey>,
+  primary_key: Option<memberlist_core::types::SecretKey>,
 }

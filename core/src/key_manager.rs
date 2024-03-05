@@ -1,23 +1,23 @@
 use std::{collections::HashMap, future::Future, sync::OnceLock};
 
-use agnostic::Runtime;
 use async_channel::Receiver;
 use async_lock::RwLock;
 use futures::{Stream, StreamExt};
 use memberlist_core::{
-  // security::SecretKey,
+  agnostic::Runtime,
   tracing,
   transport::{AddressResolver, Transport},
+  types::SecretKey,
 };
 use smol_str::SmolStr;
 
 use crate::{
-  delegate::{Delegate, MergeDelegate},
+  delegate::Delegate,
   error::Error,
-  event::InternalQueryEventType,
+  event::InternalQueryEvent,
   internal_query::NodeKeyResponse,
   query::{NodeResponse, QueryResponse},
-  types::{decode_message, encode_message, MessageType},
+  types::SerfMessage,
   Serf,
 };
 
@@ -99,7 +99,7 @@ where
     &self,
     key: SecretKey,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<T, D>> {
+  ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
       .handle_key_request(Some(key), InternalQueryEventType::InstallKey, opts)
@@ -113,7 +113,7 @@ where
     &self,
     key: SecretKey,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<T, D>> {
+  ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
       .handle_key_request(Some(key), InternalQueryEventType::UseKey, opts)
@@ -127,7 +127,7 @@ where
     &self,
     key: SecretKey,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<T, D>> {
+  ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
       .handle_key_request(Some(key), InternalQueryEventType::RemoveKey, opts)
@@ -139,7 +139,7 @@ where
   /// operators to ensure that there are no lingering keys installed on any agents.
   /// Since having multiple keys installed can cause performance penalties in some
   /// cases, it's important to verify this information and remove unneeded keys.
-  pub async fn list_keys(&self) -> Result<KeyResponse, Error<T, D>> {
+  pub async fn list_keys(&self) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.read().await;
     self
       .handle_key_request(None, InternalQueryEventType::ListKey, None)
@@ -149,12 +149,12 @@ where
   pub(crate) async fn handle_key_request(
     &self,
     key: Option<SecretKey>,
-    ty: InternalQueryEventType,
+    ty: InternalQueryEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<T, D>> {
+  ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     // Encode the query request
     let req =
-      encode_message(MessageType::KeyRequest, &KeyRequest { key }).map_err(Error::Encode)?;
+      encode_message(SerfMessage::KeyRequest, &KeyRequest { key }).map_err(Error::Encode)?;
 
     let serf = self.serf.get().unwrap();
     let mut q_param = serf.default_query_param().await;
@@ -190,7 +190,10 @@ where
     Ok(resp)
   }
 
-  async fn stream_key_response(&self, mut ch: Receiver<NodeResponse>) -> KeyResponse {
+  async fn stream_key_response(
+    &self,
+    mut ch: Receiver<NodeResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+  ) -> KeyResponse<T::Id> {
     let mut resp = KeyResponse {
       num_nodes: self.serf.get().unwrap().num_nodes().await,
       ..Default::default()
@@ -199,7 +202,7 @@ where
       resp.num_resp += 1;
 
       // Decode the response
-      if !r.payload.is_empty() || r.payload[0] != MessageType::KeyResponse as u8 {
+      if !r.payload.is_empty() || r.payload[0] != SerfMessage::KeyResponse as u8 {
         resp.messages.insert(
           r.from.clone(),
           SmolStr::new(format!(

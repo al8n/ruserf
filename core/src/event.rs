@@ -3,25 +3,25 @@ use std::{
   time::{Duration, Instant},
 };
 
-use agnostic::Runtime;
 use async_lock::Mutex;
 use either::Either;
 use futures::{Future, Stream};
 use memberlist_core::{
+  agnostic::Runtime,
   bytes::Bytes,
   transport::{AddressResolver, Node, Transport},
-  util::TinyVec,
+  types::TinyVec,
 };
 use smol_str::SmolStr;
 
-use crate::{
-  delegate::{Delegate, MergeDelegate},
+use super::{
+  clock::LamportTime,
+  delegate::{Delegate, MergeDelegate, TransformDelegate},
   error::Error,
-  types::{MessageType, QueryResponseMessage},
+  serf::Member,
+  types::{QueryResponseMessage, SerfMessageRef},
   Serf,
 };
-
-use super::{clock::LamportTime, serf::Member};
 
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -114,20 +114,20 @@ where
   }
 }
 
-impl<D, T> From<(InternalQueryEventType, QueryEvent<T, D>)> for Event<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
-  fn from(value: (InternalQueryEventType, QueryEvent<T, D>)) -> Self {
-    Self(Either::Left(EventKind::InternalQuery {
-      ty: value.0,
-      query: value.1,
-    }))
-  }
-}
+// impl<D, T> From<(InternalQueryEventType, QueryEvent<T, D>)> for Event<T, D>
+// where
+//   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+//   T: Transport,
+//   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
+//   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+// {
+//   fn from(value: (InternalQueryEventType, QueryEvent<T, D>)) -> Self {
+//     Self(Either::Left(EventKind::InternalQuery {
+//       ty: value.0,
+//       query: value.1,
+//     }))
+//   }
+// }
 
 pub(crate) enum EventKind<T, D>
 where
@@ -139,10 +139,7 @@ where
   Member(MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>),
   User(UserEvent),
   Query(QueryEvent<T, D>),
-  InternalQuery {
-    ty: InternalQueryEventType,
-    query: QueryEvent<T, D>,
-  },
+  InternalQuery(InternalQueryEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>),
 }
 
 impl<D, T> Clone for EventKind<T, D>
@@ -157,10 +154,7 @@ where
       Self::Member(e) => Self::Member(e.clone()),
       Self::User(e) => Self::User(e.clone()),
       Self::Query(e) => Self::Query(e.clone()),
-      Self::InternalQuery { ty, query } => Self::InternalQuery {
-        ty: *ty,
-        query: query.clone(),
-      },
+      Self::InternalQuery(e) => Self::InternalQuery(e.clone()),
     }
   }
 }
@@ -320,27 +314,33 @@ impl core::fmt::Display for UserEvent {
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConflictQueryEvent<I, A> {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]
-pub(crate) enum InternalQueryEventType {
+pub enum InternalQueryEvent<I, A> {
   Ping,
-  Conflict,
+  Conflict(I),
+  #[cfg(feature = "encryption")]
   InstallKey,
+  #[cfg(feature = "encryption")]
   UseKey,
+  #[cfg(feature = "encryption")]
   RemoveKey,
+  #[cfg(feature = "encryption")]
   ListKey,
 }
 
-impl InternalQueryEventType {
-  pub(crate) const fn as_str(&self) -> &'static str {
+impl<I, A> InternalQueryEvent<I, A> {
+  pub const fn as_str(&self) -> &'static str {
     match self {
-      InternalQueryEventType::Ping => "ruserf-ping",
-      InternalQueryEventType::Conflict => "ruserf-conflict",
-      InternalQueryEventType::InstallKey => "ruserf-install-key",
-      InternalQueryEventType::UseKey => "ruserf-use-key",
-      InternalQueryEventType::RemoveKey => "ruserf-remove-key",
-      InternalQueryEventType::ListKey => "ruserf-list-keys",
+      Self::Ping => "ruserf-ping",
+      Self::Conflict(_) => "ruserf-conflict",
+      Self::InstallKey => "ruserf-install-key",
+      Self::UseKey => "ruserf-use-key",
+      Self::RemoveKey => "ruserf-remove-key",
+      Self::ListKey => "ruserf-list-keys",
     }
   }
 }
@@ -485,11 +485,15 @@ where
   /// Used to send a response to the user query
   pub async fn respond(&self, msg: Bytes) -> Result<(), Error<T, D>> {
     let resp = self.create_response(msg);
-
-    // Encode response
-    match encode_message(MessageType::QueryResponse, &resp) {
-      Ok(raw) => self.respond_with_message_and_response(raw, resp).await,
-      Err(e) => Err(Error::Encode(e)),
-    }
+    let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&resp);
+    let mut buf = vec![0; expected_encoded_len];
+    let len = <D as TransformDelegate>::encode_message(&resp, &mut buf)?;
+    debug_assert_eq!(
+      len, expected_encoded_len,
+      "expected encoded len {expected_encoded_len} is not match the actual encoded len {len}"
+    );
+    self
+      .respond_with_message_and_response(buf.into(), resp)
+      .await
   }
 }

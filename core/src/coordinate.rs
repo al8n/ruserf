@@ -92,7 +92,7 @@ pub struct CoordinateOptions {
   gravity_rho: f64,
 
   #[cfg(feature = "metrics")]
-  metric_labels: memberlist_core::util::MetricLabels,
+  metric_labels: Arc<memberlist_core::types::MetricLabels>,
 }
 
 impl Default for CoordinateOptions {

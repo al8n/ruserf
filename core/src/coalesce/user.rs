@@ -1,7 +1,6 @@
-use std::{collections::HashMap, future::Future, marker::PhantomData};
+use std::{collections::HashMap, marker::PhantomData};
 
 use either::Either;
-use futures::Stream;
 use smol_str::SmolStr;
 
 use crate::{
@@ -9,7 +8,7 @@ use crate::{
   event::{EventKind, UserEvent},
 };
 
-use super::{Coalescer, *};
+use super::*;
 
 struct LatestUserEvents {
   ltime: LamportTime,

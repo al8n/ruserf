@@ -12,15 +12,15 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::prelude::OpenOptionsExt;
 
-use agnostic::Runtime;
 use async_channel::{Receiver, Sender};
 use either::Either;
 use futures::{FutureExt, Stream};
 use memberlist_core::{
+  agnostic::Runtime,
   bytes::{BufMut, BytesMut},
   tracing,
   transport::{AddressResolver, Id, Node, Transformable, Transport},
-  util::TinyVec,
+  types::TinyVec,
   CheapClone,
 };
 use rand::seq::SliceRandom;
@@ -343,7 +343,7 @@ where
   wait_tx: Sender<()>,
   last_attempted_compaction: Instant,
   #[cfg(feature = "metrics")]
-  metric_labels: memberlist_core::util::MetricLabels,
+  metric_labels: std::sync::Arc<memberlist_core::types::MetricLabels>,
 }
 
 impl<D, T> Snapshot<T, D>
@@ -361,7 +361,7 @@ where
     clock: LamportClock,
     out_tx: Option<Sender<Event<T, D>>>,
     shutdown_rx: Receiver<()>,
-    #[cfg(feature = "metrics")] metric_labels: memberlist_core::util::MetricLabels,
+    #[cfg(feature = "metrics")] metric_labels: std::sync::Arc<memberlist_core::types::MetricLabels>,
   ) -> Result<
     (
       Sender<Event<T, D>>,

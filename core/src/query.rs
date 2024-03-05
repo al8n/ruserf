@@ -1,30 +1,28 @@
 use std::{
-  collections::{HashMap, HashSet},
+  collections::HashSet,
   future::Future,
   sync::{atomic::Ordering, Arc},
   time::{Duration, Instant},
 };
 
-use agnostic::Runtime;
 use async_channel::{Receiver, Sender};
 use async_lock::Mutex;
-use futures::FutureExt;
+use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use memberlist_core::{
+  agnostic::Runtime,
   bytes::Bytes,
   tracing,
   transport::{AddressResolver, Node, Transport},
-  util::{OneOrMore, SmallVec, TinyVec},
+  types::{OneOrMore, SmallVec, TinyVec},
+  CheapClone,
 };
-use smol_str::SmolStr;
 
 use crate::{
   clock::LamportTime,
-  delegate::MergeDelegate,
+  delegate::{Delegate, TransformDelegate},
   error::Error,
-  types::{
-    encode_filter, FilterType, FilterTypeRef, MessageType, QueryResponseMessage, Tag, TagRef,
-  },
-  Filter, Member, MemberStatus, ReconnectDelegate, Serf, Wire,
+  types::QueryResponseMessage,
+  Filter, Member, MemberStatus, Serf,
 };
 
 /// Provided to [`Serf::query`] to configure the parameters of the
@@ -60,7 +58,7 @@ pub struct QueryParam<I, A> {
 
 impl<I, A> QueryParam<I, A> {
   /// Used to convert the filters into the wire format
-  pub(crate) fn encode_filters<W: Wire>(&self) -> Result<SmallVec<Bytes>, W::Error> {
+  pub(crate) fn encode_filters<W: TransformDelegate>(&self) -> Result<SmallVec<Bytes>, W::Error> {
     let mut filters = TinyVec::with_capacity(self.filters.len());
     for filter in self.filters.iter() {
       filters.push(W::encode_filter(filter)?);
@@ -177,13 +175,12 @@ impl<I, A> QueryResponse<I, A> {
   }
 
   #[inline]
-  pub(crate) async fn handle_query_response<T, D, O>(
-    &self,
-    resp: QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  ) where
-    D: MergeDelegate,
+  pub(crate) async fn handle_query_response<T, D>(&self, resp: QueryResponseMessage<I, A>)
+  where
+    I: Eq + std::hash::Hash + CheapClone,
+    A: Eq + std::hash::Hash + CheapClone,
+    D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
     T: Transport,
-    O: ReconnectDelegate,
     <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
     <<T::Runtime as Runtime>::Interval as futures::Stream>::Item: Send,
   {
@@ -195,12 +192,12 @@ impl<I, A> QueryResponse<I, A> {
 
     // Process each type of response
     if resp.ack() {
-      if let Some(Err(e)) = self.send_ack::<T, D, O>(&mut c, &resp).await {
+      if let Some(Err(e)) = self.send_ack::<T, D>(&mut *c, &resp).await {
         tracing::warn!(target = "ruserf", "{}", e);
       }
     } else if let Some(Err(e)) = self
-      .send_response::<T, D, O>(
-        &mut c,
+      .send_response::<T, D>(
+        &mut *c,
         NodeResponse {
           from: resp.from,
           payload: resp.payload,
@@ -214,15 +211,16 @@ impl<I, A> QueryResponse<I, A> {
 
   /// Sends a response on the response channel ensuring the channel is not closed.
   #[inline]
-  pub(crate) async fn send_response<T, D, O>(
+  pub(crate) async fn send_response<T, D>(
     &self,
-    c: &mut QueryResponseCore,
-    nr: NodeResponse,
-  ) -> Option<Result<(), Error<T, D, O>>>
+    c: &mut QueryResponseCore<I, A>,
+    nr: NodeResponse<I, A>,
+  ) -> Option<Result<(), Error<T, D>>>
   where
-    D: MergeDelegate,
+    I: Eq + std::hash::Hash + CheapClone,
+    A: Eq + std::hash::Hash + CheapClone,
+    D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
     T: Transport,
-    O: ReconnectDelegate,
     <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
     <<T::Runtime as Runtime>::Interval as futures::Stream>::Item: Send,
   {
@@ -237,7 +235,7 @@ impl<I, A> QueryResponse<I, A> {
       if c.closed {
         Ok(())
       } else {
-        let id = nr.from.clone();
+        let id = nr.from.cheap_clone();
         futures::select! {
           _ = self.inner.channel.resp_ch.0.send(nr).fuse() => {
             c.responses.insert(id);
@@ -253,15 +251,16 @@ impl<I, A> QueryResponse<I, A> {
 
   /// Sends a response on the ack channel ensuring the channel is not closed.
   #[inline]
-  pub(crate) async fn send_ack<T, D, O>(
+  pub(crate) async fn send_ack<T, D>(
     &self,
-    c: &mut QueryResponseCore,
-    nr: &QueryResponseMessage,
-  ) -> Option<Result<(), Error<T, D, O>>>
+    c: &mut QueryResponseCore<I, A>,
+    nr: &QueryResponseMessage<I, A>,
+  ) -> Option<Result<(), Error<T, D>>>
   where
-    D: MergeDelegate,
+    I: Eq + std::hash::Hash + CheapClone,
+    A: Eq + std::hash::Hash + CheapClone,
+    D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
     T: Transport,
-    O: ReconnectDelegate,
     <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
     <<T::Runtime as Runtime>::Interval as futures::Stream>::Item: Send,
   {
@@ -302,10 +301,9 @@ pub struct NodeResponse<I, A> {
   payload: Bytes,
 }
 
-impl<T, D, O> Serf<T, D, O>
+impl<T, D> Serf<T, D>
 where
-  D: MergeDelegate,
-  O: ReconnectDelegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as std::future::Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as futures::Stream>::Item: Send,
@@ -324,7 +322,9 @@ where
   }
 
   /// Used to return the default query parameters
-  pub async fn default_query_param(&self) -> QueryParam {
+  pub async fn default_query_param(
+    &self,
+  ) -> QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> {
     QueryParam {
       filters: OneOrMore::new(),
       request_ack: false,
@@ -340,38 +340,29 @@ where
         return false;
       }
 
-      match filter[0] {
-        Filter::NODE => {
-          // Decode the filter
-          let nodes = match decode_message::<
-            Vec<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
-          >(&filter[1..])
-          {
-            Ok(nodes) => nodes,
-            Err(err) => {
-              tracing::warn!(target = "ruserf", err=%err, "failed to decode node filter");
-              return false;
-            }
-          };
+      let filter = match <D as TransformDelegate>::decode_filter(&filter) {
+        Ok(filter) => filter,
+        Err(err) => {
+          tracing::warn!(
+            target = "ruserf",
+            err = %err,
+            "failed to decode filter"
+          );
+          return false;
+        }
+      };
 
+      match filter {
+        Filter::Node(nodes) => {
           // Check if we are being targeted
           let found = nodes
             .iter()
-            .any(|n| n.name() == self.inner.opts.showbiz_options.name());
+            .any(|n| n.id().eq(self.inner.memberlist.local_id()));
           if !found {
             return false;
           }
         }
-        Filter::TAG => {
-          // Decode the filter
-          let filter = match decode_message::<Tag>(&filter[1..]) {
-            Ok(filter) => filter,
-            Err(err) => {
-              tracing::warn!(target = "ruserf", err=%err, "failed to decode tag filter");
-              return false;
-            }
-          };
-
+        Filter::Tag(tag) => {
           // Check if we match this regex
           if let Some(tags) = &*self.inner.opts.tags.load() {
             if let Some(expr) = tags.get(&filter.tag) {
@@ -409,9 +400,9 @@ where
   pub(crate) async fn relay_response(
     &self,
     relay_factor: u8,
-    node_id: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+    node: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     resp: QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  ) -> Result<(), Error<T, D, O>> {
+  ) -> Result<(), Error<T, D>> {
     if relay_factor == 0 {
       return Ok(());
     }
@@ -444,41 +435,54 @@ where
     }
 
     // Prep the relay message, which is a wrapped version of the original.
-    let raw = encode_relay_message(MessageType::QueryResponse, node_id, &resp)?;
-
-    if raw.len() > self.inner.opts.query_response_size_limit {
+    // let relay_msg = SerfRelayMessage::new(node, SerfMessage::QueryResponse(resp));
+    let expected_encoded_len = <D as TransformDelegate>::node_encoded_len(&node)
+      + <D as TransformDelegate>::message_encoded_len(&resp);
+    if expected_encoded_len > self.inner.opts.query_response_size_limit {
       return Err(Error::RelayedResponseTooLarge(
         self.inner.opts.query_response_size_limit,
       ));
     }
 
+    let mut raw = vec![0; expected_encoded_len];
+    let mut encoded = <D as TransformDelegate>::encode_node(&node, &mut raw)?;
+    encoded += <D as TransformDelegate>::encode_message(&resp, &mut raw[encoded..])?;
+
+    debug_assert_eq!(
+      encoded, expected_encoded_len,
+      "expected encoded len {} mismatch the actual encoded len {}",
+      expected_encoded_len, encoded
+    );
+
+    let raw = Bytes::from(raw);
     // Relay to a random set of peers.
     let relay_members = random_members(relay_factor as usize, members);
 
-    let futs = relay_members.into_iter().map(|m| {
-      // TODO: make send to accept Arc<Message> to avoid cloning
-      let raw = raw.clone();
-      async move {
-        self
-          .inner
-          .memberlist
-          .send(&m.id, raw)
-          .await
-          .map_err(|e| (m, e))
-      }
-    });
-
-    let errs = futures::future::join_all(futs)
-      .await
+    let mut futs = relay_members
       .into_iter()
-      .filter_map(|rst| {
-        if let Err((m, e)) = rst {
+      .map(|m| {
+        let raw = raw.clone();
+        async move {
+          self
+            .inner
+            .memberlist
+            .send(&m.id, raw)
+            .await
+            .map_err(|e| (m, e))
+        }
+      })
+      .collect::<FuturesUnordered<_>>();
+
+    let errs = futs
+      .filter_map(|res| {
+        if let Err((m, e)) = res {
           Some((m, e))
         } else {
           None
         }
       })
-      .collect::<Vec<_>>();
+      .collect::<TinyVec<_>>()
+      .await;
 
     if !errs.is_empty() {
       return Err(Error::Relay(From::from(errs)));
@@ -489,10 +493,13 @@ where
 }
 
 #[inline]
-fn random_members<I, A>(k: usize, mut members: Vec<Arc<Member<I, A>>>) -> Vec<Arc<Member<I, A>>> {
+fn random_members<I, A>(
+  k: usize,
+  mut members: SmallVec<Arc<Member<I, A>>>,
+) -> SmallVec<Arc<Member<I, A>>> {
   let n = members.len();
   if n == 0 {
-    return Vec::new();
+    return SmallVec::new();
   }
 
   // The modified Fisher-Yates algorithm, but up to 3*n times to ensure exhaustive search for small n.

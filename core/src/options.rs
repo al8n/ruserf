@@ -1,12 +1,15 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use arc_swap::ArcSwapOption;
-pub use memberlist_core::{DelegateVersion, Options as MemberlistOptions, ProtocolVersion};
+pub use memberlist_core::{
+  types::{DelegateVersion, ProtocolVersion},
+  Options as MemberlistOptions,
+};
 use smol_str::SmolStr;
 
-fn tags(
-  tags: &Arc<ArcSwapOption<HashMap<SmolStr, SmolStr>>>,
-) -> Option<Arc<HashMap<SmolStr, SmolStr>>> {
+use crate::Tags;
+
+fn tags(tags: &Arc<ArcSwapOption<Tags>>) -> Option<Arc<Tags>> {
   tags.load().as_ref().map(Arc::clone)
 }
 
@@ -24,15 +27,12 @@ pub struct Options {
     getter(
       vis = "pub",
       style = "ref",
-      result(
-        converter(style = "ref", fn = "tags",),
-        type = "Option<Arc<HashMap<SmolStr, SmolStr>>>",
-      )
+      result(converter(style = "ref", fn = "tags",), type = "Option<Arc<Tags>>",)
     ),
     setter(skip)
   )]
   #[cfg_attr(feature = "serde", serde(with = "tags_serde"))]
-  tags: Arc<ArcSwapOption<HashMap<SmolStr, SmolStr>>>,
+  tags: Arc<ArcSwapOption<Tags>>,
 
   /// The protocol version to speak
   protocol_version: ProtocolVersion,
@@ -338,20 +338,18 @@ pub(crate) struct QueueOptions {
   pub(crate) check_interval: Duration,
   pub(crate) depth_warning: usize,
   #[cfg(feature = "metrics")]
-  pub(crate) metric_labels: memberlist_core::util::MetricLabels,
+  pub(crate) metric_labels: Arc<memberlist_core::types::MetricLabels>,
 }
 
 mod tags_serde {
-  use std::{collections::HashMap, sync::Arc};
+  use std::sync::Arc;
 
   use arc_swap::ArcSwapOption;
   use serde::{ser::SerializeMap, Deserialize, Deserializer, Serializer};
-  use smol_str::SmolStr;
 
-  pub fn serialize<S>(
-    tags: &Arc<ArcSwapOption<HashMap<SmolStr, SmolStr>>>,
-    serializer: S,
-  ) -> Result<S::Ok, S::Error>
+  use crate::Tags;
+
+  pub fn serialize<S>(tags: &Arc<ArcSwapOption<Tags>>, serializer: S) -> Result<S::Ok, S::Error>
   where
     S: Serializer,
   {
@@ -371,13 +369,10 @@ mod tags_serde {
     }
   }
 
-  pub fn deserialize<'de, D>(
-    deserializer: D,
-  ) -> Result<Arc<ArcSwapOption<HashMap<SmolStr, SmolStr>>>, D::Error>
+  pub fn deserialize<'de, D>(deserializer: D) -> Result<Arc<ArcSwapOption<Tags>>, D::Error>
   where
     D: Deserializer<'de>,
   {
-    HashMap::<SmolStr, SmolStr>::deserialize(deserializer)
-      .map(|map| Arc::new(ArcSwapOption::from_pointee(Some(map))))
+    Tags::deserialize(deserializer).map(|map| Arc::new(ArcSwapOption::from_pointee(Some(map))))
   }
 }

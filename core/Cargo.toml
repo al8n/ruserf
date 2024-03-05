@@ -8,6 +8,7 @@ description = "A placeholder"
 [features]
 default = ["metrics", "async-graphql"]
 metrics = ["memberlist-core/metrics"]
+encryption = ["memberlist-core/encryption"]
 
 async-graphql = ["dep:async-graphql"]
 
@@ -19,9 +20,9 @@ arc-swap = "1.6"
 async-lock = "3"
 async-channel = "2"
 async-graphql = { version = "6", optional = true }
-agnostic = { workspace = true }
-base64 = "0.21"
+base64 = "0.22"
 bitflags = "2.3"
+derive_more.workspace = true
 futures.workspace = true
 either = "1.9"
 indexmap = { version = "2", features = ["serde"] }

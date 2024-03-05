@@ -9,23 +9,19 @@ use std::{
   time::{Duration, Instant},
 };
 
-use agnostic::Runtime;
-use async_graphql::async_trait::async_trait;
 use async_lock::{Mutex, RwLock};
 use atomic::Atomic;
 use futures::{FutureExt, Stream};
 use memberlist_core::{
+  agnostic::Runtime,
   bytes::{BufMut, Bytes, BytesMut},
-  delegate::Delegate,
   queue::TransmitLimitedQueue,
   tracing,
   transport::{Address, AddressResolver, Id, MaybeResolvedAddress, Node, Transport},
-  types::NodeState,
-  util::{OneOrMore, SmallVec, TinyVec},
-  CheapClone, DelegateVersion, Memberlist, ProtocolVersion, META_MAX_SIZE,
+  types::{DelegateVersion, Meta, NodeState, OneOrMore, ProtocolVersion, SmallVec, TinyVec},
+  CheapClone, Memberlist, META_MAX_SIZE,
 };
 use rand::{Rng, SeedableRng};
-use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::{
@@ -33,21 +29,27 @@ use crate::{
   clock::{LamportClock, LamportTime},
   coalesce::{coalesced_event, MemberEventCoalescer, UserEventCoalescer},
   coordinate::{Coordinate, CoordinateClient, CoordinateOptions},
-  delegate::{CompositeDelegate, MergeDelegate},
-  error::{Error, JoinError},
-  event::{Event, InternalQueryEventType, MemberEvent, MemberEventType},
+  delegate::{CompositeDelegate, Delegate, MergeDelegate, TransformDelegate},
+  error::{DelegateError, Error, JoinError},
+  event::{Event, InternalQueryEvent, MemberEvent, MemberEventType},
   internal_query::SerfQueries,
   query::{QueryParam, QueryResponse},
   snapshot::{open_and_replay_snapshot, Snapshot, SnapshotHandle},
   types::{
-    decode_message, encode_message, JoinMessage, Leave, MessageType, MessageUserEvent, QueryFlag,
-    QueryMessage, QueryResponseMessage,
+    JoinMessage, Leave, MessageUserEvent, QueryFlag, QueryMessage, QueryResponseMessage,
+    SerfMessage,
   },
-  KeyManager, Options, QueueOptions,
+  KeyManager, MessageType, Options, QueueOptions, SerfMessageRef, Tags, MAX_INLINED_BYTES,
 };
 
 mod delegate;
 pub(crate) use delegate::SerfDelegate;
+
+/// Exports the default delegate type
+pub type DefaultDelegate<T> = CompositeDelegate<
+  <T as Transport>::Id,
+  <<T as Transport>::Resolver as AddressResolver>::ResolvedAddress,
+>;
 
 const MAGIC_BYTE: u8 = 255;
 
@@ -58,21 +60,24 @@ const SNAPSHOT_SIZE_LIMIT: u64 = 128 * 1024;
 const USER_EVENT_SIZE_LIMIT: usize = 9 * 1024;
 
 /// Used to buffer events to prevent re-delivery
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct UserEvents {
   pub(crate) ltime: LamportTime,
   pub(crate) events: Vec<UserEvent>,
 }
 
 /// Stores all the user events at a specific time
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct UserEvent {
   pub(crate) name: SmolStr,
   pub(crate) payload: Bytes,
 }
 
 /// Stores all the query ids at a specific time
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct Queries {
   ltime: LamportTime,
   query_ids: Vec<u32>,
@@ -146,7 +151,7 @@ mod serde_member_status {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Member<I, A> {
   node: Node<I, A>,
-  tags: HashMap<SmolStr, SmolStr>,
+  tags: Tags,
   #[cfg_attr(feature = "serde", serde(with = "serde_member_status"))]
   status: Atomic<MemberStatus>,
   protocol_version: ProtocolVersion,
@@ -177,9 +182,7 @@ impl<I, A> MemberState<I, A> {
 /// Used to buffer intents for out-of-order deliveries.
 pub(crate) struct NodeIntent {
   ty: MessageType,
-
   wall_time: Instant,
-
   ltime: LamportTime,
 }
 
@@ -262,13 +265,9 @@ pub(crate) struct EventCore {
   buffer: Vec<Option<UserEvents>>,
 }
 
-pub(crate) struct SerfCore<
-  T: Transport,
-  D = CompositeDelegate<
-    <T as Transport>::Id,
-    <<T as Transport>::Resolver as AddressResolver>::ResolvedAddress,
-  >,
-> where
+pub(crate) struct SerfCore<T: Transport, D = DefaultDelegate<T>>
+where
+  D: Delegate,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
@@ -310,7 +309,7 @@ pub(crate) struct SerfCore<
   pub(crate) coord_core: Option<Arc<CoordCore<T::Id>>>,
 }
 
-impl<T, D, O, W> Drop for SerfCore<D, T, O, W>
+impl<T, D> Drop for SerfCore<T, D>
 where
   T: Transport,
   D: Delegate,
@@ -344,13 +343,8 @@ where
 ///
 /// All functions on the Serf structure are safe to call concurrently.
 #[repr(transparent)]
-pub struct Serf<
-  T: Transport,
-  D = CompositeDelegate<
-    <T as Transport>::Id,
-    <<T as Transport>::Resolver as AddressResolver>::ResolvedAddress,
-  >,
-> where
+pub struct Serf<T: Transport, D = DefaultDelegate<T>>
+where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
@@ -377,15 +371,15 @@ where
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  pub async fn new(opts: Options<T>) -> Result<Self, Error<T>> {
-    Self::new_in(None, None, None, opts).await
+  pub async fn new(opts: Options) -> Result<Self, Error<T, DefaultDelegate<T>>> {
+    Self::new_in(None, None, opts).await
   }
 
   pub async fn with_event_sender(
-    ev: async_channel::Sender<Event<T>>,
-    opts: Options<T>,
-  ) -> Result<Self, Error<T>> {
-    Self::new_in(Some(ev), None, None, opts).await
+    ev: async_channel::Sender<Event<T, DefaultDelegate<T>>>,
+    opts: Options,
+  ) -> Result<Self, Error<T, DefaultDelegate<T>>> {
+    Self::new_in(Some(ev), None, opts).await
   }
 }
 
@@ -407,7 +401,7 @@ where
   pub async fn with_event_sender_and_delegate(
     ev: async_channel::Sender<Event<T, D>>,
     delegate: D,
-    opts: Options<T>,
+    opts: Options,
   ) -> Result<Self, Error<T, D>> {
     Self::new_in(Some(ev), Some(delegate), opts).await
   }
@@ -424,7 +418,7 @@ where
   pub async fn with_event_sender_and_delegate(
     ev: async_channel::Sender<Event<T, D>>,
     delegate: D,
-    opts: Options<T>,
+    opts: Options,
   ) -> Result<Self, Error<T, D>> {
     Self::new_in(Some(ev), Some(delegate), opts).await
   }
@@ -439,10 +433,10 @@ where
     }
 
     // Check that the meta data length is okay
-    if let Some(tags) = &*opts.tags.load() {
-      let encoded_tags = encode_tags(tags)?;
-      if encoded_tags.len() > META_MAX_SIZE {
-        return Err(Error::TagsTooLarge(encoded_tags.len()));
+    if let Some(tags) = opts.tags.load() {
+      let len = <D as TransformDelegate>::tags_encoded_len(tags);
+      if len > Meta::MAX_SIZE {
+        return Err(Error::TagsTooLarge(len));
       }
     }
 
@@ -569,6 +563,7 @@ where
     // and failure detection for the Serf instance.
     let memberlist =
       Memberlist::with_delegate(SerfDelegate::new(delegate), opts.showbiz_options.clone()).await?;
+
     let c = SerfCore {
       clock,
       event_clock,
@@ -622,7 +617,7 @@ where
     // for more information on their role.
     Reaper {
       coord_core: this.inner.coord_core.clone(),
-      reconnector: this.inner.reconnector.clone(),
+      memberlist: this.inner.memberlist.clone(),
       members: this.inner.members.clone(),
       event_tx: this.inner.event_tx.clone(),
       shutdown_rx: shutdown_rx.clone(),
@@ -718,7 +713,9 @@ where
 
   /// Returns the Member information for the local node
   #[inline]
-  pub async fn local_member(&self) -> Arc<Member> {
+  pub async fn local_member(
+    &self,
+  ) -> Arc<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>> {
     self
       .inner
       .members
@@ -735,14 +732,11 @@ where
   /// the local node. This will propagate the change to the rest of
   /// the cluster. Blocks until a the message is broadcast out.
   #[inline]
-  pub async fn set_tags(
-    &self,
-    tags: impl Iterator<Item = (SmolStr, SmolStr)>,
-  ) -> Result<(), Error<T, D>> {
-    let tags = tags.collect();
+  pub async fn set_tags(&self, tags: Tags) -> Result<(), Error<T, D>> {
     // Check that the meta data length is okay
-    if encode_tags(&tags)?.len() > META_MAX_SIZE {
-      return Err(Error::TagsTooLarge(META_MAX_SIZE));
+    let tags_encoded_len = <D as TransformDelegate>::tags_encoded_len(&tags);
+    if tags_encoded_len > Meta::MAX_SIZE {
+      return Err(Error::TagsTooLarge(tags_encoded_len));
     }
     // update the config
     if !tags.is_empty() {
@@ -788,19 +782,23 @@ where
       payload,
       cc: coalesce,
     };
+    let msg = SerfMessage::UserEvent(msg);
 
     // Start broadcasting the event
-    let raw = encode_message(MessageType::UserEvent, &msg)?;
+    let len = <D as TransformDelegate>::message_encoded_len(&msg);
 
     // Check the size after encoding to be sure again that
     // we're not attempting to send over the specified size limit.
-    if raw.len() > self.inner.opts.max_user_event_size {
-      return Err(Error::RawUserEventTooLarge(raw.len()));
+    if len > self.inner.opts.max_user_event_size {
+      return Err(Error::RawUserEventTooLarge(len));
     }
 
-    if raw.len() > USER_EVENT_SIZE_LIMIT {
-      return Err(Error::RawUserEventTooLarge(raw.len()));
+    if len > USER_EVENT_SIZE_LIMIT {
+      return Err(Error::RawUserEventTooLarge(len));
     }
+
+    let mut raw = vec![0; len];
+    <D as TransformDelegate>::encode_message(&msg, &mut raw)?;
 
     self.inner.event_clock.increment();
 
@@ -811,7 +809,7 @@ where
       .inner
       .event_broadcasts
       .queue_broadcast(SerfBroadcast {
-        msg: raw,
+        msg: raw.into(),
         notify_tx: None,
       })
       .await;
@@ -826,8 +824,9 @@ where
     &self,
     name: SmolStr,
     payload: Bytes,
-    params: Option<QueryParam>,
-  ) -> Result<QueryResponse, Error<T, D>> {
+    params: Option<QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+  ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
+  {
     self.query_in(name, payload, params, None).await
   }
 
@@ -835,9 +834,10 @@ where
     &self,
     name: SmolStr,
     payload: Bytes,
-    params: Option<QueryParam>,
-    ty: InternalQueryEventType,
-  ) -> Result<QueryResponse, Error<T, D>> {
+    params: Option<QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+    ty: InternalQueryEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
+  {
     self.query_in(name, payload, params, Some(ty)).await
   }
 
@@ -845,9 +845,10 @@ where
     &self,
     name: SmolStr,
     payload: Bytes,
-    params: Option<QueryParam>,
-    ty: Option<InternalQueryEventType>,
-  ) -> Result<QueryResponse, Error<T, D>> {
+    params: Option<QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+    ty: Option<InternalQueryEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+  ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
+  {
     // Provide default parameters if none given.
     let params = match params {
       Some(params) => params,
@@ -855,7 +856,7 @@ where
     };
 
     // Get the local node
-    let local = self.inner.memberlist.local_node().await;
+    let local = self.inner.memberlist.advertise_node();
 
     // Encode the filters
     let filters = params.encode_filters()?;
@@ -871,7 +872,7 @@ where
     let q = QueryMessage {
       ltime: self.inner.query_clock.time(),
       id: rand::random(),
-      from: local.id().clone(),
+      from: local.cheap_clone(),
       filters,
       flags: flags.bits(),
       relay_factor: params.relay_factor,
@@ -879,17 +880,21 @@ where
       name: name.clone(),
       payload,
     };
+    // let msg_ref = SerfMessageRef::Query(&q);
 
     // Encode the query
-    let raw = encode_message(MessageType::Query, &q)?;
+    let len = <D as TransformDelegate>::message_encoded_len(&q);
 
     // Check the size
-    if raw.len() > self.inner.opts.query_size_limit {
-      return Err(Error::QueryTooLarge(raw.len()));
+    if len > self.inner.opts.query_size_limit {
+      return Err(Error::QueryTooLarge(len));
     }
 
+    let mut raw = vec![0; len];
+    <D as TransformDelegate>::encode_message(&q, &mut raw)?;
+
     // Register QueryResponse to track acks and responses
-    let resp = q.response(self.inner.memberlist.alive_members().await);
+    let resp = q.response(self.inner.memberlist.num_online_members().await);
     self
       .register_query_response(params.timeout, resp.clone())
       .await;
@@ -902,7 +907,7 @@ where
       .inner
       .broadcasts
       .queue_broadcast(SerfBroadcast {
-        msg: raw,
+        msg: raw.into(),
         notify_tx: None,
       })
       .await;
@@ -1029,13 +1034,13 @@ where
     // Process the leave locally
     self.handle_node_leave_intent(&msg).await;
 
+    let msg = SerfMessage::Leave(msg);
+
     // Only broadcast the leave message if there is at least one
     // other node alive.
     if self.has_alive_members().await {
       let (notify_tx, notify_rx) = async_channel::bounded(1);
-      self
-        .broadcast(MessageType::Leave, &msg, Some(notify_tx))
-        .await?;
+      self.broadcast(msg, Some(notify_tx)).await?;
 
       futures::select! {
         _ = notify_rx.recv().fuse() => {
@@ -1185,7 +1190,11 @@ where
 
   /// Used to setup the listeners for the query,
   /// and to schedule closing the query after the timeout.
-  async fn register_query_response(&self, timeout: Duration, resp: QueryResponse) {
+  async fn register_query_response(
+    &self,
+    timeout: Duration,
+    resp: QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) {
     let tresps = self.inner.query_core.clone();
     let mut resps = self.inner.query_core.write().await;
     // Map the LTime to the QueryResponse. This is necessarily 1-to-1,
@@ -1207,17 +1216,24 @@ where
   /// when the broadcast is sent.
   async fn broadcast(
     &self,
-    t: MessageType,
-    msg: impl Serialize,
+    msg: SerfMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     notify_tx: Option<async_channel::Sender<()>>,
   ) -> Result<(), Error<T, D>> {
-    let raw = encode_message(t, &msg)?;
+    let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&msg);
+    let mut raw = BytesMut::with_capacity(expected_encoded_len);
+    raw.resize(expected_encoded_len, 0);
+    let len = <D as TransformDelegate>::encode_message(&msg, &mut raw).map_err(Error::transform)?;
+    debug_assert_eq!(
+      len, expected_encoded_len,
+      "expected encoded len {} mismatch the actual encoded len {}",
+      expected_encoded_len, len
+    );
 
     self
       .inner
       .broadcasts
       .queue_broadcast(SerfBroadcast {
-        msg: raw,
+        msg: raw.into(),
         notify_tx,
       })
       .await;
@@ -1230,14 +1246,15 @@ where
   /// with the memberLock held.
   async fn broadcast_join(&self, ltime: LamportTime) -> Result<(), Error<T, D>> {
     // Construct message to update our lamport clock
-    let msg = JoinMessage::new(ltime, self.inner.memberlist.local_id().clone());
+    let msg = JoinMessage::new(ltime, self.inner.memberlist.advertise_node());
     self.inner.clock.witness(ltime);
 
     // Process update locally
     self.handle_node_join_intent(&msg).await;
 
+    let msg = SerfMessage::Join(msg);
     // Start broadcasting the update
-    if let Err(e) = self.broadcast(MessageType::Join, &msg, None).await {
+    if let Err(e) = self.broadcast(msg, None).await {
       tracing::warn!(target = "ruserf", err=%e, "failed to broadcast join intent");
       return Err(e);
     }
@@ -1309,15 +1326,15 @@ where
       return Ok(());
     }
 
+    let msg = SerfMessage::Leave(msg);
     // Broadcast the remove
     let (ntx, nrx) = async_channel::bounded(1);
-    self.broadcast(MessageType::Leave, &msg, Some(ntx)).await?;
+    self.broadcast(&msg, Some(ntx)).await?;
 
     // Wait for the broadcast
-    futures::select! {
-      _ = nrx.recv().fuse() => Ok(()),
-      _ = <T::Runtime as Runtime>::sleep(self.inner.opts.broadcast_timeout).fuse() => Err(Error::RemovalBroadcastTimeout),
-    }
+    <T::Runtime as Runtime>::timeout(self.inner.opts.broadcast_timeout, nrx.recv())
+      .await
+      .map_err(|_| Error::RemovalBroadcastTimeout)
   }
 }
 
@@ -1345,7 +1362,7 @@ where
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   coord_core: Option<Arc<CoordCore<T::Id>>>,
-  delegate: Arc<D>,
+  memberlist: Memberlist<T, SerfDelegate<T, D>>,
   members: Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
   event_tx: Option<async_channel::Sender<Event<T, D>>>,
   shutdown_rx: async_channel::Receiver<()>,
@@ -1361,9 +1378,8 @@ macro_rules! erase_node {
     // Tell the coordinate client the node has gone away and delete
     // its cached coordinates.
     if let Some(cc) = $coord {
-      let name = $id.name();
-      cc.client.forget_node(name);
-      cc.cache.write().remove(name);
+      cc.client.forget_node($id);
+      cc.cache.write().remove($id);
     }
 
     // Send out event
@@ -1371,7 +1387,7 @@ macro_rules! erase_node {
       let _ = tx
         .send(Event::from(MemberEvent {
           ty: MemberEventType::Reap,
-          members: vec![$m.member.clone()],
+          members: TinyVec::from($m.member.clone()),
         }))
         .await;
     }
@@ -1423,8 +1439,8 @@ where
         futures::select! {
           _ = <T::Runtime as Runtime>::sleep(self.reap_interval).fuse() => {
             let mut ms = self.members.write().await;
-            Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.reconnector.as_deref(), self.coord_core.as_deref(), self.reconnect_timeout).await;
-            Self::reap_left(&mut ms, self.event_tx.as_ref(), self.reconnector.as_deref(), self.coord_core.as_deref(), self.reconnect_timeout).await;
+            Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate(), self.coord_core.as_deref(), self.reconnect_timeout).await;
+            Self::reap_left(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate(), self.coord_core.as_deref(), self.reconnect_timeout).await;
           }
           _ = self.shutdown_rx.recv().fuse() => {
             return;
@@ -1435,20 +1451,20 @@ where
   }
 
   async fn reap_failed(
-    old: &mut Members,
+    old: &mut Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     event_tx: Option<&async_channel::Sender<Event<T, D>>>,
-    reconnector: Option<&O>,
-    coord: Option<&CoordCore>,
+    reconnector: Option<&D>,
+    coord: Option<&CoordCore<T::Id>>,
     timeout: Duration,
   ) {
     reap!(event_tx <- reconnector(timeout(old.failed_members, coord)))
   }
 
   async fn reap_left(
-    old: &mut Members,
+    old: &mut Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     event_tx: Option<&async_channel::Sender<Event<T, D>>>,
-    reconnector: Option<&O>,
-    coord: Option<&CoordCore>,
+    reconnector: Option<&D>,
+    coord: Option<&CoordCore<T::Id>>,
     timeout: Duration,
   ) {
     reap!(event_tx <- reconnector(timeout(old.left_members, coord)))
@@ -1659,7 +1675,7 @@ where
   pub(crate) async fn handle_query(
     &self,
     q: QueryMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-    ty: Option<InternalQueryEventType>,
+    ty: Option<InternalQueryEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
   ) -> bool {
     // Witness a potentially newer time
     self.inner.query_clock.witness(q.ltime);
@@ -1726,9 +1742,23 @@ where
         payload: Bytes::new(),
       };
 
-      match encode_message(MessageType::QueryResponse, &ack) {
-        Ok(raw) => {
-          if let Err(e) = self.inner.memberlist.send(q.from(), raw).await {
+      let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&ack);
+      let mut raw = BytesMut::with_capacity(expected_encoded_len);
+      raw.resize(expected_encoded_len, 0);
+
+      match <D as TransformDelegate>::encode_message(&ack, &mut raw) {
+        Ok(len) => {
+          debug_assert_eq!(
+            len, expected_encoded_len,
+            "expected encoded len {} mismatch the actual encoded len {}",
+            expected_encoded_len, len
+          );
+          if let Err(e) = self
+            .inner
+            .memberlist
+            .send(q.from().address(), raw.freeze())
+            .await
+          {
             tracing::error!(target = "ruserf", err=%e, "failed to send ack");
           }
 
@@ -1824,7 +1854,15 @@ where
     // TODO: message dropper?
 
     let node = n.node();
-    let (old_status, fut) = if let Some(member) = members.states.get_mut(&node) {
+    let tags = match <D as TransformDelegate>::decode_tags(n.meta()) {
+      Ok(tags) => tags,
+      Err(e) => {
+        tracing::error!(target = "ruserf", err=%e, "failed to decode tags");
+        return;
+      }
+    };
+
+    let (old_status, fut) = if let Some(member) = members.states.get_mut(node.id()) {
       let old_status = member.member.status.load(Ordering::Acquire);
       let dead_time = member.leave_time.elapsed();
       if old_status == MemberStatus::Failed && dead_time < self.inner.opts.flap_timeout {
@@ -1833,14 +1871,15 @@ where
 
       *member = MemberState {
         member: Arc::new(Member {
-          node,
-          tags: decode_tags(n.meta()),
+          node: node.cheap_clone(),
+          tags,
           status: Atomic::new(MemberStatus::Alive),
           protocol_version: ProtocolVersion::V0,
           delegate_version: DelegateVersion::V0,
         }),
         status_time: member.status_time,
-        leave_time: MemberState::zero_leave_time(),
+        leave_time:
+          MemberState::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::zero_leave_time(),
       };
 
       (
@@ -1849,7 +1888,7 @@ where
           tx.send(
             MemberEvent {
               ty: MemberEventType::Join,
-              members: vec![member.member.clone()],
+              members: TinyVec::from(member.member.clone()),
             }
             .into(),
           )
@@ -1872,25 +1911,26 @@ where
 
       let ms = MemberState {
         member: Arc::new(Member {
-          id: id.clone(),
-          tags: decode_tags(n.meta()),
+          node: node.cheap_clone(),
+          tags,
           status: Atomic::new(status),
           // TODO:
           protocol_version: ProtocolVersion::V0,
           delegate_version: DelegateVersion::V0,
         }),
         status_time: status_ltime,
-        leave_time: MemberState::zero_leave_time(),
+        leave_time:
+          MemberState::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::zero_leave_time(),
       };
       let member = ms.member.clone();
-      members.states.insert(id.clone(), ms);
+      members.states.insert(node.id().cheap_clone(), ms);
       (
         MemberStatus::None,
         self.inner.event_tx.as_ref().map(|tx| {
           tx.send(
             MemberEvent {
               ty: MemberEventType::Join,
-              members: vec![member],
+              members: TinyVec::from(member),
             }
             .into(),
           )
@@ -1899,13 +1939,13 @@ where
     };
 
     if matches!(old_status, MemberStatus::Failed | MemberStatus::Left) {
-      remove_old_member(&mut members.failed_members, id);
-      remove_old_member(&mut members.left_members, id);
+      remove_old_member(&mut members.failed_members, node.id());
+      remove_old_member(&mut members.left_members, node.id());
     }
 
     // TODO: update metrics
 
-    tracing::info!(target = "ruserf", "member join: {}", id);
+    tracing::info!(target = "ruserf", "member join: {}", node);
     if let Some(fut) = fut {
       if let Err(e) = fut.await {
         tracing::error!(target = "ruserf", err=%e, "failed to send member event");
@@ -1915,12 +1955,15 @@ where
 
   /// Called when a node broadcasts a
   /// join message to set the lamport time of its join
-  pub(crate) async fn handle_node_join_intent(&self, join_msg: &JoinMessage) -> bool {
+  pub(crate) async fn handle_node_join_intent(
+    &self,
+    join_msg: &JoinMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> bool {
     // Witness a potentially newer time
     self.inner.clock.witness(join_msg.ltime);
 
     let mut members = self.inner.members.write().await;
-    match members.states.get_mut(&join_msg.node) {
+    match members.states.get_mut(join_msg.node.id()) {
       Some(member) => {
         // Check if this time is newer than what we have
         if join_msg.ltime <= member.status_time {
@@ -1945,7 +1988,7 @@ where
         // Rebroadcast only if this was an update we hadn't seen before.
         upsert_intent(
           &mut members.recent_intents,
-          &join_msg.node,
+          join_msg.node.id(),
           MessageType::Join,
           join_msg.ltime,
           Instant::now,
@@ -2006,14 +2049,14 @@ where
     // Update some metrics
     // TODO: metrics
 
-    tracing::info!(target = "ruserf", "{}: {}", ty.as_str(), member.id());
+    tracing::info!(target = "ruserf", "{}: {}", ty.as_str(), member.node());
 
     if let Some(ref tx) = self.inner.event_tx {
       if let Err(e) = tx
         .send(
           MemberEvent {
             ty,
-            members: vec![member],
+            members: TinyVec::from(member),
           }
           .into(),
         )
@@ -2024,7 +2067,10 @@ where
     }
   }
 
-  pub(crate) async fn handle_node_leave_intent(&self, msg: &Leave) -> bool {
+  pub(crate) async fn handle_node_leave_intent(
+    &self,
+    msg: &Leave<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> bool {
     let state = self.state();
 
     // Witness a potentially newer time
@@ -2034,7 +2080,7 @@ where
 
     // TODO: There are plenty of duplicated code(to avoid borrow checker), I do not have a good idea how to refactor it currently...
     if msg.prune {
-      if let Some(mut member) = members.states.remove(&msg.node) {
+      if let Some(mut member) = members.states.remove(msg.node.id()) {
         // If the message is old, then it is irrelevant and we can skip it
         if msg.ltime <= member.status_time {
           return false;
@@ -2042,7 +2088,7 @@ where
 
         // Refute us leaving if we are in the alive state
         // Must be done in another goroutine since we have the memberLock
-        if msg.node.eq(self.inner.memberlist.local_id()) && state == SerfState::Alive {
+        if msg.node.id().eq(self.inner.memberlist.local_id()) && state == SerfState::Alive {
           tracing::debug!(target = "ruserf", "refuting an older leave intent");
           let this = self.clone();
           let ltime = self.inner.clock.time();
@@ -2078,8 +2124,9 @@ where
               .member
               .status
               .store(MemberStatus::Leaving, Ordering::Release);
-            let id = member.member.id();
-            tracing::info!(target = "ruserf", "EventMemberReap (forced): {}", id);
+            let node = member.member.node;
+            let id = node.id();
+            tracing::info!(target = "ruserf", "EventMemberReap (forced): {}", node);
 
             let tx = self.inner.event_tx.as_ref();
             let coord = self.inner.coord_core.as_deref();
@@ -2098,14 +2145,14 @@ where
             tracing::info!(
               target = "ruserf",
               "EventMemberLeave: {}",
-              member.member.id()
+              member.member.node
             );
 
             let msg = self.inner.event_tx.as_ref().map(|tx| {
               tx.send(
                 MemberEvent {
                   ty: MemberEventType::Leave,
-                  members: vec![member.member.clone()],
+                  members: TinyVec::from(member.member.clone()),
                 }
                 .into(),
               )
@@ -2113,7 +2160,7 @@ where
             // Remove from the failed list and add to the left list. We add
             // to the left list so that when we do a sync, other nodes will
             // remove it from their failed list.
-            remove_old_member(&mut members.failed_members, member.member.id());
+            remove_old_member(&mut members.failed_members, member.member.node.id());
             members.left_members.push(member);
 
             if let Some(fut) = msg {
@@ -2132,8 +2179,9 @@ where
               .await;
             }
 
-            let id = member.member.id();
-            tracing::info!(target = "ruserf", "EventMemberReap (forced): {}", id);
+            let node = member.member.node;
+            let id = node.id();
+            tracing::info!(target = "ruserf", "EventMemberReap (forced): {}", node);
 
             // If we are leaving or left we may be in that list of members
             if matches!(ms, MemberStatus::Leaving | MemberStatus::Left) {
@@ -2151,13 +2199,13 @@ where
         // Rebroadcast only if this was an update we hadn't seen before.
         upsert_intent(
           &mut members.recent_intents,
-          &msg.node,
+          msg.node.id(),
           MessageType::Leave,
           msg.ltime,
           Instant::now,
         )
       }
-    } else if let Some(member) = members.states.get_mut(&msg.node) {
+    } else if let Some(member) = members.states.get_mut(msg.node.id()) {
       // If the message is old, then it is irrelevant and we can skip it
       if msg.ltime <= member.status_time {
         return false;
@@ -2165,7 +2213,7 @@ where
 
       // Refute us leaving if we are in the alive state
       // Must be done in another goroutine since we have the memberLock
-      if msg.node.eq(self.inner.memberlist.local_id()) && state == SerfState::Alive {
+      if msg.node.id().eq(self.inner.memberlist.local_id()) && state == SerfState::Alive {
         tracing::debug!(target = "ruserf", "refuting an older leave intent");
         let this = self.clone();
         let ltime = self.inner.clock.time();
@@ -2216,7 +2264,7 @@ where
             tx.send(
               MemberEvent {
                 ty: MemberEventType::Leave,
-                members: vec![member.member.clone()],
+                members: TinyVec::from(member.member.clone()),
               }
               .into(),
             )
@@ -2224,7 +2272,7 @@ where
 
           members
             .failed_members
-            .retain(|m| m.member.id() != member.member.id());
+            .retain(|m| m.member.node.id().ne(member.member.node.id()));
           members.left_members.push(member);
           if let Some(fut) = msg {
             if let Err(e) = fut.await {
@@ -2240,7 +2288,7 @@ where
       // Rebroadcast only if this was an update we hadn't seen before.
       upsert_intent(
         &mut members.recent_intents,
-        &msg.node,
+        msg.node.id(),
         MessageType::Leave,
         msg.ltime,
         Instant::now,
@@ -2254,13 +2302,20 @@ where
     &self,
     n: Arc<NodeState<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
   ) {
+    let tags = match <D as TransformDelegate>::decode_tags(n.meta()) {
+      Ok(tags) => tags,
+      Err(e) => {
+        tracing::error!(target = "ruserf", err=%e, "failed to decode tags");
+        return;
+      }
+    };
     let mut members = self.inner.members.write().await;
     let id = n.id();
     if let Some(ms) = members.states.get_mut(id) {
       // Update the member attributes
       ms.member = Arc::new(Member {
-        id: id.clone(),
-        tags: decode_tags(n.meta()),
+        node: n.node(),
+        tags,
         status: Atomic::new(ms.member.status.load(Ordering::Relaxed)),
         protocol_version: ProtocolVersion::V0,
         delegate_version: DelegateVersion::V0,
@@ -2274,7 +2329,7 @@ where
           .send(
             MemberEvent {
               ty: MemberEventType::Update,
-              members: vec![ms.member.clone()],
+              members: TinyVec::from(ms.member.clone()),
             }
             .into(),
           )
@@ -2288,7 +2343,11 @@ where
 
   /// Waits for nodes that are leaving and then forcibly
   /// erases a member from the list of members
-  pub(crate) async fn handle_prune(&self, member: &MemberState, members: &mut Members) {
+  pub(crate) async fn handle_prune(
+    &self,
+    member: &MemberState<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+    members: &mut Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) {
     let ms = member.member.status.load(Ordering::Relaxed);
     if ms == MemberStatus::Leaving {
       <T::Runtime as Runtime>::sleep(
@@ -2342,12 +2401,17 @@ where
       let this = self.clone();
       <T::Runtime as Runtime>::spawn_detach(async move {
         // Get the local node
-        let local = this.inner.memberlist.local_node().await;
-        let local_id = local.id();
-        let mut payload = BytesMut::with_capacity(<NodeId as NodeIdCodec>::encoded_len(local_id));
-        <NodeId as NodeIdCodec>::encode(local_id, &mut payload);
+        let local_id = this.inner.memberlist.local_id();
+        let encoded_id_len = <D as TransformDelegate>::id_encoded_len(local_id);
+        let mut payload = vec![0u8; encoded_id_len];
+
+        if let Err(e) = <D as TransformDelegate>::encode_id(local_id, &mut payload) {
+          tracing::error!(target = "ruserf", err=%e, "failed to encode local id");
+          return;
+        }
+
         // Start an id resolution query
-        let ty = InternalQueryEventType::Conflict;
+        let ty = InternalQueryEvent::Conflict(local_id.clone());
         let resp = match this
           .internal_query(SmolStr::new(ty.as_str()), payload.freeze(), None, ty)
           .await
@@ -2366,7 +2430,7 @@ where
         // Gather responses
         while let Some(r) = resp.response_rx().next().await {
           // Decode the response
-          if r.payload.is_empty() || r.payload[0] != MessageType::ConflictResponse as u8 {
+          if r.payload.is_empty() || r.payload[0] != SerfMessage::ConflictResponse as u8 {
             tracing::warn!(
               target = "ruserf",
               "invalid conflict query response type: {:?}",
@@ -2459,8 +2523,8 @@ where
 
 /// Used to remove an old member from a list of old
 /// members.
-fn remove_old_member<I, A>(old: &mut Vec<MemberState<I, A>>, id: &Node<I, A>) {
-  old.retain(|m| m.member.id() != id);
+fn remove_old_member<I, A>(old: &mut OneOrMore<MemberState<I, A>>, id: &I) {
+  old.retain(|m| m.member.node.id() != id);
 }
 
 /// Clears out any intents that are older than the timeout. Make sure
@@ -2470,7 +2534,7 @@ fn reap_intents<I>(intents: &mut HashMap<I, NodeIntent>, timeout: Duration) {
   intents.retain(|_, intent| intent.wall_time.elapsed() <= timeout);
 }
 
-fn upsert_intent<I, A>(
+fn upsert_intent<I>(
   intents: &mut HashMap<I, NodeIntent>,
   node: &I,
   t: MessageType,

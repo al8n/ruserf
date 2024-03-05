@@ -1,10 +1,13 @@
+use either::Either;
 use memberlist_core::{
   bytes::Bytes,
   transport::{Id, Node, Transformable},
   CheapClone,
 };
 
-use crate::Filter;
+use crate::{
+  coordinate::Coordinate, AsMessageRef, Filter, MessageType, SerfMessage, SerfRelayMessage, Tags,
+};
 
 /// A delegate for encoding and decoding.
 pub trait TransformDelegate: Send + Sync + 'static {
@@ -26,7 +29,50 @@ pub trait TransformDelegate: Send + Sync + 'static {
     dst: &mut [u8],
   ) -> Result<usize, Self::Error>;
 
-  fn decode_node(bytes: &[u8]) -> Result<Node<Self::Id, Self::Address>, Self::Error>;
+  /// Decodes [`Node`] from the given bytes, returning the number of bytes consumed and the node.
+  fn decode_node(
+    bytes: impl AsRef<[u8]>,
+  ) -> Result<(usize, Node<Self::Id, Self::Address>), Self::Error>;
+
+  fn id_encoded_len(id: &Self::Id) -> usize;
+
+  fn encode_id(id: &Self::Id, dst: &mut [u8]) -> Result<usize, Self::Error>;
+
+  fn decode_id(bytes: &[u8]) -> Result<Self::Id, Self::Error>;
+
+  fn address_encoded_len(address: &Self::Address) -> usize;
+
+  fn encode_address(address: &Self::Address, dst: &mut [u8]) -> Result<usize, Self::Error>;
+
+  fn decode_address(bytes: &[u8]) -> Result<Self::Address, Self::Error>;
+
+  fn cooradinate_encoded_len(coordinate: &Coordinate) -> usize;
+
+  fn encode_coordinate(coordinate: &Coordinate, dst: &mut [u8]) -> Result<usize, Self::Error>;
+
+  fn decode_coordinate(bytes: &[u8]) -> Result<Coordinate, Self::Error>;
+
+  fn tags_encoded_len(tags: &Tags) -> usize;
+
+  fn encode_tags(tags: &Tags, dst: &mut [u8]) -> Result<usize, Self::Error>;
+
+  fn decode_tags(bytes: &[u8]) -> Result<Tags, Self::Error>;
+
+  fn message_encoded_len(msg: impl AsMessageRef<Self::Id, Self::Address>) -> usize;
+
+  fn encode_message(
+    msg: impl AsMessageRef<Self::Id, Self::Address>,
+    dst: &mut [u8],
+  ) -> Result<usize, Self::Error>;
+
+  /// Returns the message type of the given buf without actually decoding the message.
+  ///
+  /// This is used to determine if we should actually decode the message or not.
+  fn check_message_type(msg: impl AsRef<[u8]>) -> Option<MessageType>;
+
+  fn decode_message(
+    bytes: impl AsRef<[u8]>,
+  ) -> Result<SerfMessage<Self::Id, Self::Address>, Self::Error>;
 }
 
 pub enum LpeTransformError<I, A>
@@ -81,7 +127,78 @@ where
     Transformable::encode(node, dst).map_err(Self::Error::Node)
   }
 
-  fn decode_node(bytes: &[u8]) -> Result<Node<Self::Id, Self::Address>, Self::Error> {
-    Transformable::decode(bytes).map_err(Self::Error::Node)
+  fn decode_node(
+    bytes: impl AsRef<[u8]>,
+  ) -> Result<(usize, Node<Self::Id, Self::Address>), Self::Error> {
+    Transformable::decode(bytes.as_ref()).map_err(Self::Error::Node)
+  }
+
+  fn id_encoded_len(id: &Self::Id) -> usize {
+    todo!()
+  }
+
+  fn encode_id(id: &Self::Id, dst: &mut [u8]) -> Result<usize, Self::Error> {
+    todo!()
+  }
+
+  fn decode_id(bytes: &[u8]) -> Result<Self::Id, Self::Error> {
+    todo!()
+  }
+
+  fn address_encoded_len(address: &Self::Address) -> usize {
+    todo!()
+  }
+
+  fn encode_address(address: &Self::Address, dst: &mut [u8]) -> Result<usize, Self::Error> {
+    todo!()
+  }
+
+  fn decode_address(bytes: &[u8]) -> Result<Self::Address, Self::Error> {
+    todo!()
+  }
+
+  fn cooradinate_encoded_len(coordinate: Coordinate) -> usize {
+    todo!()
+  }
+
+  fn encode_coordinate(coordinate: Coordinate, dst: &mut [u8]) -> Result<usize, Self::Error> {
+    todo!()
+  }
+
+  fn decode_coordinate(bytes: &[u8]) -> Result<Coordinate, Self::Error> {
+    todo!()
+  }
+
+  fn tags_encoded_len(tags: &Tags) -> usize {
+    todo!()
+  }
+
+  fn encode_tags(tags: &Tags, dst: &mut [u8]) -> Result<usize, Self::Error> {
+    todo!()
+  }
+
+  fn decode_tags(bytes: &[u8]) -> Result<Tags, Self::Error> {
+    todo!()
+  }
+
+  fn message_encoded_len(msg: impl AsMessageRef<Self::Id, Self::Address>) -> usize {
+    todo!()
+  }
+
+  fn encode_message(
+    msg: impl AsMessageRef<Self::Id, Self::Address>,
+    dst: &mut [u8],
+  ) -> Result<usize, Self::Error> {
+    todo!()
+  }
+
+  fn check_message_type(msg: impl AsRef<[u8]>) -> Option<MessageType> {
+    todo!()
+  }
+
+  fn decode_message(
+    bytes: impl AsRef<[u8]>,
+  ) -> Result<SerfMessage<Self::Id, Self::Address>, Self::Error> {
+    todo!()
   }
 }

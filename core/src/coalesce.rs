@@ -5,10 +5,10 @@ pub(crate) use user::*;
 
 use std::{future::Future, time::Duration};
 
-use agnostic::Runtime;
 use async_channel::{bounded, Receiver, Sender};
 use futures::{FutureExt, Stream};
 use memberlist_core::{
+  agnostic::Runtime,
   tracing,
   transport::{AddressResolver, Transport},
 };

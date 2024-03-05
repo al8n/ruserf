@@ -1,10 +1,16 @@
 use std::{collections::HashMap, future::Future, sync::Arc};
 
-use agnostic::Runtime;
 use futures::Stream;
-use memberlist_core::transport::{AddressResolver, MaybeResolvedAddress, Node, Transport};
+use memberlist_core::{
+  agnostic::Runtime,
+  transport::{AddressResolver, MaybeResolvedAddress, Node, Transport},
+  types::TinyVec,
+};
 
-use crate::{delegate::Delegate, Member, SerfDelegate, SerfState};
+use crate::{
+  delegate::{Delegate, TransformDelegate},
+  Member, SerfDelegate, SerfState,
+};
 
 pub use crate::{delegate::DelegateError, snapshot::SnapshotError};
 
@@ -65,6 +71,13 @@ where
   RemovalBroadcastTimeout,
 }
 
+impl<T: Transport, D: Delegate> Error<T, D> {
+  #[inline]
+  pub fn transform(err: <D as TransformDelegate>::Error) -> Self {
+    Self::Delegate(DelegateError::Transform(err))
+  }
+}
+
 pub struct MemberlistError<T: Transport, D: Delegate>(
   memberlist_core::error::Error<T, SerfDelegate<T, D>>,
 )
@@ -116,7 +129,7 @@ where
 
 pub struct RelayError<T: Transport, D: Delegate>(
   #[allow(clippy::type_complexity)]
-  Vec<(
+  TinyVec<(
     Arc<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
     memberlist_core::error::Error<T, SerfDelegate<T, D>>,
   )>,
@@ -127,7 +140,7 @@ where
 
 impl<D: Delegate, T: Transport>
   From<
-    Vec<(
+    TinyVec<(
       Arc<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
       memberlist_core::error::Error<T, SerfDelegate<T, D>>,
     )>,
@@ -137,7 +150,7 @@ where
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(
-    value: Vec<(
+    value: TinyVec<(
       Arc<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
       memberlist_core::error::Error<T, SerfDelegate<T, D>>,
     )>,

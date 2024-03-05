@@ -1,5 +1,5 @@
 use async_channel::Sender;
-use memberlist_core::{broadcast::Broadcast, bytes::Bytes, types::Message};
+use memberlist_core::{bytes::Bytes, Broadcast};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub(crate) struct BroadcastId;
@@ -12,7 +12,7 @@ impl core::fmt::Display for BroadcastId {
 
 #[viewit::viewit]
 pub(crate) struct SerfBroadcast<I, A> {
-  msg: Message<I, A>,
+  msg: Bytes,
   notify_tx: Option<Sender<()>>,
 }
 

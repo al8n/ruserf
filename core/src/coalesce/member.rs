@@ -1,10 +1,13 @@
 use std::{collections::HashMap, future::Future, marker::PhantomData, sync::Arc};
 
-use agnostic::Runtime;
 use async_channel::Sender;
 use either::Either;
 use futures::Stream;
-use memberlist_core::transport::{AddressResolver, Node, Transport};
+use memberlist_core::{
+  agnostic::Runtime,
+  transport::{AddressResolver, Node, Transport},
+  types::TinyVec,
+};
 
 use crate::{
   delegate::Delegate,
@@ -99,8 +102,10 @@ where
     &mut self,
     out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
   ) -> Result<(), super::ClosedOutChannel> {
-    let mut events: HashMap<MemberEventType, MemberEvent> =
-      HashMap::with_capacity(self.latest_events.len());
+    let mut events: HashMap<
+      MemberEventType,
+      MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+    > = HashMap::with_capacity(self.latest_events.len());
     // Coalesce the various events we got into a single set of events.
     for (id, cev) in self.latest_events.drain() {
       match self.last_events.get(&id) {
@@ -119,7 +124,7 @@ where
             std::collections::hash_map::Entry::Vacant(ent) => {
               ent.insert(MemberEvent {
                 ty: cev.ty,
-                members: vec![cev.member],
+                members: TinyVec::from(cev.member),
               });
             }
           }
