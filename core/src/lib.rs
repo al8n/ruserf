@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::mutable_key_type)]
-#![recursion_limit = "16"]
 
 pub use memberlist_core::agnostic;
 

@@ -272,8 +272,6 @@ pub(crate) struct EventCore {
 pub(crate) struct SerfCore<T: Transport, D = DefaultDelegate<T>>
 where
   D: Delegate,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   pub(crate) clock: LamportClock,
   pub(crate) event_clock: LamportClock,
@@ -319,8 +317,6 @@ impl<T, D> Drop for SerfCore<T, D>
 where
   T: Transport,
   D: Delegate,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn drop(&mut self) {
     use pollster::FutureExt as _;
@@ -372,8 +368,6 @@ where
 impl<T> Serf<T>
 where
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   pub async fn new(transport: T, opts: Options) -> Result<Self, Error<T, DefaultDelegate<T>>> {
     Self::new_in(transport, None, None, opts).await
@@ -392,8 +386,6 @@ impl<T, D> Serf<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   pub async fn with_delegate(
     transport: T,
@@ -409,8 +401,6 @@ impl<T, D> Serf<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   pub async fn with_event_sender_and_delegate(
     transport: T,
@@ -1197,8 +1187,6 @@ impl<T, D> Serf<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   async fn has_alive_members(&self) -> bool {
     let members = self.inner.members.read().await;
@@ -1388,8 +1376,6 @@ struct Reaper<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   coord_core: Option<Arc<CoordCore<T::Id>>>,
   memberlist: Memberlist<T, SerfDelegate<T, D>>,
@@ -1461,8 +1447,6 @@ impl<T, D> Reaper<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn spawn(self) {
     <T::Runtime as Runtime>::spawn_detach(async move {
@@ -1507,8 +1491,6 @@ struct Reconnector<T, D>
 where
   T: Transport,
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   members: Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
   memberlist: Memberlist<T, SerfDelegate<T, D>>,
@@ -1520,8 +1502,6 @@ impl<T, D> Reconnector<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn spawn(self) {
     let mut rng = rand::rngs::StdRng::from_rng(rand::thread_rng()).unwrap();
@@ -1583,10 +1563,7 @@ struct QueueChecker<I, A> {
 }
 
 impl<I, A> QueueChecker<I, A> {
-  fn spawn<R: Runtime>(self)
-  where
-    <<R as Runtime>::Sleep as Future>::Output: Send,
-  {
+  fn spawn<R: Runtime>(self) {
     R::spawn_detach(async move {
       loop {
         futures::select! {
@@ -1630,8 +1607,6 @@ impl<T, D> Serf<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   /// Called when a user event broadcast is
   /// received. Returns if the message should be rebroadcast.

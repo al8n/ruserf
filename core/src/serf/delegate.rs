@@ -37,8 +37,6 @@ pub(crate) struct SerfDelegate<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   serf: OnceLock<Serf<T, D>>,
   merge_delegate: Option<D>,
@@ -48,8 +46,6 @@ impl<D, T> SerfDelegate<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   pub(crate) fn new(d: Option<D>) -> Self {
     Self {
@@ -72,8 +68,6 @@ impl<D, T> NodeDelegate for SerfDelegate<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   async fn node_meta(&self, limit: usize) -> Meta {
     match self.this().inner.opts.tags() {
@@ -477,8 +471,6 @@ impl<D, T> EventDelegate for SerfDelegate<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   type Id = T::Id;
   type Address = <T::Resolver as AddressResolver>::ResolvedAddress;
@@ -500,8 +492,6 @@ impl<D, T> AliveDelegate for SerfDelegate<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   type Id = T::Id;
   type Address = <T::Resolver as AddressResolver>::ResolvedAddress;
@@ -527,8 +517,6 @@ impl<D, T> MemberlistMergeDelegate for SerfDelegate<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   type Id = T::Id;
   type Address = <T::Resolver as AddressResolver>::ResolvedAddress;
@@ -556,8 +544,6 @@ impl<D, T> ConflictDelegate for SerfDelegate<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   type Id = T::Id;
 
@@ -576,8 +562,6 @@ impl<D, T> PingDelegate for SerfDelegate<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   type Id = T::Id;
 
@@ -678,8 +662,6 @@ impl<D, T> MemberlistDelegate for SerfDelegate<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   type Id = T::Id;
 
@@ -695,8 +677,6 @@ fn node_to_member<T, D>(
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   let status = if node.state() == State::Left {
     MemberStatus::Left

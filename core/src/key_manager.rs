@@ -66,8 +66,6 @@ pub struct KeyManager<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   serf: OnceLock<Serf<T, D>>,
   /// The lock is used to serialize keys related handlers
@@ -78,8 +76,6 @@ impl<T, D> KeyManager<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as std::future::Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as futures::Stream>::Item: Send,
 {
   pub(crate) fn new() -> Self {
     Self {

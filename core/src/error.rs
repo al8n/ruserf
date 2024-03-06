@@ -26,11 +26,7 @@ impl std::fmt::Display for VoidError {
 impl std::error::Error for VoidError {}
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error<T: Transport, D: Delegate>
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
+pub enum Error<T: Transport, D: Delegate> {
   #[error("ruserf: {0}")]
   Memberlist(#[from] MemberlistError<T, D>),
   #[error("ruserf: {0}")]
@@ -80,37 +76,23 @@ impl<T: Transport, D: Delegate> Error<T, D> {
 
 pub struct MemberlistError<T: Transport, D: Delegate>(
   memberlist_core::error::Error<T, SerfDelegate<T, D>>,
-)
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send;
+);
 
 impl<D: Delegate, T: Transport> From<memberlist_core::error::Error<T, SerfDelegate<T, D>>>
   for MemberlistError<T, D>
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(value: memberlist_core::error::Error<T, SerfDelegate<T, D>>) -> Self {
     Self(value)
   }
 }
 
-impl<D: Delegate, T: Transport> core::fmt::Display for MemberlistError<T, D>
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
+impl<D: Delegate, T: Transport> core::fmt::Display for MemberlistError<T, D> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "{}", self.0)
   }
 }
 
-impl<D: Delegate, T: Transport> core::fmt::Debug for MemberlistError<T, D>
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
+impl<D: Delegate, T: Transport> core::fmt::Debug for MemberlistError<T, D> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "{}", self.0)
   }
@@ -118,9 +100,6 @@ where
 
 impl<D: Delegate, T: Transport> From<memberlist_core::error::Error<T, SerfDelegate<T, D>>>
   for Error<T, D>
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(value: memberlist_core::error::Error<T, SerfDelegate<T, D>>) -> Self {
     Self::Memberlist(MemberlistError(value))
@@ -133,10 +112,7 @@ pub struct RelayError<T: Transport, D: Delegate>(
     Arc<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
     memberlist_core::error::Error<T, SerfDelegate<T, D>>,
   )>,
-)
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send;
+);
 
 impl<D: Delegate, T: Transport>
   From<
@@ -145,9 +121,6 @@ impl<D: Delegate, T: Transport>
       memberlist_core::error::Error<T, SerfDelegate<T, D>>,
     )>,
   > for RelayError<T, D>
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(
     value: TinyVec<(
@@ -163,8 +136,6 @@ impl<D, T> core::fmt::Display for RelayError<T, D>
 where
   D: Delegate,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     for (member, err) in self.0.iter() {
@@ -183,8 +154,6 @@ impl<D, T> core::fmt::Debug for RelayError<T, D>
 where
   D: Delegate,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     core::fmt::Display::fmt(self, f)
@@ -195,27 +164,17 @@ impl<D, T> std::error::Error for RelayError<T, D>
 where
   D: Delegate,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
 }
 
 /// `JoinError` is returned when join is partially/totally failed.
-pub struct JoinError<T: Transport, D: Delegate>
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
+pub struct JoinError<T: Transport, D: Delegate> {
   pub(crate) joined: Vec<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
   pub(crate) errors: HashMap<Node<T::Id, MaybeResolvedAddress<T>>, Error<T, D>>,
   pub(crate) broadcast_error: Option<Error<T, D>>,
 }
 
-impl<D: Delegate, T: Transport> JoinError<T, D>
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
+impl<D: Delegate, T: Transport> JoinError<T, D> {
   pub const fn broadcast_error(&self) -> Option<&Error<T, D>> {
     self.broadcast_error.as_ref()
   }
@@ -237,21 +196,13 @@ where
   }
 }
 
-impl<D: Delegate, T: Transport> core::fmt::Debug for JoinError<T, D>
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
+impl<D: Delegate, T: Transport> core::fmt::Debug for JoinError<T, D> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "{}", self)
   }
 }
 
-impl<D: Delegate, T: Transport> core::fmt::Display for JoinError<T, D>
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
+impl<D: Delegate, T: Transport> core::fmt::Display for JoinError<T, D> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     if !self.joined.is_empty() {
       writeln!(f, "Successes: {:?}", self.joined)?;
@@ -271,9 +222,4 @@ where
   }
 }
 
-impl<D: Delegate, T: Transport> std::error::Error for JoinError<T, D>
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
-}
+impl<D: Delegate, T: Transport> std::error::Error for JoinError<T, D> {}

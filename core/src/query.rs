@@ -181,8 +181,6 @@ impl<I, A> QueryResponse<I, A> {
     A: Eq + std::hash::Hash + CheapClone,
     D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
     T: Transport,
-    <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<T::Runtime as Runtime>::Interval as futures::Stream>::Item: Send,
   {
     // Check if the query is closed
     let mut c = self.inner.core.lock().await;
@@ -221,8 +219,6 @@ impl<I, A> QueryResponse<I, A> {
     A: Eq + std::hash::Hash + CheapClone,
     D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
     T: Transport,
-    <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<T::Runtime as Runtime>::Interval as futures::Stream>::Item: Send,
   {
     // Exit early if this is a duplicate ack
     if c.responses.contains(&nr.from) {
@@ -261,8 +257,6 @@ impl<I, A> QueryResponse<I, A> {
     A: Eq + std::hash::Hash + CheapClone,
     D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
     T: Transport,
-    <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<T::Runtime as Runtime>::Interval as futures::Stream>::Item: Send,
   {
     // Exit early if this is a duplicate ack
     if c.acks.contains(&nr.from) {
@@ -305,8 +299,6 @@ impl<T, D> Serf<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as std::future::Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as futures::Stream>::Item: Send,
 {
   /// Returns the default timeout value for a query
   /// Computed as

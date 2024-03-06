@@ -352,11 +352,7 @@ where
 }
 
 /// Query is the struct used by EventQuery type events
-pub struct QueryEvent<T: Transport, D: Delegate>
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
+pub struct QueryEvent<T: Transport, D: Delegate> {
   pub(crate) ltime: LamportTime,
   pub(crate) name: SmolStr,
   pub(crate) payload: Bytes,

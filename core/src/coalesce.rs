@@ -48,11 +48,7 @@ pub(crate) fn coalesced_event<C: Coalescer>(
   c_period: Duration,
   q_period: Duration,
   c: C,
-) -> Sender<Event<C::Transport, C::Delegate>>
-where
-  <<<C::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<<C::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
+) -> Sender<Event<C::Transport, C::Delegate>> {
   let (in_tx, in_rx) = bounded(1024);
   <<C::Transport as Transport>::Runtime as Runtime>::spawn_detach(coalesce_loop::<C>(
     in_rx,
@@ -74,10 +70,7 @@ async fn coalesce_loop<C: Coalescer>(
   coalesce_peirod: Duration,
   quiescent_period: Duration,
   mut c: C,
-) where
-  <<<C::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<<C::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
+) {
   let mut quiescent = None;
   let mut quantum = None;
   let mut shutdown = false;

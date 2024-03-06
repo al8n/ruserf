@@ -4,10 +4,7 @@ use memberlist_core::{
   CheapClone,
 };
 
-use crate::{
-  coordinate::Coordinate, AsMessageRef, Filter, SerfMessage, Tags,
-  UnknownMessageType,
-};
+use crate::{coordinate::Coordinate, AsMessageRef, Filter, SerfMessage, Tags, UnknownMessageType};
 
 /// A delegate for encoding and decoding.
 pub trait TransformDelegate: Send + Sync + 'static {
