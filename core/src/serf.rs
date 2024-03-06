@@ -3,7 +3,7 @@ use std::{
   future::Future,
   hash::Hash,
   sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
   },
   time::{Duration, Instant},
@@ -17,9 +17,9 @@ use memberlist_core::{
   bytes::{BufMut, Bytes, BytesMut},
   queue::TransmitLimitedQueue,
   tracing,
-  transport::{Address, AddressResolver, Id, MaybeResolvedAddress, Node, Transport},
+  transport::{AddressResolver, MaybeResolvedAddress, Node, Transport},
   types::{DelegateVersion, Meta, NodeState, OneOrMore, ProtocolVersion, SmallVec, TinyVec},
-  CheapClone, Memberlist, META_MAX_SIZE,
+  CheapClone, Memberlist,
 };
 use rand::{Rng, SeedableRng};
 use smol_str::SmolStr;
@@ -29,8 +29,8 @@ use crate::{
   clock::{LamportClock, LamportTime},
   coalesce::{coalesced_event, MemberEventCoalescer, UserEventCoalescer},
   coordinate::{Coordinate, CoordinateClient, CoordinateOptions},
-  delegate::{CompositeDelegate, Delegate, MergeDelegate, TransformDelegate},
-  error::{DelegateError, Error, JoinError},
+  delegate::{CompositeDelegate, Delegate, TransformDelegate},
+  error::{Error, JoinError},
   event::{Event, InternalQueryEvent, MemberEvent, MemberEventType},
   internal_query::SerfQueries,
   query::{QueryParam, QueryResponse},
@@ -39,8 +39,11 @@ use crate::{
     JoinMessage, Leave, MessageUserEvent, QueryFlag, QueryMessage, QueryResponseMessage,
     SerfMessage,
   },
-  KeyManager, MessageType, Options, QueueOptions, SerfMessageRef, Tags, MAX_INLINED_BYTES,
+  MessageType, Options, QueueOptions, Tags,
 };
+
+#[cfg(feature = "encryption")]
+use crate::key_manager::KeyManager;
 
 mod delegate;
 pub(crate) use delegate::SerfDelegate;
@@ -83,7 +86,7 @@ pub(crate) struct Queries {
   query_ids: Vec<u32>,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, bytemuck::NoUninit)]
 #[repr(u8)]
 pub enum MemberStatus {
   None = 0,
@@ -112,6 +115,7 @@ impl MemberStatus {
   }
 }
 
+#[cfg(feature = "serde")]
 mod serde_member_status {
   use super::*;
 
@@ -288,6 +292,7 @@ where
   pub(crate) memberlist: Memberlist<T, SerfDelegate<T, D>>,
   pub(crate) members:
     Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
+  pub(crate) num_members: Arc<AtomicUsize>,
   event_tx: Option<async_channel::Sender<Event<T, D>>>,
   pub(crate) event_join_ignore: AtomicBool,
 
@@ -301,6 +306,7 @@ where
   join_lock: Mutex<()>,
 
   snapshot: Option<SnapshotHandle>,
+  #[cfg(feature = "encryption")]
   key_manager: KeyManager<T, D>,
 
   shutdown_tx: async_channel::Sender<()>,
@@ -369,15 +375,16 @@ where
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  pub async fn new(opts: Options) -> Result<Self, Error<T, DefaultDelegate<T>>> {
-    Self::new_in(None, None, opts).await
+  pub async fn new(transport: T, opts: Options) -> Result<Self, Error<T, DefaultDelegate<T>>> {
+    Self::new_in(transport, None, None, opts).await
   }
 
   pub async fn with_event_sender(
+    transport: T,
     ev: async_channel::Sender<Event<T, DefaultDelegate<T>>>,
     opts: Options,
   ) -> Result<Self, Error<T, DefaultDelegate<T>>> {
-    Self::new_in(Some(ev), None, opts).await
+    Self::new_in(transport, Some(ev), None, opts).await
   }
 }
 
@@ -393,15 +400,7 @@ where
     delegate: D,
     opts: Options,
   ) -> Result<Self, Error<T, D>> {
-    Self::new_in(None, Some(delegate), opts).await
-  }
-
-  pub async fn with_event_sender_and_delegate(
-    ev: async_channel::Sender<Event<T, D>>,
-    delegate: D,
-    opts: Options,
-  ) -> Result<Self, Error<T, D>> {
-    Self::new_in(Some(ev), Some(delegate), opts).await
+    Self::new_in(transport, None, Some(delegate), opts).await
   }
 }
 
@@ -414,14 +413,16 @@ where
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   pub async fn with_event_sender_and_delegate(
-    ev: async_channel::Sender<Event<T, D>>,
+    transport: T,
     delegate: D,
+    ev: async_channel::Sender<Event<T, D>>,
     opts: Options,
   ) -> Result<Self, Error<T, D>> {
-    Self::new_in(Some(ev), Some(delegate), opts).await
+    Self::new_in(transport, Some(ev), Some(delegate), opts).await
   }
 
   async fn new_in(
+    transport: T,
     ev: Option<async_channel::Sender<Event<T, D>>>,
     delegate: Option<D>,
     opts: Options,
@@ -525,21 +526,24 @@ where
       })
     });
     let members = Arc::new(RwLock::new(Members::default()));
+    let num_members = Arc::new(AtomicUsize::new(0));
+    let bn_members = num_members.clone();
+    let en_members = num_members.clone();
+    let qn_members = num_members.clone();
 
     // Setup the various broadcast queues, which we use to send our own
     // custom broadcasts along the gossip channel.
-    let nc = SerfNodeCalculator::new(members.clone());
     let broadcasts = Arc::new(TransmitLimitedQueue::<SerfBroadcast, _>::new(
-      nc.clone(),
       opts.showbiz_options.retransmit_mult,
+      move || bn_members.load(Ordering::SeqCst),
     ));
     let event_broadcasts = Arc::new(TransmitLimitedQueue::<SerfBroadcast, _>::new(
-      nc.clone(),
       opts.showbiz_options.retransmit_mult,
+      move || en_members.load(Ordering::SeqCst),
     ));
     let query_broadcasts = Arc::new(TransmitLimitedQueue::<SerfBroadcast, _>::new(
-      nc,
       opts.showbiz_options.retransmit_mult,
+      move || qn_members.load(Ordering::SeqCst),
     ));
 
     // Create a buffer for events and queries
@@ -559,8 +563,12 @@ where
 
     // Create the underlying memberlist that will manage membership
     // and failure detection for the Serf instance.
-    let memberlist =
-      Memberlist::with_delegate(SerfDelegate::new(delegate), opts.showbiz_options.clone()).await?;
+    let memberlist = Memberlist::with_delegate(
+      transport,
+      SerfDelegate::new(delegate),
+      opts.showbiz_options.clone(),
+    )
+    .await?;
 
     let c = SerfCore {
       clock,
@@ -569,6 +577,7 @@ where
       broadcasts,
       memberlist,
       members,
+      num_members,
       event_broadcasts,
       event_join_ignore: AtomicBool::new(false),
       event_core: RwLock::new(EventCore {
@@ -585,6 +594,7 @@ where
       state: parking_lot::Mutex::new(SerfState::Alive),
       join_lock: Mutex::new(()),
       snapshot: handle,
+      #[cfg(feature = "encryption")]
       key_manager: KeyManager::new(),
       shutdown_tx,
       shutdown_rx: shutdown_rx.clone(),
@@ -608,14 +618,18 @@ where
       .map_err(|e| memberlist_core::error::Error::delegate(e))?;
 
     // update key manager
-    let that = this.clone();
-    this.inner.key_manager.store(that);
+    #[cfg(feature = "encryption")]
+    {
+      let that = this.clone();
+      this.inner.key_manager.store(that);
+    }
 
     // Start the background tasks. See the documentation above each method
     // for more information on their role.
     Reaper {
       coord_core: this.inner.coord_core.clone(),
       memberlist: this.inner.memberlist.clone(),
+      num_members: this.inner.num_members.clone(),
       members: this.inner.members.clone(),
       event_tx: this.inner.event_tx.clone(),
       shutdown_rx: shutdown_rx.clone(),
@@ -800,7 +814,11 @@ where
     raw.resize(len + 1, 0);
 
     let actual_encoded_len = <D as TransformDelegate>::encode_message(&msg, &mut raw[1..])?;
-    debug_assert_eq!(actual_encoded_len, len, "expected encoded len {} mismatch the actual encoded len {}", len, actual_encoded_len);
+    debug_assert_eq!(
+      actual_encoded_len, len,
+      "expected encoded len {} mismatch the actual encoded len {}",
+      len, actual_encoded_len
+    );
 
     self.inner.event_clock.increment();
 
@@ -896,7 +914,11 @@ where
     raw.put_u8(MessageType::Query as u8);
     raw.resize(len + 1, 0);
     let actual_encoded_len = <D as TransformDelegate>::encode_message(&q, &mut raw[1..])?;
-    debug_assert_eq!(actual_encoded_len, len, "expected encoded len {} mismatch the actual encoded len {}", len, actual_encoded_len);
+    debug_assert_eq!(
+      actual_encoded_len, len,
+      "expected encoded len {} mismatch the actual encoded len {}",
+      len, actual_encoded_len
+    );
 
     // Register QueryResponse to track acks and responses
     let resp = q.response(self.inner.memberlist.num_online_members().await);
@@ -1229,7 +1251,8 @@ where
     let mut raw = BytesMut::with_capacity(expected_encoded_len + 1); // + 1 for message type byte
     raw.put_u8(ty as u8);
     raw.resize(expected_encoded_len + 1, 0);
-    let len = <D as TransformDelegate>::encode_message(&msg, &mut raw[1..]).map_err(Error::transform)?;
+    let len =
+      <D as TransformDelegate>::encode_message(&msg, &mut raw[1..]).map_err(Error::transform)?;
     debug_assert_eq!(
       len, expected_encoded_len,
       "expected encoded len {} mismatch the actual encoded len {}",
@@ -1371,6 +1394,7 @@ where
   coord_core: Option<Arc<CoordCore<T::Id>>>,
   memberlist: Memberlist<T, SerfDelegate<T, D>>,
   members: Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
+  num_members: Arc<AtomicUsize>,
   event_tx: Option<async_channel::Sender<Event<T, D>>>,
   shutdown_rx: async_channel::Receiver<()>,
   reap_interval: Duration,
@@ -1394,7 +1418,7 @@ macro_rules! erase_node {
       let _ = tx
         .send(Event::from(MemberEvent {
           ty: MemberEventType::Reap,
-          members: TinyVec::from($m.member.clone()),
+          members: vec![$m.member.clone()],
         }))
         .await;
     }
@@ -1448,6 +1472,7 @@ where
             let mut ms = self.members.write().await;
             Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate(), self.coord_core.as_deref(), self.reconnect_timeout).await;
             Self::reap_left(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate(), self.coord_core.as_deref(), self.reconnect_timeout).await;
+            self.num_members.store(ms.states.len(), Ordering::SeqCst);
           }
           _ = self.shutdown_rx.recv().fuse() => {
             return;
@@ -1682,7 +1707,7 @@ where
   pub(crate) async fn handle_query(
     &self,
     q: QueryMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-    ty: Option<InternalQueryEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+    ty: Option<InternalQueryEvent<T, D>>,
   ) -> bool {
     // Witness a potentially newer time
     self.inner.query_clock.witness(q.ltime);
@@ -1896,7 +1921,7 @@ where
           tx.send(
             MemberEvent {
               ty: MemberEventType::Join,
-              members: TinyVec::from(member.member.clone()),
+              members: vec![member.member.clone()],
             }
             .into(),
           )
@@ -1922,7 +1947,6 @@ where
           node: node.cheap_clone(),
           tags,
           status: Atomic::new(status),
-          // TODO:
           protocol_version: ProtocolVersion::V0,
           delegate_version: DelegateVersion::V0,
         }),
@@ -1932,13 +1956,17 @@ where
       };
       let member = ms.member.clone();
       members.states.insert(node.id().cheap_clone(), ms);
+      self
+        .inner
+        .num_members
+        .store(members.states.len(), Ordering::SeqCst);
       (
         MemberStatus::None,
         self.inner.event_tx.as_ref().map(|tx| {
           tx.send(
             MemberEvent {
               ty: MemberEventType::Join,
-              members: TinyVec::from(member),
+              members: vec![member],
             }
             .into(),
           )
@@ -2064,7 +2092,7 @@ where
         .send(
           MemberEvent {
             ty,
-            members: TinyVec::from(member),
+            members: vec![member],
           }
           .into(),
         )
@@ -2089,6 +2117,11 @@ where
     // TODO: There are plenty of duplicated code(to avoid borrow checker), I do not have a good idea how to refactor it currently...
     if msg.prune {
       if let Some(mut member) = members.states.remove(msg.node.id()) {
+        self
+          .inner
+          .num_members
+          .store(members.states.len(), Ordering::SeqCst);
+
         // If the message is old, then it is irrelevant and we can skip it
         if msg.ltime <= member.status_time {
           return false;
@@ -2139,6 +2172,10 @@ where
             let tx = self.inner.event_tx.as_ref();
             let coord = self.inner.coord_core.as_deref();
             erase_node!(tx <- coord(members[id].member));
+            self
+              .inner
+              .num_members
+              .store(members.states.len(), Ordering::SeqCst);
             true
           }
           MemberStatus::Failed => {
@@ -2160,7 +2197,7 @@ where
               tx.send(
                 MemberEvent {
                   ty: MemberEventType::Leave,
-                  members: TinyVec::from(member.member.clone()),
+                  members: vec![member.member.clone()],
                 }
                 .into(),
               )
@@ -2199,6 +2236,10 @@ where
             let tx = self.inner.event_tx.as_ref();
             let coord = self.inner.coord_core.as_deref();
             erase_node!(tx <- coord(members[id].member));
+            self
+              .inner
+              .num_members
+              .store(members.states.len(), Ordering::SeqCst);
             true
           }
           _ => false,
@@ -2272,7 +2313,7 @@ where
             tx.send(
               MemberEvent {
                 ty: MemberEventType::Leave,
-                members: TinyVec::from(member.member.clone()),
+                members: vec![member.member.clone()],
               }
               .into(),
             )
@@ -2337,7 +2378,7 @@ where
           .send(
             MemberEvent {
               ty: MemberEventType::Update,
-              members: TinyVec::from(ms.member.clone()),
+              members: vec![ms.member.clone()],
             }
             .into(),
           )
@@ -2374,7 +2415,11 @@ where
 
     let tx = self.inner.event_tx.as_ref();
     let coord = self.inner.coord_core.as_deref();
-    erase_node!(tx <- coord(members[id].member))
+    erase_node!(tx <- coord(members[id].member));
+    self
+      .inner
+      .num_members
+      .store(members.states.len(), Ordering::SeqCst);
   }
 
   /// Invoked when a join detects a conflict over a name.
@@ -2419,7 +2464,8 @@ where
         }
 
         // Start an id resolution query
-        let ty = InternalQueryEvent::Conflict(local_id.clone());
+        // let ty = InternalQueryEvent::Conflict(local_id.clone());
+        let ty = InternalQueryEvent::Conflict;
         let resp = match this
           .internal_query(SmolStr::new(ty.as_str()), payload.freeze(), None, ty)
           .await
@@ -2463,7 +2509,7 @@ where
                     "invalid conflict query response type: {}",
                     msg.as_str()
                   );
-                  continue
+                  continue;
                 }
               }
             }

@@ -136,7 +136,7 @@ where
   <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
   <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  Member(MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>),
+  Member(Arc<MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>),
   User(UserEvent),
   Query(QueryEvent<T, D>),
   InternalQuery(InternalQueryEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>),
@@ -267,7 +267,7 @@ impl core::fmt::Display for MemberEventType {
 pub struct MemberEvent<I, A> {
   pub(crate) ty: MemberEventType,
   // TODO: use an enum to avoid allocate when there is only one member
-  pub(crate) members: TinyVec<Arc<Member<I, A>>>,
+  pub(crate) members: Vec<Arc<Member<I, A>>>,
 }
 
 impl<I, A> core::fmt::Display for MemberEvent<I, A> {
@@ -277,7 +277,7 @@ impl<I, A> core::fmt::Display for MemberEvent<I, A> {
 }
 
 impl<I, A> MemberEvent<I, A> {
-  pub fn new(ty: MemberEventType, members: TinyVec<Arc<Member<I, A>>>) -> Self {
+  pub fn new(ty: MemberEventType, members: Vec<Arc<Member<I, A>>>) -> Self {
     Self { ty, members }
   }
 
@@ -331,8 +331,6 @@ where
   pub(crate) relay_factor: u8,
 }
 
-
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]
@@ -342,7 +340,8 @@ where
   T: Transport,
 {
   Ping,
-  Conflict(ConflictQueryEvent<T, D>),
+  // Conflict(ConflictQueryEvent<T, D>),
+  Conflict,
   #[cfg(feature = "encryption")]
   InstallKey,
   #[cfg(feature = "encryption")]
@@ -357,7 +356,7 @@ impl<I, A> InternalQueryEvent<I, A> {
   pub const fn as_str(&self) -> &'static str {
     match self {
       Self::Ping => "ruserf-ping",
-      Self::Conflict(_) => "ruserf-conflict",
+      Self::Conflict => "ruserf-conflict",
       Self::InstallKey => "ruserf-install-key",
       Self::UseKey => "ruserf-use-key",
       Self::RemoveKey => "ruserf-remove-key",

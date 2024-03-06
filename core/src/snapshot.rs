@@ -514,13 +514,13 @@ where
             EventKind::Member(e) => $this.process_member_event(e),
             EventKind::User(e) => $this.process_user_event(e),
             EventKind::Query(e) => $this.process_query_event(e),
-            EventKind::InternalQuery { query: e, .. } => $this.process_query_event(e),
+            EventKind::InternalQuery(e) => $this.process_query_event(e),
           },
           Either::Right(e) => match &*e {
             EventKind::Member(e) => $this.process_member_event(e),
             EventKind::User(e) => $this.process_user_event(e),
             EventKind::Query(e) => $this.process_query_event(e),
-            EventKind::InternalQuery { query: e, .. } => $this.process_query_event(e),
+            EventKind::InternalQuery(e) => $this.process_query_event(e),
           },
         }
       }};

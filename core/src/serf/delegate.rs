@@ -346,7 +346,7 @@ where
     }
 
     // Check the message type
-    let Ok(ty) = MessageType::try_from(&buf[0]) else {
+    let Ok(ty) = MessageType::try_from(buf[0]) else {
       tracing::error!(
         target = "ruserf",
         "remote state has bad type prefix {}",

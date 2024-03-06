@@ -341,6 +341,7 @@ pub(crate) struct QueueOptions {
   pub(crate) metric_labels: Arc<memberlist_core::types::MetricLabels>,
 }
 
+#[cfg(feature = "serde")]
 mod tags_serde {
   use std::sync::Arc;
 

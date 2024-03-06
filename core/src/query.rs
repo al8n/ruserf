@@ -18,7 +18,11 @@ use memberlist_core::{
 };
 
 use crate::{
-  clock::LamportTime, delegate::{Delegate, TransformDelegate}, error::Error, types::QueryResponseMessage, Filter, Member, MemberStatus, MessageType, Serf
+  clock::LamportTime,
+  delegate::{Delegate, TransformDelegate},
+  error::Error,
+  types::QueryResponseMessage,
+  Filter, Member, MemberStatus, MessageType, Serf,
 };
 
 /// Provided to [`Serf::query`] to configure the parameters of the
@@ -450,9 +454,11 @@ where
     encoded += <D as TransformDelegate>::encode_message(&resp, &mut raw[encoded..])?;
 
     debug_assert_eq!(
-      encoded - 1 - 1, expected_encoded_len,
+      encoded - 1 - 1,
+      expected_encoded_len,
       "expected encoded len {} mismatch the actual encoded len {}",
-      expected_encoded_len, encoded
+      expected_encoded_len,
+      encoded
     );
 
     let raw = Bytes::from(raw);

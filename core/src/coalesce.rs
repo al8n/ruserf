@@ -15,7 +15,7 @@ use memberlist_core::{
 
 use crate::delegate::Delegate;
 
-use super::{delegate::MergeDelegate, event::Event};
+use super::event::Event;
 
 pub(crate) struct ClosedOutChannel;
 
@@ -28,25 +28,16 @@ pub(crate) trait Coalescer: Send + Sync + 'static {
 
   fn name(&self) -> &'static str;
 
-  fn handle(&self, event: &Event<Self::Transport, Self::Delegate>) -> bool
-  where
-    <<<Self::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<<Self::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send;
+  fn handle(&self, event: &Event<Self::Transport, Self::Delegate>) -> bool;
 
   /// Invoked to coalesce the given event
-  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate>)
-  where
-    <<<Self::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<<Self::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send;
+  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate>);
 
   /// Invoked to flush the coalesced events
   fn flush(
     &mut self,
     out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
-  ) -> impl Future<Output = Result<(), ClosedOutChannel>> + Send
-  where
-    <<<Self::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<<Self::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send;
+  ) -> impl Future<Output = Result<(), ClosedOutChannel>> + Send;
 }
 
 /// Returns an event channel where the events are coalesced

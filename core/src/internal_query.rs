@@ -5,7 +5,7 @@ use either::Either;
 use futures::{FutureExt, Stream};
 use memberlist_core::{
   agnostic::Runtime,
-  bytes::{Bytes, BytesMut, BufMut},
+  bytes::{BufMut, Bytes, BytesMut},
   tracing,
   transport::{AddressResolver, Transport},
 };
@@ -16,8 +16,10 @@ use crate::{
   error::Error,
   event::{ConflictQueryEvent, Event, EventKind, InternalQueryEvent, QueryEvent},
   types::{MessageType, QueryResponseMessage, SerfMessage},
-  KeyRequest,
 };
+
+#[cfg(feature = "encryption")]
+use crate::key_manager::KeyRequest;
 
 /// Used to compute the max number of keys in a list key
 /// response. eg 1024/25 = 40. a message with max size of 1024 bytes cannot
@@ -94,8 +96,8 @@ where
         match $ev {
           EventKind::InternalQuery(ev) => match ev {
             InternalQueryEvent::Ping => {}
-            InternalQueryEvent::Conflict(ev) => {
-              Self::handle_conflict(ev).await;
+            InternalQueryEvent::Conflict => {
+              // Self::handle_conflict(ev).await;
             }
             #[cfg(feature = "encryption")]
             InternalQueryEvent::InstallKey => {
@@ -149,7 +151,7 @@ where
     };
 
     // Encode the response
-    
+
     match out {
       Some(state) => {
         let member = state.member();
@@ -159,9 +161,13 @@ where
         raw.resize(expected_encoded_len + 1, 0);
         match <D as TransformDelegate>::encode_message(member, &mut raw[1..]) {
           Ok(len) => {
-            debug_assert_eq!(len, expected_encoded_len, "expected encoded len {} mismatch the actual encoded len {}", expected_encoded_len, len);
+            debug_assert_eq!(
+              len, expected_encoded_len,
+              "expected encoded len {} mismatch the actual encoded len {}",
+              expected_encoded_len, len
+            );
 
-            if let Err(e) = q.respond(raw.freeze()).await {
+            if let Err(e) = ev.respond(raw.freeze()).await {
               tracing::error!(target="ruserf", err=%e, "failed to respond to conflict query");
             }
           }
@@ -169,11 +175,15 @@ where
             tracing::error!(target="ruserf", err=%e, "failed to encode conflict query response");
           }
         }
-      },
+      }
       None => {
-        tracing::warn!(target = "ruserf", "no member status found for '{}'", ev.conflict);
+        tracing::warn!(
+          target = "ruserf",
+          "no member status found for '{}'",
+          ev.conflict
+        );
         // TODO: consider send something back?
-        if let Err(e) = q.respond(Bytes::new()).await {
+        if let Err(e) = ev.respond(Bytes::new()).await {
           tracing::error!(target="ruserf", err=%e, "failed to respond to conflict query");
         }
       }
@@ -193,7 +203,7 @@ where
       Ok(msg) => match msg {
         SerfMessage::KeyRequest(req) => req,
         msg => {
-          tracing::error!(target="ruserf", "unexpected message type");
+          tracing::error!(target = "ruserf", "unexpected message type");
           Self::send_key_response(q, &mut response).await;
           return;
         }
@@ -248,7 +258,7 @@ where
       Ok(msg) => match msg {
         SerfMessage::KeyRequest(req) => req,
         msg => {
-          tracing::error!(target="ruserf", "unexpected message type");
+          tracing::error!(target = "ruserf", "unexpected message type");
           Self::send_key_response(q, &mut response).await;
           return;
         }
@@ -309,7 +319,7 @@ where
       Ok(msg) => match msg {
         SerfMessage::KeyRequest(req) => req,
         msg => {
-          tracing::error!(target="ruserf", "unexpected message type");
+          tracing::error!(target = "ruserf", "unexpected message type");
           Self::send_key_response(q, &mut response).await;
           return;
         }
@@ -421,9 +431,14 @@ where
       raw.put_u8(MessageType::KeyResponse as u8);
       raw.resize(expected_k_encoded_len + 1, 0);
 
-      let len = <D as TransformDelegate>::encode_message(resp, &mut raw[1..]).map_err(Error::transform)?;
+      let len =
+        <D as TransformDelegate>::encode_message(resp, &mut raw[1..]).map_err(Error::transform)?;
 
-      debug_assert_eq!(len, expected_k_encoded_len, "expected encoded len {} mismatch the actual encoded len {}", expected_k_encoded_len, len);
+      debug_assert_eq!(
+        len, expected_k_encoded_len,
+        "expected encoded len {} mismatch the actual encoded len {}",
+        expected_k_encoded_len, len
+      );
       let mut kraw = raw.freeze();
 
       // create response
@@ -435,9 +450,14 @@ where
       raw.put_u8(MessageType::QueryResponse as u8);
       raw.resize(expected_encoded_len + 1, 0);
 
-      let len = <D as TransformDelegate>::encode_message(&qresp, &mut raw[1..]).map_err(Error::transform)?;
+      let len = <D as TransformDelegate>::encode_message(&qresp, &mut raw[1..])
+        .map_err(Error::transform)?;
 
-      debug_assert_eq!(len, expected_encoded_len, "expected encoded len {} mismatch the actual encoded len {}", expected_encoded_len, len);
+      debug_assert_eq!(
+        len, expected_encoded_len,
+        "expected encoded len {} mismatch the actual encoded len {}",
+        expected_encoded_len, len
+      );
 
       let qraw = raw.freeze();
 
@@ -482,7 +502,11 @@ where
         raw.resize(expected_encoded_len + 1, 0);
         match <D as TransformDelegate>::encode_message(resp, &mut raw[1..]) {
           Ok(len) => {
-            debug_assert_eq!(len, expected_encoded_len, "expected encoded len {} mismatch the actual encoded len {}", expected_encoded_len, len);
+            debug_assert_eq!(
+              len, expected_encoded_len,
+              "expected encoded len {} mismatch the actual encoded len {}",
+              expected_encoded_len, len
+            );
 
             if let Err(e) = q.respond(raw.freeze()).await {
               tracing::error!(target="ruserf", err=%e, "failed to respond to key query");
@@ -492,7 +516,7 @@ where
             tracing::error!(target="ruserf", err=%e, "failed to encode key response");
           }
         }
-      },
+      }
     }
   }
 }

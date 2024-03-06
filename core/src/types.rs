@@ -1,5 +1,7 @@
 use std::{
-  collections::HashMap, sync::Arc, time::{Duration, Instant}
+  collections::HashMap,
+  sync::Arc,
+  time::{Duration, Instant},
 };
 
 use indexmap::IndexSet;
@@ -10,10 +12,13 @@ use memberlist_core::{
 };
 use smol_str::SmolStr;
 
-use crate::{clock::LamportTime, internal_query::KeyResponseMessage, query::QueryResponse, Member, UserEvent, UserEvents};
+use crate::{clock::LamportTime, query::QueryResponse, Member, UserEvent, UserEvents};
 
 #[cfg(feature = "encryption")]
 use crate::key_manager::KeyRequest;
+
+#[cfg(feature = "encryption")]
+use crate::internal_query::KeyResponseMessage;
 
 /// Tags of a node
 #[derive(Debug)]
@@ -491,7 +496,7 @@ pub(crate) struct PushPull<I, A> {
   /// Lamport time for event clock
   event_ltime: LamportTime,
   /// Recent events
-  events: TinyVec<Option<UserEvents>>,
+  events: Vec<Option<UserEvents>>,
   /// Lamport time for query clock
   query_ltime: LamportTime,
 }

@@ -4,12 +4,22 @@ use async_channel::Receiver;
 use async_lock::RwLock;
 use futures::{Stream, StreamExt};
 use memberlist_core::{
-  agnostic::Runtime, bytes::{BufMut, BytesMut}, tracing, transport::{AddressResolver, Transport}, types::SecretKey
+  agnostic::Runtime,
+  bytes::{BufMut, BytesMut},
+  tracing,
+  transport::{AddressResolver, Transport},
+  types::SecretKey,
 };
 use smol_str::SmolStr;
 
 use crate::{
-  delegate::{Delegate, TransformDelegate}, error::Error, event::InternalQueryEvent, internal_query::KeyResponseMessage, query::{NodeResponse, QueryResponse}, types::SerfMessage, MessageType, Serf
+  delegate::{Delegate, TransformDelegate},
+  error::Error,
+  event::InternalQueryEvent,
+  internal_query::KeyResponseMessage,
+  query::{NodeResponse, QueryResponse},
+  types::SerfMessage,
+  MessageType, Serf,
 };
 
 /// KeyRequest is used to contain input parameters which get broadcasted to all
@@ -149,9 +159,14 @@ where
     buf.put_u8(MessageType::KeyRequest as u8);
     buf.resize(expected_encoded_len + 1, 0);
     // Encode the query request
-    let len = <D as TransformDelegate>::encode_message(&kr, &mut buf[1..]).map_err(Error::transform)?;
+    let len =
+      <D as TransformDelegate>::encode_message(&kr, &mut buf[1..]).map_err(Error::transform)?;
 
-    debug_assert_eq!(len, expected_encoded_len, "expected encoded len {} mismatch the actual encoded len {}", expected_encoded_len, len);
+    debug_assert_eq!(
+      len, expected_encoded_len,
+      "expected encoded len {} mismatch the actual encoded len {}",
+      expected_encoded_len, len
+    );
 
     let serf = self.serf.get().unwrap();
     let mut q_param = serf.default_query_param().await;

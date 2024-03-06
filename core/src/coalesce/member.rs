@@ -124,7 +124,7 @@ where
             std::collections::hash_map::Entry::Vacant(ent) => {
               ent.insert(MemberEvent {
                 ty: cev.ty,
-                members: TinyVec::from(cev.member),
+                members: vec![cev.member],
               });
             }
           }

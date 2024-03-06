@@ -17,7 +17,9 @@ use memberlist_core::bytes::Bytes;
 pub use serf::*;
 
 mod broadcast;
+#[cfg(feature = "encryption")]
 mod key_manager;
+#[cfg(feature = "encryption")]
 pub use key_manager::*;
 mod types;
 use types::*;
