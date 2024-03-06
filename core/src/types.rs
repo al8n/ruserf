@@ -1,6 +1,5 @@
 use std::{
-  collections::HashMap,
-  time::{Duration, Instant},
+  collections::HashMap, sync::Arc, time::{Duration, Instant}
 };
 
 use indexmap::IndexSet;
@@ -11,7 +10,10 @@ use memberlist_core::{
 };
 use smol_str::SmolStr;
 
-use crate::{clock::LamportTime, query::QueryResponse, UserEvent, UserEvents};
+use crate::{clock::LamportTime, internal_query::KeyResponseMessage, query::QueryResponse, Member, UserEvent, UserEvents};
+
+#[cfg(feature = "encryption")]
+use crate::key_manager::KeyRequest;
 
 /// Tags of a node
 #[derive(Debug)]
@@ -58,20 +60,65 @@ impl Tags {
   }
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("unknown message type byte: {0}")]
+pub struct UnknownMessageType(u8);
+
+impl TryFrom<u8> for MessageType {
+  type Error = UnknownMessageType;
+
+  fn try_from(value: u8) -> Result<Self, Self::Error> {
+    Ok(match value {
+      0 => Self::Leave,
+      1 => Self::Join,
+      2 => Self::PushPull,
+      3 => Self::UserEvent,
+      4 => Self::Query,
+      5 => Self::QueryResponse,
+      6 => Self::ConflictResponse,
+      7 => Self::KeyRequest,
+      8 => Self::KeyResponse,
+      9 => Self::Relay,
+      _ => return Err(UnknownMessageType(value)),
+    })
+  }
+}
+
+impl From<MessageType> for u8 {
+  fn from(value: MessageType) -> Self {
+    match value {
+      MessageType::Leave => 0,
+      MessageType::Join => 1,
+      MessageType::PushPull => 2,
+      MessageType::UserEvent => 3,
+      MessageType::Query => 4,
+      MessageType::QueryResponse => 5,
+      MessageType::ConflictResponse => 6,
+      MessageType::KeyRequest => 7,
+      MessageType::KeyResponse => 8,
+      MessageType::Relay => 9,
+    }
+  }
+}
+
+/// The types of gossip messages Serf will send along
+/// memberlist.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 #[repr(u8)]
 #[non_exhaustive]
 pub enum MessageType {
-  Leave,
-  Join,
-  PushPull,
-  UserEvent,
-  Query,
-  QueryResponse,
-  ConflictResponse,
-  KeyRequest,
-  KeyResponse,
-  Relay,
+  Leave = 0,
+  Join = 1,
+  PushPull = 2,
+  UserEvent = 3,
+  Query = 4,
+  QueryResponse = 5,
+  ConflictResponse = 6,
+  Relay = 7,
+  #[cfg(feature = "encryption")]
+  KeyRequest = 253,
+  #[cfg(feature = "encryption")]
+  KeyResponse = 254,
 }
 
 impl MessageType {
@@ -84,7 +131,9 @@ impl MessageType {
       Self::Query => "query",
       Self::QueryResponse => "query response",
       Self::ConflictResponse => "conflict response",
+      #[cfg(feature = "encryption")]
       Self::KeyRequest => "key request",
+      #[cfg(feature = "encryption")]
       Self::KeyResponse => "key response",
       Self::Relay => "relay",
     }
@@ -141,9 +190,11 @@ pub enum SerfMessageRef<'a, I, A> {
   UserEvent(&'a MessageUserEvent),
   Query(&'a QueryMessage<I, A>),
   QueryResponse(&'a QueryResponseMessage<I, A>),
-  ConflictResponse,
-  KeyRequest,
-  KeyResponse,
+  ConflictResponse(&'a Member<I, A>),
+  #[cfg(feature = "encryption")]
+  KeyRequest(&'a KeyRequest),
+  #[cfg(feature = "encryption")]
+  KeyResponse(&'a KeyResponseMessage),
   Relay,
 }
 
@@ -171,9 +222,29 @@ pub enum SerfMessage<I, A> {
   UserEvent(MessageUserEvent),
   Query(QueryMessage<I, A>),
   QueryResponse(QueryResponseMessage<I, A>),
-  ConflictResponse,
-  KeyRequest,
-  KeyResponse,
+  ConflictResponse(Arc<Member<I, A>>),
+  #[cfg(feature = "encryption")]
+  KeyRequest(KeyRequest),
+  #[cfg(feature = "encryption")]
+  KeyResponse(KeyResponseMessage),
+}
+
+impl<'a, I, A> From<&'a SerfMessage<I, A>> for MessageType {
+  fn from(msg: &'a SerfMessage<I, A>) -> Self {
+    match msg {
+      SerfMessage::Leave(_) => MessageType::Leave,
+      SerfMessage::Join(_) => MessageType::Join,
+      SerfMessage::PushPull(_) => MessageType::PushPull,
+      SerfMessage::UserEvent(_) => MessageType::UserEvent,
+      SerfMessage::Query(_) => MessageType::Query,
+      SerfMessage::QueryResponse(_) => MessageType::QueryResponse,
+      SerfMessage::ConflictResponse(_) => MessageType::ConflictResponse,
+      #[cfg(feature = "encryption")]
+      SerfMessage::KeyRequest(_) => MessageType::KeyRequest,
+      #[cfg(feature = "encryption")]
+      SerfMessage::KeyResponse(_) => MessageType::KeyResponse,
+    }
+  }
 }
 
 impl<I, A> AsMessageRef<I, A> for QueryMessage<I, A> {
@@ -230,6 +301,38 @@ impl<'a, I, A> AsMessageRef<I, A> for &'a MessageUserEvent {
   }
 }
 
+impl<'a, I, A> AsMessageRef<I, A> for &'a Leave<I, A> {
+  fn as_message_ref(&self) -> SerfMessageRef<I, A> {
+    SerfMessageRef::Leave(self)
+  }
+}
+
+impl<'a, I, A> AsMessageRef<I, A> for &'a Member<I, A> {
+  fn as_message_ref(&self) -> SerfMessageRef<I, A> {
+    SerfMessageRef::ConflictResponse(self)
+  }
+}
+
+impl<'a, I, A> AsMessageRef<I, A> for &'a Arc<Member<I, A>> {
+  fn as_message_ref(&self) -> SerfMessageRef<I, A> {
+    SerfMessageRef::ConflictResponse(self)
+  }
+}
+
+#[cfg(feature = "encryption")]
+impl<'a, I, A> AsMessageRef<I, A> for &'a KeyRequest {
+  fn as_message_ref(&self) -> SerfMessageRef<I, A> {
+    SerfMessageRef::KeyRequest(self)
+  }
+}
+
+#[cfg(feature = "encryption")]
+impl<'a, I, A> AsMessageRef<I, A> for &'a KeyResponseMessage {
+  fn as_message_ref(&self) -> SerfMessageRef<I, A> {
+    SerfMessageRef::KeyResponse(self)
+  }
+}
+
 impl<I, A> AsMessageRef<I, A> for SerfMessage<I, A> {
   fn as_message_ref(&self) -> SerfMessageRef<I, A> {
     match self {
@@ -246,9 +349,11 @@ impl<I, A> AsMessageRef<I, A> for SerfMessage<I, A> {
       Self::UserEvent(u) => SerfMessageRef::UserEvent(u),
       Self::Query(q) => SerfMessageRef::Query(q),
       Self::QueryResponse(q) => SerfMessageRef::QueryResponse(q),
-      Self::ConflictResponse => SerfMessageRef::ConflictResponse,
-      Self::KeyRequest => SerfMessageRef::KeyRequest,
-      Self::KeyResponse => SerfMessageRef::KeyResponse,
+      Self::ConflictResponse(m) => SerfMessageRef::ConflictResponse(m),
+      #[cfg(feature = "encryption")]
+      Self::KeyRequest(kr) => SerfMessageRef::KeyRequest(kr),
+      #[cfg(feature = "encryption")]
+      Self::KeyResponse(kr) => SerfMessageRef::KeyResponse(kr),
     }
   }
 }
@@ -269,9 +374,11 @@ impl<'b, I, A> AsMessageRef<I, A> for &'b SerfMessage<I, A> {
       Self::UserEvent(u) => SerfMessageRef::UserEvent(u),
       Self::Query(q) => SerfMessageRef::Query(q),
       Self::QueryResponse(q) => SerfMessageRef::QueryResponse(q),
-      Self::ConflictResponse => SerfMessageRef::ConflictResponse,
-      Self::KeyRequest => SerfMessageRef::KeyRequest,
-      Self::KeyResponse => SerfMessageRef::KeyResponse,
+      Self::ConflictResponse(m) => SerfMessageRef::ConflictResponse(m),
+      #[cfg(feature = "encryption")]
+      Self::KeyRequest(kr) => SerfMessageRef::KeyRequest(kr),
+      #[cfg(feature = "encryption")]
+      Self::KeyResponse(kr) => SerfMessageRef::KeyResponse(kr),
     }
   }
 }
@@ -292,7 +399,9 @@ impl<I, A> SerfMessage<I, A> {
       Self::Query(_) => "query",
       Self::QueryResponse(_) => "query response",
       Self::ConflictResponse => "conflict response",
+      #[cfg(feature = "encryption")]
       Self::KeyRequest => "key request",
+      #[cfg(feature = "encryption")]
       Self::KeyResponse => "key response",
       Self::Relay => "relay",
     }
@@ -524,70 +633,3 @@ pub(crate) struct TagRef<'a> {
   tag: &'a str,
   expr: &'a str,
 }
-
-// pub(crate) fn encode_message<T>(t: SerfMessage, msg: &T) -> Result<Message, EncodeError>
-// where
-//   T: Serialize + ?Sized,
-// {
-//   let mut wr = Message::with_capacity(128);
-//   wr.put_u8(t as u8);
-//   msg.serialize(&mut RmpSerializer::new(&mut wr)).map(|_| wr)
-// }
-
-// pub(crate) fn decode_message<T>(src: &[u8]) -> Result<T, DecodeError>
-// where
-//   T: DeserializeOwned,
-// {
-//   T::deserialize(&mut RmpDeserializer::new(src))
-// }
-
-// pub(crate) fn decode_message_from_reader<T, R>(src: &mut R) -> Result<T, DecodeError>
-// where
-//   T: DeserializeOwned,
-//   R: std::io::Read,
-// {
-//   T::deserialize(&mut RmpDeserializer::new(src))
-// }
-
-// /// Wraps a message in the `SerfMessage::Relay`, adding the length and
-// /// address of the end recipient to the front of the message
-// pub(crate) fn encode_relay_message<T>(
-//   t: SerfMessage,
-//   dest: Node,
-//   msg: &T,
-// ) -> Result<Message, EncodeError>
-// where
-//   T: Serialize + ?Sized,
-// {
-//   let mut wr = Message::with_capacity(128);
-//   wr.put_u8(SerfMessage::Relay as u8);
-//   {
-//     let ser = &mut RmpSerializer::new(&mut wr);
-//     RelayHeader { dest }.serialize(ser)?;
-//   }
-
-//   wr.put_u8(t as u8);
-//   msg.serialize(&mut RmpSerializer::new(&mut wr)).map(|_| wr)
-// }
-
-// pub(crate) fn encode_filter(f: FilterTypeRef<'_>) -> Result<Bytes, EncodeError> {
-//   // match f {
-//   //   FilterTypeRef::Node(nodes) => rmp_serde::to_vec(nodes).map(Into::into),
-//   //   FilterTypeRef::Tag(t) => rmp_serde::to_vec(&t).map(Into::into),
-//   // }
-//   todo!()
-// }
-
-// #[test]
-// fn test_x() {
-//   let id = NodeId::new("test".try_into().unwrap(), "127.0.0.1:8080".parse().unwrap());
-//   let data = encode_relay_message(SerfMessage::Leave, id.clone(), &Leave {
-//     ltime: LamportTime(0),
-//     node: NodeId::new("test1".try_into().unwrap(), "127.0.0.1:8080".parse().unwrap()),
-//     prune: false,
-//   }).unwrap();
-
-//   let header = decode_message::<RelayHeader>(&data[1..]).unwrap();
-//   assert_eq!(header.dest, id);
-//   println!("{}", header.dest);
-// }

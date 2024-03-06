@@ -347,16 +347,14 @@ pub struct Serf<T: Transport, D = DefaultDelegate<T>>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   pub(crate) inner: Arc<SerfCore<T, D>>,
 }
 
 impl<T: Transport, D: Delegate> Clone for Serf<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
   fn clone(&self) -> Self {
     Self {
@@ -797,8 +795,12 @@ where
       return Err(Error::RawUserEventTooLarge(len));
     }
 
-    let mut raw = vec![0; len];
-    <D as TransformDelegate>::encode_message(&msg, &mut raw)?;
+    let mut raw = BytesMut::with_capacity(len + 1); // + 1 for message type byte
+    raw.put_u8(MessageType::UserEvent as u8);
+    raw.resize(len + 1, 0);
+
+    let actual_encoded_len = <D as TransformDelegate>::encode_message(&msg, &mut raw[1..])?;
+    debug_assert_eq!(actual_encoded_len, len, "expected encoded len {} mismatch the actual encoded len {}", len, actual_encoded_len);
 
     self.inner.event_clock.increment();
 
@@ -809,7 +811,7 @@ where
       .inner
       .event_broadcasts
       .queue_broadcast(SerfBroadcast {
-        msg: raw.into(),
+        msg: raw.freeze(),
         notify_tx: None,
       })
       .await;
@@ -890,8 +892,11 @@ where
       return Err(Error::QueryTooLarge(len));
     }
 
-    let mut raw = vec![0; len];
-    <D as TransformDelegate>::encode_message(&q, &mut raw)?;
+    let mut raw = BytesMut::with_capacity(len + 1); // + 1 for message type byte
+    raw.put_u8(MessageType::Query as u8);
+    raw.resize(len + 1, 0);
+    let actual_encoded_len = <D as TransformDelegate>::encode_message(&q, &mut raw[1..])?;
+    debug_assert_eq!(actual_encoded_len, len, "expected encoded len {} mismatch the actual encoded len {}", len, actual_encoded_len);
 
     // Register QueryResponse to track acks and responses
     let resp = q.response(self.inner.memberlist.num_online_members().await);
@@ -907,7 +912,7 @@ where
       .inner
       .broadcasts
       .queue_broadcast(SerfBroadcast {
-        msg: raw.into(),
+        msg: raw.freeze(),
         notify_tx: None,
       })
       .await;
@@ -1219,10 +1224,12 @@ where
     msg: SerfMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     notify_tx: Option<async_channel::Sender<()>>,
   ) -> Result<(), Error<T, D>> {
+    let ty = MessageType::from(&msg);
     let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&msg);
-    let mut raw = BytesMut::with_capacity(expected_encoded_len);
-    raw.resize(expected_encoded_len, 0);
-    let len = <D as TransformDelegate>::encode_message(&msg, &mut raw).map_err(Error::transform)?;
+    let mut raw = BytesMut::with_capacity(expected_encoded_len + 1); // + 1 for message type byte
+    raw.put_u8(ty as u8);
+    raw.resize(expected_encoded_len + 1, 0);
+    let len = <D as TransformDelegate>::encode_message(&msg, &mut raw[1..]).map_err(Error::transform)?;
     debug_assert_eq!(
       len, expected_encoded_len,
       "expected encoded len {} mismatch the actual encoded len {}",
@@ -1743,10 +1750,11 @@ where
       };
 
       let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&ack);
-      let mut raw = BytesMut::with_capacity(expected_encoded_len);
-      raw.resize(expected_encoded_len, 0);
+      let mut raw = BytesMut::with_capacity(expected_encoded_len + 1); // + 1 for message type byte
+      raw.put_u8(MessageType::QueryResponse as u8);
+      raw.resize(expected_encoded_len + 1, 0);
 
-      match <D as TransformDelegate>::encode_message(&ack, &mut raw) {
+      match <D as TransformDelegate>::encode_message(&ack, &mut raw[1..]) {
         Ok(len) => {
           debug_assert_eq!(
             len, expected_encoded_len,
@@ -2430,7 +2438,7 @@ where
         // Gather responses
         while let Some(r) = resp.response_rx().next().await {
           // Decode the response
-          if r.payload.is_empty() || r.payload[0] != SerfMessage::ConflictResponse as u8 {
+          if r.payload.is_empty() || r.payload[0] != MessageType::ConflictResponse as u8 {
             tracing::warn!(
               target = "ruserf",
               "invalid conflict query response type: {:?}",
@@ -2439,12 +2447,24 @@ where
             continue;
           }
 
-          match decode_message::<Member>(&r.payload[1..]) {
-            Ok(member) => {
-              // Update the counters
-              responses += 1;
-              if member.id().eq(local_id) {
-                matching += 1;
+          match <D as TransformDelegate>::decode_message(&r.payload[1..]) {
+            Ok((_, decoded)) => {
+              match decoded {
+                SerfMessage::ConflictResponse(member) => {
+                  // Update the counters
+                  responses += 1;
+                  if member.node.id().eq(local_id) {
+                    matching += 1;
+                  }
+                }
+                msg => {
+                  tracing::warn!(
+                    target = "ruserf",
+                    "invalid conflict query response type: {}",
+                    msg.as_str()
+                  );
+                  continue
+                }
               }
             }
             Err(e) => {

@@ -8,7 +8,7 @@ use either::Either;
 use futures::{Future, Stream};
 use memberlist_core::{
   agnostic::Runtime,
-  bytes::Bytes,
+  bytes::{BufMut, Bytes, BytesMut},
   transport::{AddressResolver, Node, Transport},
   types::TinyVec,
 };
@@ -314,14 +314,35 @@ impl core::fmt::Display for UserEvent {
   }
 }
 
-pub struct ConflictQueryEvent<I, A> {}
+pub struct ConflictQueryEvent<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  pub(crate) ltime: LamportTime,
+  pub(crate) name: SmolStr,
+  pub(crate) conflict: T::Id,
+
+  pub(crate) ctx: Arc<QueryContext<T, D>>,
+  pub(crate) id: u32,
+  /// source node
+  pub(crate) from: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  /// Number of duplicate responses to relay back to sender
+  pub(crate) relay_factor: u8,
+}
+
+
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]
-pub enum InternalQueryEvent<I, A> {
+pub enum InternalQueryEvent<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
   Ping,
-  Conflict(I),
+  Conflict(ConflictQueryEvent<T, D>),
   #[cfg(feature = "encryption")]
   InstallKey,
   #[cfg(feature = "encryption")]
@@ -345,10 +366,10 @@ impl<I, A> InternalQueryEvent<I, A> {
   }
 }
 
-pub(crate) struct QueryContext<T: Transport, D: Delegate>
+pub(crate) struct QueryContext<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
   pub(crate) query_timeout: Duration,
   pub(crate) span: Mutex<Option<Instant>>,
@@ -486,14 +507,16 @@ where
   pub async fn respond(&self, msg: Bytes) -> Result<(), Error<T, D>> {
     let resp = self.create_response(msg);
     let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&resp);
-    let mut buf = vec![0; expected_encoded_len];
-    let len = <D as TransformDelegate>::encode_message(&resp, &mut buf)?;
+    let mut buf = BytesMut::with_capacity(expected_encoded_len + 1); // +1 for the message type byte
+    buf.put_u8(SerfMessageRef::QueryResponse as u8);
+    buf.resize(expected_encoded_len + 1, 0);
+    let len = <D as TransformDelegate>::encode_message(&resp, &mut buf[1..])?;
     debug_assert_eq!(
       len, expected_encoded_len,
       "expected encoded len {expected_encoded_len} is not match the actual encoded len {len}"
     );
     self
-      .respond_with_message_and_response(buf.into(), resp)
+      .respond_with_message_and_response(buf.freeze(), resp)
       .await
   }
 }

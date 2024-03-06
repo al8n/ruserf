@@ -6,13 +6,13 @@ use memberlist_core::{
 };
 
 use crate::{
-  coordinate::Coordinate, AsMessageRef, Filter, MessageType, SerfMessage, SerfRelayMessage, Tags,
+  coordinate::Coordinate, AsMessageRef, Filter, MessageType, SerfMessage, SerfRelayMessage, Tags, UnknownMessageType,
 };
 
 /// A delegate for encoding and decoding.
 pub trait TransformDelegate: Send + Sync + 'static {
   /// The error type for the transformation.
-  type Error: std::error::Error + Send + Sync + 'static;
+  type Error: std::error::Error + From<UnknownMessageType> + Send + Sync + 'static;
   /// The Id type.
   type Id: Id;
   /// The Address type.
@@ -30,9 +30,7 @@ pub trait TransformDelegate: Send + Sync + 'static {
   ) -> Result<usize, Self::Error>;
 
   /// Decodes [`Node`] from the given bytes, returning the number of bytes consumed and the node.
-  fn decode_node(
-    bytes: impl AsRef<[u8]>,
-  ) -> Result<(usize, Node<Self::Id, Self::Address>), Self::Error>;
+  fn decode_node(bytes: impl AsRef<[u8]>) -> Result<(usize, Node<Self::Id, Self::Address>), Self::Error>;
 
   fn id_encoded_len(id: &Self::Id) -> usize;
 
@@ -60,15 +58,18 @@ pub trait TransformDelegate: Send + Sync + 'static {
 
   fn message_encoded_len(msg: impl AsMessageRef<Self::Id, Self::Address>) -> usize;
 
+  /// Encodes the message into the given buffer, returning the number of bytes written.
+  /// 
+  /// **NOTE**:
+  /// 
+  /// 1. The buffer must be large enough to hold the encoded message.
+  /// The length of the buffer can be obtained by calling [`TransformDelegate::message_encoded_len`].
+  /// 2. A message type byte will be automatically prepended to the buffer,
+  /// so users do not need to encode the message type byte by themselves.
   fn encode_message(
     msg: impl AsMessageRef<Self::Id, Self::Address>,
-    dst: &mut [u8],
-  ) -> Result<usize, Self::Error>;
-
-  /// Returns the message type of the given buf without actually decoding the message.
-  ///
-  /// This is used to determine if we should actually decode the message or not.
-  fn check_message_type(msg: impl AsRef<[u8]>) -> Option<MessageType>;
+    dst: impl AsMut<[u8]>,
+  ) -> Result<usize, Self::Error>; 
 
   fn decode_message(
     bytes: impl AsRef<[u8]>,
@@ -127,10 +128,8 @@ where
     Transformable::encode(node, dst).map_err(Self::Error::Node)
   }
 
-  fn decode_node(
-    bytes: impl AsRef<[u8]>,
-  ) -> Result<(usize, Node<Self::Id, Self::Address>), Self::Error> {
-    Transformable::decode(bytes.as_ref()).map_err(Self::Error::Node)
+  fn decode_node(bytes: impl AsRef<[u8]>) -> Result<(usize, Node<Self::Id, Self::Address>), Self::Error> {
+    Transformable::decode(bytes).map_err(Self::Error::Node)
   }
 
   fn id_encoded_len(id: &Self::Id) -> usize {
@@ -187,12 +186,8 @@ where
 
   fn encode_message(
     msg: impl AsMessageRef<Self::Id, Self::Address>,
-    dst: &mut [u8],
+    dst: impl AsMut<[u8]>,
   ) -> Result<usize, Self::Error> {
-    todo!()
-  }
-
-  fn check_message_type(msg: impl AsRef<[u8]>) -> Option<MessageType> {
     todo!()
   }
 

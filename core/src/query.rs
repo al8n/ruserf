@@ -10,7 +10,7 @@ use async_lock::Mutex;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use memberlist_core::{
   agnostic::Runtime,
-  bytes::Bytes,
+  bytes::{BufMut, Bytes, BytesMut},
   tracing,
   transport::{AddressResolver, Node, Transport},
   types::{OneOrMore, SmallVec, TinyVec},
@@ -18,11 +18,7 @@ use memberlist_core::{
 };
 
 use crate::{
-  clock::LamportTime,
-  delegate::{Delegate, TransformDelegate},
-  error::Error,
-  types::QueryResponseMessage,
-  Filter, Member, MemberStatus, Serf,
+  clock::LamportTime, delegate::{Delegate, TransformDelegate}, error::Error, types::QueryResponseMessage, Filter, Member, MemberStatus, MessageType, Serf
 };
 
 /// Provided to [`Serf::query`] to configure the parameters of the
@@ -444,12 +440,17 @@ where
       ));
     }
 
-    let mut raw = vec![0; expected_encoded_len];
-    let mut encoded = <D as TransformDelegate>::encode_node(&node, &mut raw)?;
+    let mut raw = BytesMut::with_capacity(expected_encoded_len + 1 + 1); // +1 for relay message type byte, +1 for the message type byte
+    raw.put_u8(MessageType::Relay as u8);
+    raw.resize(expected_encoded_len + 1 + 1, 0);
+    let mut encoded = 1;
+    encoded += <D as TransformDelegate>::encode_node(&node, &mut raw[encoded..])?;
+    raw[encoded] = MessageType::QueryResponse as u8;
+    encoded += 1;
     encoded += <D as TransformDelegate>::encode_message(&resp, &mut raw[encoded..])?;
 
     debug_assert_eq!(
-      encoded, expected_encoded_len,
+      encoded - 1 - 1, expected_encoded_len,
       "expected encoded len {} mismatch the actual encoded len {}",
       expected_encoded_len, encoded
     );

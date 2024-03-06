@@ -212,13 +212,9 @@ where
 
   fn encode_message(
     msg: impl AsMessageRef<Self::Id, Self::Address>,
-    dst: &mut [u8],
+    dst: impl AsMut<[u8]>,
   ) -> Result<usize, Self::Error> {
     T::encode_message(msg, dst)
-  }
-
-  fn check_message_type(msg: impl AsRef<[u8]>) -> Option<crate::MessageType> {
-    T::check_message_type(msg)
   }
 
   fn decode_message(

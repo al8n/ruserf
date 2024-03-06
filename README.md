@@ -1,7 +1,6 @@
 <div align="center">
 
-<!-- <img src="https://raw.githubusercontent.com/al8n/ruserf/main/art/logo.png" height = "200px"> -->
-<img src="./art/logo.png" height = "200px">
+<img src="https://raw.githubusercontent.com/al8n/ruserf/main/art/logo.png" height = "200px">
 
 <h1>RuSerf</h1>
 

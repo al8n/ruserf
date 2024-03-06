@@ -4,21 +4,12 @@ use async_channel::Receiver;
 use async_lock::RwLock;
 use futures::{Stream, StreamExt};
 use memberlist_core::{
-  agnostic::Runtime,
-  tracing,
-  transport::{AddressResolver, Transport},
-  types::SecretKey,
+  agnostic::Runtime, bytes::{BufMut, BytesMut}, tracing, transport::{AddressResolver, Transport}, types::SecretKey
 };
 use smol_str::SmolStr;
 
 use crate::{
-  delegate::Delegate,
-  error::Error,
-  event::InternalQueryEvent,
-  internal_query::NodeKeyResponse,
-  query::{NodeResponse, QueryResponse},
-  types::SerfMessage,
-  Serf,
+  delegate::{Delegate, TransformDelegate}, error::Error, event::InternalQueryEvent, internal_query::KeyResponseMessage, query::{NodeResponse, QueryResponse}, types::SerfMessage, MessageType, Serf
 };
 
 /// KeyRequest is used to contain input parameters which get broadcasted to all
@@ -102,7 +93,7 @@ where
   ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
-      .handle_key_request(Some(key), InternalQueryEventType::InstallKey, opts)
+      .handle_key_request(Some(key), InternalQueryEvent::InstallKey, opts)
       .await
   }
 
@@ -116,7 +107,7 @@ where
   ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
-      .handle_key_request(Some(key), InternalQueryEventType::UseKey, opts)
+      .handle_key_request(Some(key), InternalQueryEvent::UseKey, opts)
       .await
   }
 
@@ -130,7 +121,7 @@ where
   ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
-      .handle_key_request(Some(key), InternalQueryEventType::RemoveKey, opts)
+      .handle_key_request(Some(key), InternalQueryEvent::RemoveKey, opts)
       .await
   }
 
@@ -142,7 +133,7 @@ where
   pub async fn list_keys(&self) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.read().await;
     self
-      .handle_key_request(None, InternalQueryEventType::ListKey, None)
+      .handle_key_request(None, InternalQueryEvent::ListKey, None)
       .await
   }
 
@@ -152,9 +143,15 @@ where
     ty: InternalQueryEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     opts: Option<KeyRequestOptions>,
   ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
+    let kr = KeyRequest { key };
+    let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&kr);
+    let mut buf = BytesMut::with_capacity(expected_encoded_len + 1); // +1 for the message type
+    buf.put_u8(MessageType::KeyRequest as u8);
+    buf.resize(expected_encoded_len + 1, 0);
     // Encode the query request
-    let req =
-      encode_message(SerfMessage::KeyRequest, &KeyRequest { key }).map_err(Error::Encode)?;
+    let len = <D as TransformDelegate>::encode_message(&kr, &mut buf[1..]).map_err(Error::transform)?;
+
+    debug_assert_eq!(len, expected_encoded_len, "expected encoded len {} mismatch the actual encoded len {}", expected_encoded_len, len);
 
     let serf = self.serf.get().unwrap();
     let mut q_param = serf.default_query_param().await;
@@ -162,7 +159,7 @@ where
       q_param.relay_factor = opts.relay_factor;
     }
     let qresp: QueryResponse = serf
-      .query(SmolStr::new(ty.as_str()), req.into(), Some(q_param))
+      .query(SmolStr::new(ty.as_str()), buf.freeze(), Some(q_param))
       .await?;
 
     // Handle the response stream and populate the KeyResponse
@@ -202,7 +199,7 @@ where
       resp.num_resp += 1;
 
       // Decode the response
-      if !r.payload.is_empty() || r.payload[0] != SerfMessage::KeyResponse as u8 {
+      if !r.payload.is_empty() || r.payload[0] != MessageType::KeyResponse as u8 {
         resp.messages.insert(
           r.from.clone(),
           SmolStr::new(format!(
@@ -218,8 +215,25 @@ where
         continue;
       }
 
-      let node_response = match decode_message::<NodeKeyResponse>(&r.payload[1..]) {
-        Ok(nr) => nr,
+      let node_response = match <D as TransformDelegate>::decode_message(&r.payload[1..]) {
+        Ok(nr) => match nr {
+          SerfMessage::KeyResponse(kr) => kr,
+          msg => {
+            resp.messages.insert(
+              r.from.clone(),
+              SmolStr::new(format!(
+                "Invalid key query response type: {:?}",
+                msg.as_str()
+              )),
+            );
+            resp.num_err += 1;
+
+            if resp.num_resp == resp.num_nodes {
+              return resp;
+            }
+            continue;
+          }
+        },
         Err(e) => {
           resp.messages.insert(
             r.from.clone(),

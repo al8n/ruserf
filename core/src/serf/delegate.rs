@@ -17,7 +17,7 @@ use futures::Stream;
 use indexmap::IndexSet;
 use memberlist_core::{
   agnostic::Runtime,
-  bytes::{Buf, BufMut, Bytes},
+  bytes::{Buf, BufMut, Bytes, BytesMut},
   delegate::{
     AliveDelegate, ConflictDelegate, Delegate as MemberlistDelegate, EventDelegate,
     MergeDelegate as MemberlistMergeDelegate, NodeDelegate, PingDelegate,
@@ -127,9 +127,9 @@ where
     let mut rebroadcast = None;
     let mut rebroadcast_queue = &this.inner.broadcasts;
 
-    match <D as TransformDelegate>::check_message_type(&msg) {
-      Some(ty) => match ty {
-        MessageType::Leave => match <D as TransformDelegate>::decode_message(&msg) {
+    match MessageType::try_from(msg[0]) {
+      Ok(ty) => match ty {
+        MessageType::Leave => match <D as TransformDelegate>::decode_message(&msg[1..]) {
           Ok(l) => {
             if let SerfMessage::Leave(l) = &l {
               tracing::debug!(target = "ruserf", "leave message",);
@@ -146,7 +146,7 @@ where
             tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
           }
         },
-        MessageType::Join => match <D as TransformDelegate>::decode_message(&msg) {
+        MessageType::Join => match <D as TransformDelegate>::decode_message(&msg[1..]) {
           Ok(j) => {
             if let SerfMessage::Join(j) = &j {
               tracing::debug!(target = "ruserf", "join message",);
@@ -163,7 +163,7 @@ where
             tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
           }
         },
-        MessageType::UserEvent => match <D as TransformDelegate>::decode_message(&msg) {
+        MessageType::UserEvent => match <D as TransformDelegate>::decode_message(&msg[1..]) {
           Ok(ue) => {
             if let SerfMessage::UserEvent(ue) = ue {
               tracing::debug!(target = "ruserf", "user event message",);
@@ -181,7 +181,7 @@ where
             tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
           }
         },
-        MessageType::Query => match <D as TransformDelegate>::decode_message(&msg) {
+        MessageType::Query => match <D as TransformDelegate>::decode_message(&msg[1..]) {
           Ok(q) => {
             if let SerfMessage::Query(q) = q {
               tracing::debug!(target = "ruserf", "query message",);
@@ -199,7 +199,7 @@ where
             tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
           }
         },
-        MessageType::QueryResponse => match <D as TransformDelegate>::decode_message(&msg) {
+        MessageType::QueryResponse => match <D as TransformDelegate>::decode_message(&msg[1..]) {
           Ok(qr) => {
             if let SerfMessage::QueryResponse(qr) = qr {
               tracing::debug!(target = "ruserf", "query response message",);
@@ -216,11 +216,12 @@ where
             tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
           }
         },
-        MessageType::Relay => match <D as TransformDelegate>::decode_node(&msg) {
+        MessageType::Relay => match <D as TransformDelegate>::decode_node(&msg[1..]) {
           Ok((consumed, n)) => {
             tracing::debug!(target = "ruserf", "relay message",);
             tracing::debug!(target = "ruserf", "relaying response to node: {}", n);
-            msg.advance(consumed);
+            // + 1 for the message type byte
+            msg.advance(consumed + 1);
             if let Err(e) = this.inner.memberlist.send(n.address(), msg.clone()).await {
               tracing::error!(target = "ruserf", err=%e, "failed to forwarding message to {}", n);
             }
@@ -237,8 +238,8 @@ where
           );
         }
       },
-      None => {
-        tracing::warn!(target = "ruserf", "receive unknown message type",);
+      Err(e) => {
+        tracing::warn!(target = "ruserf", err=%e, "receive unknown message type");
       }
     }
 
@@ -319,15 +320,17 @@ where
     drop(members);
 
     let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(pp);
-    let mut buf = vec![0; expected_encoded_len];
-    match <D as TransformDelegate>::encode_message(pp, &mut buf) {
+    let mut buf = BytesMut::with_capacity(expected_encoded_len + 1); // +1 for the message type byte
+    buf.put_u8(MessageType::PushPull as u8);
+    buf.resize(expected_encoded_len + 1, 0);
+    match <D as TransformDelegate>::encode_message(pp, &mut buf[1..]) {
       Ok(encoded_len) => {
         debug_assert_eq!(
           expected_encoded_len, encoded_len,
           "expected encoded len {} mismatch the actual encoded len {}",
           expected_encoded_len, encoded_len
         );
-        buf.into()
+        buf.freeze()
       }
       Err(e) => {
         tracing::error!(target = "ruserf", err=%e, "failed to encode local state");
@@ -343,7 +346,7 @@ where
     }
 
     // Check the message type
-    let Some(ty) = <D as TransformDelegate>::check_message_type(&buf) else {
+    let Ok(ty) = MessageType::try_from(&buf[0]) else {
       tracing::error!(
         target = "ruserf",
         "remote state has bad type prefix {}",
@@ -355,7 +358,7 @@ where
     // TODO: messageDropper
     match ty {
       MessageType::PushPull => {
-        match <D as TransformDelegate>::decode_message(&buf) {
+        match <D as TransformDelegate>::decode_message(&buf[1..]) {
           Err(e) => {
             tracing::error!(target = "ruserf", err=%e, "failed to decode remote state");
           }

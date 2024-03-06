@@ -5,17 +5,17 @@ use either::Either;
 use futures::{FutureExt, Stream};
 use memberlist_core::{
   agnostic::Runtime,
-  bytes::Bytes,
+  bytes::{Bytes, BytesMut, BufMut},
   tracing,
   transport::{AddressResolver, Transport},
 };
 use smol_str::SmolStr;
 
 use crate::{
-  delegate::Delegate,
+  delegate::{Delegate, TransformDelegate},
   error::Error,
-  event::{Event, EventKind, InternalQueryEvent, QueryEvent},
-  types::{QueryResponseMessage, SerfMessage},
+  event::{ConflictQueryEvent, Event, EventKind, InternalQueryEvent, QueryEvent},
+  types::{MessageType, QueryResponseMessage, SerfMessage},
   KeyRequest,
 };
 
@@ -92,20 +92,24 @@ where
     macro_rules! handle_query {
       ($ev: expr) => {{
         match $ev {
-          EventKind::InternalQuery { ty, query: ev } => match ty {
+          EventKind::InternalQuery(ev) => match ev {
             InternalQueryEvent::Ping => {}
-            InternalQueryEvent::Conflict(v) => {
+            InternalQueryEvent::Conflict(ev) => {
               Self::handle_conflict(ev).await;
             }
+            #[cfg(feature = "encryption")]
             InternalQueryEvent::InstallKey => {
               Self::handle_install_key(ev).await;
             }
+            #[cfg(feature = "encryption")]
             InternalQueryEvent::UseKey => {
               Self::handle_use_key(ev).await;
             }
+            #[cfg(feature = "encryption")]
             InternalQueryEvent::RemoveKey => {
               Self::handle_remove_key(ev).await;
             }
+            #[cfg(feature = "encryption")]
             InternalQueryEvent::ListKey => {
               Self::handle_list_keys(ev).await;
             }
@@ -124,50 +128,52 @@ where
   /// invoked when we get a query that is attempting to
   /// disambiguate a name conflict. They payload is a node name, and the response
   /// should the address we believe that node is at, if any.
-  async fn handle_conflict(ev: impl AsRef<QueryEvent<T, D>> + Send) {
-    let q = ev.as_ref();
+  async fn handle_conflict(ev: &ConflictQueryEvent<T, D>) {
     // The target node id is the payload
-    let id = match NodeId::decode(&q.payload) {
-      Ok(id) => id,
-      Err(e) => {
-        tracing::error!(target = "ruserf", err = %e, "conflict handler: failed to decode node id");
-        return;
-      }
-    };
 
     // Do not respond to the query if it is about us
-    if id.eq(q.ctx.this.inner.memberlist.local_id()) {
+    if ev.conflict.eq(ev.ctx.this.inner.memberlist.local_id()) {
       return;
     }
 
     tracing::debug!(
       target = "ruserf",
       "got conflict resolution query for '{}'",
-      id
+      ev.conflict
     );
 
     // Look for the member info
     let out = {
-      let members = q.ctx.this.inner.members.read().await;
-      members.states.get(&id).cloned()
+      let members = ev.ctx.this.inner.members.read().await;
+      members.states.get(&ev.conflict).cloned()
     };
 
     // Encode the response
+    
     match out {
-      Some(state) => match encode_message(SerfMessage::ConflictResponse, state.member()) {
-        Ok(msg) => {
-          if let Err(e) = q.respond(msg.into()).await {
-            tracing::error!(target="ruserf", err=%e, "failed to respond to conflict query");
+      Some(state) => {
+        let member = state.member();
+        let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(member);
+        let mut raw = BytesMut::with_capacity(expected_encoded_len + 1); // +1 for the message type
+        raw.put_u8(MessageType::ConflictResponse as u8);
+        raw.resize(expected_encoded_len + 1, 0);
+        match <D as TransformDelegate>::encode_message(member, &mut raw[1..]) {
+          Ok(len) => {
+            debug_assert_eq!(len, expected_encoded_len, "expected encoded len {} mismatch the actual encoded len {}", expected_encoded_len, len);
+
+            if let Err(e) = q.respond(raw.freeze()).await {
+              tracing::error!(target="ruserf", err=%e, "failed to respond to conflict query");
+            }
           }
-        }
-        Err(e) => {
-          tracing::error!(target="ruserf", err=%e, "failed to encode conflict query response");
+          Err(e) => {
+            tracing::error!(target="ruserf", err=%e, "failed to encode conflict query response");
+          }
         }
       },
       None => {
-        tracing::warn!(target = "ruserf", "no member status found for '{}'", id);
+        tracing::warn!(target = "ruserf", "no member status found for '{}'", ev.conflict);
         // TODO: consider send something back?
-        if let Err(e) = q.respond(Default::default()).await {
+        if let Err(e) = q.respond(Bytes::new()).await {
           tracing::error!(target="ruserf", err=%e, "failed to respond to conflict query");
         }
       }
@@ -179,11 +185,19 @@ where
   /// the memberlist keyring. This type of query may fail if the provided key does
   /// not fit the constraints that memberlist enforces. If the query fails, the
   /// response will contain the error message so that it may be relayed.
+  #[cfg(feature = "encryption")]
   async fn handle_install_key(ev: impl AsRef<QueryEvent<T, D>> + Send) {
     let q = ev.as_ref();
-    let mut response = NodeKeyResponse::default();
-    let req = match decode_message::<KeyRequest>(&q.payload[1..]) {
-      Ok(req) => req,
+    let mut response = KeyResponseMessage::default();
+    let req = match <D as TransformDelegate>::decode_message(&q.payload[1..]) {
+      Ok(msg) => match msg {
+        SerfMessage::KeyRequest(req) => req,
+        msg => {
+          tracing::error!(target="ruserf", "unexpected message type");
+          Self::send_key_response(q, &mut response).await;
+          return;
+        }
+      },
       Err(e) => {
         tracing::error!(target="ruserf", err=%e, "failed to decode key request");
         Self::send_key_response(q, &mut response).await;
@@ -225,12 +239,20 @@ where
     }
   }
 
+  #[cfg(feature = "encryption")]
   async fn handle_use_key(ev: impl AsRef<QueryEvent<T, D>> + Send) {
     let q = ev.as_ref();
-    let mut response = NodeKeyResponse::default();
+    let mut response = KeyResponseMessage::default();
 
-    let req = match decode_message::<KeyRequest>(&q.payload[1..]) {
-      Ok(req) => req,
+    let req = match <D as TransformDelegate>::decode_message(&q.payload[1..]) {
+      Ok(msg) => match msg {
+        SerfMessage::KeyRequest(req) => req,
+        msg => {
+          tracing::error!(target="ruserf", "unexpected message type");
+          Self::send_key_response(q, &mut response).await;
+          return;
+        }
+      },
       Err(e) => {
         tracing::error!(target="ruserf", err=%e, "failed to decode key request");
         Self::send_key_response(q, &mut response).await;
@@ -278,11 +300,20 @@ where
     }
   }
 
+  #[cfg(feature = "encryption")]
   async fn handle_remove_key(ev: impl AsRef<QueryEvent<T, D>> + Send) {
     let q = ev.as_ref();
-    let mut response = NodeKeyResponse::default();
-    let req = match decode_message::<KeyRequest>(&q.payload[1..]) {
-      Ok(req) => req,
+    let mut response = KeyResponseMessage::default();
+
+    let req = match <D as TransformDelegate>::decode_message(&q.payload[1..]) {
+      Ok(msg) => match msg {
+        SerfMessage::KeyRequest(req) => req,
+        msg => {
+          tracing::error!(target="ruserf", "unexpected message type");
+          Self::send_key_response(q, &mut response).await;
+          return;
+        }
+      },
       Err(e) => {
         tracing::error!(target="ruserf", err=%e, "failed to decode key request");
         Self::send_key_response(q, &mut response).await;
@@ -332,9 +363,10 @@ where
 
   /// Invoked when a query is received to return a list of all
   /// installed keys the Serf instance knows of.
+  #[cfg(feature = "encryption")]
   async fn handle_list_keys(ev: impl AsRef<QueryEvent<T, D>> + Send) {
     let q = ev.as_ref();
-    let mut response = NodeKeyResponse::default();
+    let mut response = KeyResponseMessage::default();
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
         target = "ruserf",
@@ -365,9 +397,10 @@ where
     }
   }
 
+  #[cfg(feature = "encryption")]
   fn key_list_response_with_correct_size(
     q: &QueryEvent<T, D>,
-    resp: &mut NodeKeyResponse,
+    resp: &mut KeyResponseMessage,
   ) -> Result<
     (
       Bytes,
@@ -383,16 +416,33 @@ where
       (q.ctx.this.inner.opts.query_response_size_limit / MIN_ENCODED_KEY_LENGTH).min(actual);
 
     for i in (0..=max_list_keys).rev() {
-      let buf = encode_message(SerfMessage::KeyResponse, resp)?;
+      let expected_k_encoded_len = <D as TransformDelegate>::message_encoded_len(resp);
+      let mut raw = BytesMut::with_capacity(expected_k_encoded_len + 1); // +1 for the message type
+      raw.put_u8(MessageType::KeyResponse as u8);
+      raw.resize(expected_k_encoded_len + 1, 0);
+
+      let len = <D as TransformDelegate>::encode_message(resp, &mut raw[1..]).map_err(Error::transform)?;
+
+      debug_assert_eq!(len, expected_k_encoded_len, "expected encoded len {} mismatch the actual encoded len {}", expected_k_encoded_len, len);
+      let mut kraw = raw.freeze();
 
       // create response
-      let qresp = q.create_response(buf.into());
+      let qresp = q.create_response(kraw.clone());
 
       // encode response
-      let raw = encode_message(SerfMessage::QueryResponse, &qresp)?;
+      let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&qresp);
+      let mut raw = BytesMut::with_capacity(expected_encoded_len + 1); // +1 for the message type
+      raw.put_u8(MessageType::QueryResponse as u8);
+      raw.resize(expected_encoded_len + 1, 0);
+
+      let len = <D as TransformDelegate>::encode_message(&qresp, &mut raw[1..]).map_err(Error::transform)?;
+
+      debug_assert_eq!(len, expected_encoded_len, "expected encoded len {} mismatch the actual encoded len {}", expected_encoded_len, len);
+
+      let qraw = raw.freeze();
 
       // Check the size limit
-      if q.check_response_size(raw.as_slice()).is_err() {
+      if q.check_response_size(&qraw).is_err() {
         resp.keys.drain(i..);
         resp.msg = SmolStr::new(format!(
           "truncated key list response, showing first {} of {} keys",
@@ -409,7 +459,8 @@ where
     Err(Error::FailTruncateResponse)
   }
 
-  async fn send_key_response(q: &QueryEvent<T, D>, resp: &mut NodeKeyResponse) {
+  #[cfg(feature = "encryption")]
+  async fn send_key_response(q: &QueryEvent<T, D>, resp: &mut KeyResponseMessage) {
     match q.name.as_str() {
       "ruserf-list-keys" => {
         let (raw, qresp) = match Self::key_list_response_with_correct_size(q, resp) {
@@ -424,14 +475,22 @@ where
           tracing::error!(target="ruserf", err=%e, "failed to respond to key query");
         }
       }
-      _ => match encode_message(SerfMessage::KeyResponse, resp) {
-        Ok(msg) => {
-          if let Err(e) = q.respond(msg.into()).await {
-            tracing::error!(target="ruserf", err=%e, "failed to respond to key query");
+      _ => {
+        let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(resp);
+        let mut raw = BytesMut::with_capacity(expected_encoded_len + 1); // +1 for the message type
+        raw.put_u8(MessageType::KeyResponse as u8);
+        raw.resize(expected_encoded_len + 1, 0);
+        match <D as TransformDelegate>::encode_message(resp, &mut raw[1..]) {
+          Ok(len) => {
+            debug_assert_eq!(len, expected_encoded_len, "expected encoded len {} mismatch the actual encoded len {}", expected_encoded_len, len);
+
+            if let Err(e) = q.respond(raw.freeze()).await {
+              tracing::error!(target="ruserf", err=%e, "failed to respond to key query");
+            }
           }
-        }
-        Err(e) => {
-          tracing::error!(target="ruserf", err=%e, "failed to encode key response");
+          Err(e) => {
+            tracing::error!(target="ruserf", err=%e, "failed to encode key response");
+          }
         }
       },
     }
@@ -439,10 +498,10 @@ where
 }
 
 #[viewit::viewit]
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 #[cfg(feature = "encryption")]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub(crate) struct NodeKeyResponse {
+pub(crate) struct KeyResponseMessage {
   /// Indicates true/false if there were errors or not
   result: bool,
   /// Contains error messages or other information
