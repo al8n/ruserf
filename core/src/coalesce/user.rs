@@ -35,8 +35,6 @@ impl<T, D> Coalescer for UserEventCoalescer<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   type Delegate = D;
   type Transport = T;
@@ -89,17 +87,17 @@ where
     }
   }
 
-  async fn flush(
-    &mut self,
-    out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
-  ) -> Result<(), super::ClosedOutChannel> {
-    for (_, latest) in self.events.drain() {
-      for event in latest.events {
-        if out_tx.send(Event::from(event)).await.is_err() {
-          return Err(super::ClosedOutChannel);
-        }
-      }
-    }
-    Ok(())
-  }
+  // async fn flush(
+  //   &mut self,
+  //   out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
+  // ) -> Result<(), super::ClosedOutChannel> {
+  //   for (_, latest) in self.events.drain() {
+  //     for event in latest.events {
+  //       if out_tx.send(Event::from(event)).await.is_err() {
+  //         return Err(super::ClosedOutChannel);
+  //       }
+  //     }
+  //   }
+  //   Ok(())
+  // }
 }

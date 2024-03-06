@@ -250,8 +250,8 @@ pub(crate) struct QueryCore<I, A> {
 pub(crate) struct Members<I, A> {
   pub(crate) states: HashMap<I, MemberState<I, A>>,
   recent_intents: HashMap<I, NodeIntent>,
-  pub(crate) left_members: OneOrMore<MemberState<I, A>>,
-  failed_members: OneOrMore<MemberState<I, A>>,
+  pub(crate) left_members: Vec<MemberState<I, A>>,
+  failed_members: Vec<MemberState<I, A>>,
 }
 
 impl<I: Eq + Hash, A: Eq + Hash> Members<I, A> {
@@ -1369,7 +1369,7 @@ where
 }
 
 #[viewit::viewit(vis_all = "", getters(prefix = "get"))]
-#[cfg_attr(feature = "async-graphql", derive(async_graphql::SimpleObject))]
+// #[cfg_attr(feature = "async-graphql", derive(async_graphql::SimpleObject))]
 pub struct Stats {
   members: usize,
   failed: usize,
@@ -2589,7 +2589,7 @@ where
 
 /// Used to remove an old member from a list of old
 /// members.
-fn remove_old_member<I, A>(old: &mut OneOrMore<MemberState<I, A>>, id: &I) {
+fn remove_old_member<I, A>(old: &mut Vec<MemberState<I, A>>, id: &I) {
   old.retain(|m| m.member.node.id() != id);
 }
 

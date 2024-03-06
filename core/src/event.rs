@@ -35,16 +35,12 @@ pub enum EventType {
 pub struct Event<T, D>(pub(crate) Either<EventKind<T, D>, Arc<EventKind<T, D>>>)
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send;
+  T: Transport;
 
 impl<D, T> Clone for Event<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn clone(&self) -> Self {
     Self(self.0.clone())
@@ -55,8 +51,6 @@ impl<D, T> Event<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   pub(crate) fn into_right(self) -> Self {
     match self.0 {
@@ -82,8 +76,6 @@ impl<D, T> From<MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAdd
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(value: MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>) -> Self {
     Self(Either::Left(EventKind::Member(value)))
@@ -94,8 +86,6 @@ impl<D, T> From<UserEvent> for Event<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(value: UserEvent) -> Self {
     Self(Either::Left(EventKind::User(value)))
@@ -106,8 +96,6 @@ impl<D, T> From<QueryEvent<T, D>> for Event<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(value: QueryEvent<T, D>) -> Self {
     Self(Either::Left(EventKind::Query(value)))
@@ -133,8 +121,6 @@ pub(crate) enum EventKind<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   Member(Arc<MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>),
   User(UserEvent),
@@ -146,8 +132,6 @@ impl<D, T> Clone for EventKind<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn clone(&self) -> Self {
     match self {
@@ -163,8 +147,6 @@ impl<D, T> EventKind<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   #[inline]
   pub const fn member(
@@ -189,8 +171,6 @@ impl<D, T> From<MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAdd
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(event: MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>) -> Self {
     Self::Member(event)
@@ -201,8 +181,6 @@ impl<D, T> From<UserEvent> for EventKind<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(event: UserEvent) -> Self {
     Self::User(event)
@@ -213,8 +191,6 @@ impl<D, T> From<QueryEvent<T, D>> for EventKind<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn from(event: QueryEvent<T, D>) -> Self {
     Self::Query(event)
@@ -290,11 +266,11 @@ impl<I, A> MemberEvent<I, A> {
   }
 }
 
-impl<I, A> From<MemberEvent<I, A>> for (MemberEventType, TinyVec<Arc<Member<I, A>>>) {
-  fn from(event: MemberEvent<I, A>) -> Self {
-    (event.ty, event.members)
-  }
-}
+// impl<I, A> From<MemberEvent<I, A>> for (MemberEventType, TinyVec<Arc<Member<I, A>>>) {
+//   fn from(event: MemberEvent<I, A>) -> Self {
+//     (event.ty, event.members)
+//   }
+// }
 
 /// UserEvent is the struct used for events that are triggered
 /// by the user and are not related to members
@@ -397,8 +373,6 @@ impl<D, T> AsRef<QueryEvent<T, D>> for QueryEvent<T, D>
 where
   D: Delegate,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn as_ref(&self) -> &QueryEvent<T, D> {
     self
@@ -409,8 +383,6 @@ impl<D, T> Clone for QueryEvent<T, D>
 where
   D: MergeDelegate,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn clone(&self) -> Self {
     Self {
@@ -429,8 +401,6 @@ impl<D, T> core::fmt::Display for QueryEvent<T, D>
 where
   D: Delegate,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "query")
@@ -441,8 +411,6 @@ impl<D, T> QueryEvent<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
 {
   pub(crate) fn create_response(
     &self,

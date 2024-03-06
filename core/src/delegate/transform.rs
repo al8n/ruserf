@@ -1,4 +1,3 @@
-use either::Either;
 use memberlist_core::{
   bytes::Bytes,
   transport::{Id, Node, Transformable},
@@ -6,7 +5,7 @@ use memberlist_core::{
 };
 
 use crate::{
-  coordinate::Coordinate, AsMessageRef, Filter, MessageType, SerfMessage, SerfRelayMessage, Tags,
+  coordinate::Coordinate, AsMessageRef, Filter, SerfMessage, Tags,
   UnknownMessageType,
 };
 

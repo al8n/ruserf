@@ -33,11 +33,11 @@ pub(crate) trait Coalescer: Send + Sync + 'static {
   /// Invoked to coalesce the given event
   fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate>);
 
-  /// Invoked to flush the coalesced events
-  fn flush(
-    &mut self,
-    out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
-  ) -> impl Future<Output = Result<(), ClosedOutChannel>> + Send;
+  // /// Invoked to flush the coalesced events
+  // fn flush(
+  //   &mut self,
+  //   out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
+  // ) -> impl Future<Output = Result<(), ClosedOutChannel>> + Send;
 }
 
 /// Returns an event channel where the events are coalesced

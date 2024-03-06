@@ -1,11 +1,10 @@
-use either::Either;
 use memberlist_core::{
   transport::{Id, Node},
   types::TinyVec,
   CheapClone,
 };
 
-use crate::{coordinate::Coordinate, AsMessageRef, Member, SerfMessage, SerfRelayMessage, Tags};
+use crate::{coordinate::Coordinate, AsMessageRef, Member, SerfMessage, Tags};
 
 use super::{
   DefaultMergeDelegate, Delegate, LpeTransfromDelegate, MergeDelegate, NoopReconnectDelegate,
