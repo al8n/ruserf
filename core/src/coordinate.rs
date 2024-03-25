@@ -7,10 +7,9 @@ use std::{
   time::Duration,
 };
 
+use memberlist_core::CheapClone;
 use parking_lot::RwLock;
 use rand::Rng;
-use serde::{Deserialize, Serialize};
-use showbiz_core::Name;
 use smallvec::SmallVec;
 
 /// Used to convert float seconds to nanoseconds.
@@ -51,7 +50,8 @@ pub enum CoordinateError {
 ///     host-based network coordinate systems." Networking, IEEE/ACM Transactions
 ///     on 18.1 (2010): 27-40.
 #[viewit::viewit]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CoordinateOptions {
   /// The dimensionality of the coordinate system. As discussed in [2], more
   /// dimensions improves the accuracy of the estimates up to a point. Per [2]
@@ -93,8 +93,7 @@ pub struct CoordinateOptions {
   gravity_rho: f64,
 
   #[cfg(feature = "metrics")]
-  #[serde(with = "showbiz_core::util::label_serde")]
-  metric_labels: Arc<Vec<showbiz_core::metrics::Label>>,
+  metric_labels: Arc<memberlist_core::types::MetricLabels>,
 }
 
 impl Default for CoordinateOptions {
@@ -117,14 +116,16 @@ impl CoordinateOptions {
       height_min: 10.0e-6,
       latency_filter_size: 3,
       gravity_rho: 150.0,
-      metric_labels: Arc::new(Vec::new()),
+      #[cfg(feature = "metrics")]
+      metric_labels: Arc::new(memberlist_core::types::MetricLabels::default()),
     }
   }
 }
 
 /// Used to record events that occur when updating coordinates.
 #[viewit::viewit]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CoordinateClientStats {
   /// Incremented any time we reset our local coordinate because
   /// our calculations have resulted in an invalid state.
@@ -145,7 +146,7 @@ impl CoordinateClientStats {
   }
 }
 
-struct CoordinateClientInner {
+struct CoordinateClientInner<I> {
   /// The current estimate of the client's network coordinate.
   coord: Coordinate,
 
@@ -165,10 +166,13 @@ struct CoordinateClientInner {
   /// Used to store the last several RTT samples,
   /// keyed by node name. We will use the config's LatencyFilterSamples
   /// value to determine how many samples we keep, per node.
-  latency_filter_samples: HashMap<Name, SmallVec<[f64; DEFAULT_LATENCY_FILTER_SAMPLES_SIZE]>>,
+  latency_filter_samples: HashMap<I, SmallVec<[f64; DEFAULT_LATENCY_FILTER_SAMPLES_SIZE]>>,
 }
 
-impl CoordinateClientInner {
+impl<I> CoordinateClientInner<I>
+where
+  I: CheapClone + Eq + core::hash::Hash,
+{
   /// Applies a small amount of gravity to pull coordinates towards
   /// the center of the coordinate system to combat drift. This assumes that the
   /// mutex is locked already.
@@ -182,10 +186,10 @@ impl CoordinateClientInner {
   }
 
   #[inline]
-  fn latency_filter(&mut self, node: &Name, rtt_seconds: f64) -> f64 {
+  fn latency_filter(&mut self, node: &I, rtt_seconds: f64) -> f64 {
     let samples = self
       .latency_filter_samples
-      .entry(node.clone())
+      .entry(node.cheap_clone())
       .or_insert_with(|| SmallVec::with_capacity(self.opts.latency_filter_size));
 
     // Add the new sample and trim the list, if needed.
@@ -246,20 +250,20 @@ impl CoordinateClientInner {
 ///
 /// `CoordinateClient` is thread-safe.
 // TODO: are there any better ways to avoid using a RwLock?
-pub struct CoordinateClient {
-  inner: RwLock<CoordinateClientInner>,
+pub struct CoordinateClient<I> {
+  inner: RwLock<CoordinateClientInner<I>>,
   /// Used to record events that occur when updating coordinates.
   stats: AtomicUsize,
 }
 
-impl Default for CoordinateClient {
+impl<I> Default for CoordinateClient<I> {
   #[inline]
   fn default() -> Self {
     Self::new()
   }
 }
 
-impl CoordinateClient {
+impl<I> CoordinateClient<I> {
   /// Creates a new client.
   #[inline]
   pub fn new() -> Self {
@@ -307,12 +311,6 @@ impl CoordinateClient {
     Self::check_coordinate(&l.coord, &coord).map(|_| l.coord = coord)
   }
 
-  /// Removes any client state for the given node.
-  #[inline]
-  pub fn forget_node(&self, node: &Name) {
-    self.inner.write().latency_filter_samples.remove(node);
-  }
-
   /// Returns a copy of stats for the client.
   #[inline]
   pub fn stats(&self) -> CoordinateClientStats {
@@ -321,12 +319,46 @@ impl CoordinateClient {
     }
   }
 
+  /// Returns the estimated RTT from the client's coordinate to other, the
+  /// coordinate for another node.
+  #[inline]
+  pub fn distance_to(&self, coord: &Coordinate) -> Duration {
+    self.inner.read().coord.distance_to(coord)
+  }
+
+  /// Returns an error if the coordinate isn't compatible with
+  /// this client, or if the coordinate itself isn't valid. This assumes the mutex
+  /// has been locked already.
+  #[inline]
+  fn check_coordinate(this: &Coordinate, coord: &Coordinate) -> Result<(), CoordinateError> {
+    if !this.is_compatible_with(coord) {
+      return Err(CoordinateError::DimensionalityMismatch);
+    }
+
+    if !coord.is_valid() {
+      return Err(CoordinateError::InvalidCoordinate);
+    }
+
+    Ok(())
+  }
+}
+
+impl<I> CoordinateClient<I>
+where
+  I: CheapClone + Eq + core::hash::Hash,
+{
+  /// Removes any client state for the given node.
+  #[inline]
+  pub fn forget_node(&self, node: &I) {
+    self.inner.write().latency_filter_samples.remove(node);
+  }
+
   /// Update takes other, a coordinate for another node, and rtt, a round trip
   /// time observation for a ping to that node, and updates the estimated position of
   /// the client's coordinate. Returns the updated coordinate.
   pub fn update(
     &self,
-    node: &Name,
+    node: &I,
     other: &Coordinate,
     rtt: Duration,
   ) -> Result<Coordinate, CoordinateError> {
@@ -361,36 +393,14 @@ impl CoordinateClient {
 
     Ok(l.coord.clone())
   }
-
-  /// Returns the estimated RTT from the client's coordinate to other, the
-  /// coordinate for another node.
-  #[inline]
-  pub fn distance_to(&self, coord: &Coordinate) -> Duration {
-    self.inner.read().coord.distance_to(coord)
-  }
-
-  /// Returns an error if the coordinate isn't compatible with
-  /// this client, or if the coordinate itself isn't valid. This assumes the mutex
-  /// has been locked already.
-  #[inline]
-  fn check_coordinate(this: &Coordinate, coord: &Coordinate) -> Result<(), CoordinateError> {
-    if !this.is_compatible_with(coord) {
-      return Err(CoordinateError::DimensionalityMismatch);
-    }
-
-    if !coord.is_valid() {
-      return Err(CoordinateError::InvalidCoordinate);
-    }
-
-    Ok(())
-  }
 }
 
 /// A specialized structure for holding network coordinates for the
 /// Vivaldi-based coordinate mapping algorithm. All of the fields should be public
 /// to enable this to be serialized. All values in here are in units of seconds.
 #[viewit::viewit]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Coordinate {
   /// The Euclidean portion of the coordinate. This is used along
   /// with the other fields to provide an overall distance estimate. The
@@ -588,6 +598,8 @@ fn rand_f64() -> f64 {
 
 #[cfg(test)]
 mod tests {
+  use smol_str::SmolStr;
+
   use super::*;
 
   fn verify_equal_floats(f1: f64, f2: f64) {
@@ -621,9 +633,7 @@ mod tests {
     other.vec[2] = 0.001;
 
     let rtt = Duration::from_nanos((2.0 * other.vec[2] * 1.0e9) as u64);
-    let mut c = client
-      .update(&Name::from_static_unchecked("other"), &other, rtt)
-      .unwrap();
+    let mut c = client.update(&SmolStr::from("other"), &other, rtt).unwrap();
 
     // The client should have scooted down to get away from it.
     assert!(c.vec[2] < 0.0);
@@ -651,7 +661,7 @@ mod tests {
     for p in pings {
       client
         .update(
-          &Name::from_static_unchecked("node"),
+          &SmolStr::from("node"),
           &other,
           Duration::from_nanos((p as i64).wrapping_mul(SECONDS_TO_NANOSECONDS as i64) as u64),
         )
@@ -668,7 +678,7 @@ mod tests {
       .set_dimensionality(3)
       .set_height_min(0f64);
 
-    let client = CoordinateClient::with_options(cfg.clone());
+    let client = CoordinateClient::<SmolStr>::with_options(cfg.clone());
 
     // Fiddle a raw coordinate to put it a specific number of seconds away.
     let mut other = Coordinate::with_options(cfg);
@@ -689,21 +699,21 @@ mod tests {
       client
         .inner
         .write()
-        .latency_filter(&Name::from_static_unchecked("alice"), 0.201),
+        .latency_filter(&SmolStr::from("alice"), 0.201),
       0.201,
     );
     verify_equal_floats(
       client
         .inner
         .write()
-        .latency_filter(&Name::from_static_unchecked("alice"), 0.200),
+        .latency_filter(&SmolStr::from("alice"), 0.200),
       0.201,
     );
     verify_equal_floats(
       client
         .inner
         .write()
-        .latency_filter(&Name::from_static_unchecked("alice"), 0.207),
+        .latency_filter(&SmolStr::from("alice"), 0.207),
       0.201,
     );
 
@@ -712,28 +722,28 @@ mod tests {
       client
         .inner
         .write()
-        .latency_filter(&Name::from_static_unchecked("alice"), 1.9),
+        .latency_filter(&SmolStr::from("alice"), 1.9),
       0.207,
     );
     verify_equal_floats(
       client
         .inner
         .write()
-        .latency_filter(&Name::from_static_unchecked("alice"), 0.203),
+        .latency_filter(&SmolStr::from("alice"), 0.203),
       0.207,
     );
     verify_equal_floats(
       client
         .inner
         .write()
-        .latency_filter(&Name::from_static_unchecked("alice"), 0.199),
+        .latency_filter(&SmolStr::from("alice"), 0.199),
       0.203,
     );
     verify_equal_floats(
       client
         .inner
         .write()
-        .latency_filter(&Name::from_static_unchecked("alice"), 0.211),
+        .latency_filter(&SmolStr::from("alice"), 0.211),
       0.203,
     );
 
@@ -742,17 +752,17 @@ mod tests {
       client
         .inner
         .write()
-        .latency_filter(&Name::from_static_unchecked("bob"), 0.310),
+        .latency_filter(&SmolStr::from("bob"), 0.310),
       0.310,
     );
 
     // Make sure we don't leak coordinates for nodes that leave.
-    client.forget_node(&Name::from_static_unchecked("alice"));
+    client.forget_node(&SmolStr::from("alice"));
     verify_equal_floats(
       client
         .inner
         .write()
-        .latency_filter(&Name::from_static_unchecked("alice"), 0.888),
+        .latency_filter(&SmolStr::from("alice"), 0.888),
       0.888,
     );
   }
@@ -770,7 +780,7 @@ mod tests {
 
     let rtt = Duration::from_millis(250);
     let c = client
-      .update(&Name::from_static_unchecked("node"), &other, rtt)
+      .update(&SmolStr::from("node"), &other, rtt)
       .unwrap_err();
     assert_eq!(c, CoordinateError::InvalidCoordinate);
     let c = client.get_coordinate();
@@ -786,9 +796,7 @@ mod tests {
     // Poison the internal state and make sure we reset on an update.
     client.inner.write().coord.vec[0] = f64::NAN;
     let other = Coordinate::with_options(cfg);
-    let c = client
-      .update(&Name::from_static_unchecked("node"), &other, rtt)
-      .unwrap();
+    let c = client.update(&SmolStr::from("node"), &other, rtt).unwrap();
     assert!(c.is_valid());
     assert_eq!(client.stats().resets, 1);
   }

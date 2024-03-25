@@ -1,26 +1,23 @@
+#![doc = include_str!("../../README.md")]
+#![doc(html_logo_url = "https://raw.githubusercontent.com/al8n/ruserf/main/art/logo_72x72.png")]
 #![forbid(unsafe_code)]
-#![allow(clippy::mutable_key_type)]
+// #![deny(warnings, missing_docs)]
+#![allow(clippy::type_complexity)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(docsrs, allow(unused_attributes))]
 
-pub mod clock;
+/// 
 pub mod coordinate;
 
-mod coalesce;
-mod codec;
-mod delegate;
-pub mod error;
-pub mod event;
+/// Delegate traits and its implementations.
+pub mod delegate;
+
+/// The types used in `ruserf`.
+pub mod types;
 
 mod serf;
-mod snapshot;
 pub use serf::*;
 
-mod broadcast;
-mod key_manager;
-pub use key_manager::*;
-mod types;
-
-mod options;
-pub use options::*;
-
-mod internal_query;
-mod query;
+#[test]
+fn test_() {
+}
