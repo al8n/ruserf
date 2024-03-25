@@ -4,7 +4,7 @@ use std::{
 };
 
 use atomic::Atomic;
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt};
 use memberlist_core::{
   agnostic_lite::RuntimeLite,
   bytes::{BufMut, Bytes, BytesMut},
@@ -13,12 +13,13 @@ use memberlist_core::{
   types::{DelegateVersion, NodeState, OneOrMore, ProtocolVersion, TinyVec},
   CheapClone,
 };
+use rand::{Rng, SeedableRng};
 use smol_str::SmolStr;
 
 use crate::{
   delegate::TransformDelegate,
   error::Error,
-  event::{InternalQueryEvent, MemberEvent, MemberEventType},
+  event::{InternalQueryEvent, MemberEvent, MemberEventType, QueryContext, QueryEvent},
   types::{
     JoinMessage, LeaveMessage, Member, MemberState, MemberStatus, MessageType, NodeIntent,
     QueryFlag, QueryMessage, QueryResponseMessage, SerfMessage, SerfMessageRef, Tags, UserEvent,
@@ -127,6 +128,7 @@ where
   }
 
   /// Serialize the current keyring and save it to a file.
+  #[cfg(feature = "encryption")]
   pub(crate) fn write_keyring_file(&self) -> std::io::Result<()> {
     use base64::{engine::general_purpose, Engine as _};
 
@@ -226,6 +228,7 @@ where
 {
   coord_core: Option<Arc<CoordCore<T::Id>>>,
   memberlist: Memberlist<T, SerfDelegate<T, D>>,
+  delegate: Arc<D>,
   members: Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
   event_tx: Option<async_channel::Sender<Event<T, D>>>,
   shutdown_rx: async_channel::Receiver<()>,
@@ -300,8 +303,8 @@ where
         futures::select! {
           _ = <T::Runtime as RuntimeLite>::sleep(self.reap_interval).fuse() => {
             let mut ms = self.members.write().await;
-            Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate(), self.coord_core.as_deref(), self.reconnect_timeout).await;
-            Self::reap_left(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate(), self.coord_core.as_deref(), self.reconnect_timeout).await;
+            Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
+            Self::reap_left(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
           }
           _ = self.shutdown_rx.recv().fuse() => {
             return;
@@ -380,11 +383,11 @@ where
             let idx: usize = rng.gen_range(0..num_failed);
             let member = &mu.failed_members[idx];
 
-            let id = member.member.id().clone();
+            let (id, address) = member.member.node().cheap_clone().into_components();
             drop(mu); // release read lock
             tracing::info!("ruserf: attempting to reconnect to {}", id);
             // Attempt to join at the memberlist level
-            if let Err(e) = self.memberlist.join_node(&id).await {
+            if let Err(e) = self.memberlist.join(Node::new(id.cheap_clone(), MaybeResolvedAddress::resolved(address))).await {
               tracing::warn!("ruserf: failed to reconnect {}: {}", id, e);
             } else {
               tracing::info!("ruserf: successfully reconnected to {}", id);
@@ -407,13 +410,17 @@ struct QueueChecker<I, A> {
   shutdown_rx: async_channel::Receiver<()>,
 }
 
-impl<I, A> QueueChecker<I, A> {
+impl<I, A> QueueChecker<I, A>
+where
+  I: Send + Sync + 'static,
+  A: Send + Sync + 'static,
+{
   fn spawn<R: RuntimeLite>(self) {
     R::spawn_detach(async move {
       loop {
         futures::select! {
           _ = R::sleep(self.opts.check_interval).fuse() => {
-            let numq = self.queue.num_queued();
+            let numq = self.queue.num_queued().await;
             // TODO: metrics
             if numq >= self.opts.depth_warning {
               tracing::warn!(target = "ruserf", "queue {} depth: {}", self.name, numq);
@@ -629,11 +636,11 @@ where
     }
 
     if let Some(ref tx) = self.inner.event_tx {
-      let ev = crate::event::QueryEvent {
+      let ev = QueryEvent {
         ltime: q.ltime,
         name: q.name,
         payload: q.payload,
-        ctx: Arc::new(crate::event::QueryContext {
+        ctx: Arc::new(QueryContext {
           query_timeout: q.timeout,
           span: Mutex::new(Some(Instant::now())),
           this: self.clone(),
@@ -977,7 +984,7 @@ where
               .member
               .status
               .store(MemberStatus::Leaving, Ordering::Release);
-            let node = member.member.node;
+            let node = member.member.node();
             let id = node.id();
             tracing::info!(target = "ruserf", "EventMemberReap (forced): {}", node);
 
@@ -1032,7 +1039,7 @@ where
               .await;
             }
 
-            let node = member.member.node;
+            let node = member.member.node();
             let id = node.id();
             tracing::info!(target = "ruserf", "EventMemberReap (forced): {}", node);
 
@@ -1282,7 +1289,9 @@ where
         let mut matching = 0usize;
 
         // Gather responses
-        while let Some(r) = resp.response_rx().next().await {
+        let resp_rx = resp.response_rx();
+        futures::pin_mut!(resp_rx);
+        while let Some(r) = resp_rx.next().await {
           // Decode the response
           if r.payload.is_empty() || r.payload[0] != MessageType::ConflictResponse as u8 {
             tracing::warn!(

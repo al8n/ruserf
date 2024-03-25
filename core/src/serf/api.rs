@@ -457,7 +457,7 @@ where
     self.query_in(name, payload, params, None).await
   }
 
-  async fn internal_query(
+  pub(crate) async fn internal_query(
     &self,
     name: SmolStr,
     payload: Bytes,
@@ -486,7 +486,7 @@ where
     let local = self.inner.memberlist.advertise_node();
 
     // Encode the filters
-    let filters = params.encode_filters()?;
+    let filters = params.encode_filters::<D>().map_err(Error::transform)?;
 
     // Setup the flags
     let flags = if params.request_ack {
@@ -564,7 +564,7 @@ where
     let current_state = self.state();
     if current_state != SerfState::Alive {
       return Err(JoinError {
-        joined: vec![],
+        joined: SmallVec::new(),
         errors: existing
           .into_iter()
           .map(|node| (node, Error::BadJoinStatus(current_state)))

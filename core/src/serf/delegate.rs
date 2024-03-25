@@ -41,7 +41,7 @@ where
   T: Transport,
 {
   serf: OnceLock<Serf<T, D>>,
-  merge_delegate: Option<D>,
+  delegate: Option<D>,
 }
 
 impl<D, T> SerfDelegate<T, D>
@@ -52,8 +52,12 @@ where
   pub(crate) fn new(d: Option<D>) -> Self {
     Self {
       serf: OnceLock::new(),
-      merge_delegate: d,
+      delegate: d,
     }
+  }
+
+  pub(crate) fn delegate(&self) -> Option<&D> {
+    self.delegate.as_ref()
   }
 
   pub(crate) fn store(&self, s: Serf<T, D>) {
@@ -264,8 +268,9 @@ where
     // Determine the bytes used already
     let mut bytes_used = 0;
     for msg in msgs.iter() {
-      bytes_used += msg.len() + 1 + overhead; // +1 for showbiz message type
-                                              // TODO: metrics
+      let (encoded_len, _) = encoded_len(msg.clone());
+      bytes_used += encoded_len;
+      // TODO: metrics
     }
 
     // Get any additional query broadcasts
@@ -275,8 +280,9 @@ where
       .get_broadcasts(overhead, limit - bytes_used)
       .await;
     for msg in query_msgs.iter() {
-      bytes_used += msg.len() + 1 + overhead; // +1 for showbiz message type
-                                              // TODO: metrics
+      let (encoded_len, _) = encoded_len(msg.clone());
+      bytes_used += encoded_len;
+      // TODO: metrics
     }
 
     // Get any additional event broadcasts
@@ -286,8 +292,9 @@ where
       .get_broadcasts(overhead, limit - bytes_used)
       .await;
     for msg in query_msgs.iter() {
-      bytes_used += msg.len() + 1 + overhead; // +1 for showbiz message type
-                                              // TODO: metrics
+      let (encoded_len, _) = encoded_len(msg.clone());
+      bytes_used += encoded_len;
+      // TODO: metrics
     }
 
     msgs.extend(query_msgs);
@@ -509,7 +516,7 @@ where
     &self,
     node: Arc<NodeState<Self::Id, Self::Address>>,
   ) -> Result<(), Self::Error> {
-    if let Some(ref d) = self.merge_delegate {
+    if let Some(ref d) = self.delegate {
       let member = node_to_member(node)?;
       return d
         .notify_merge(TinyVec::from(member))
@@ -536,7 +543,7 @@ where
     &self,
     peers: SmallVec<Arc<NodeState<Self::Id, Self::Address>>>,
   ) -> Result<(), Self::Error> {
-    if let Some(ref d) = self.merge_delegate {
+    if let Some(ref d) = self.delegate {
       let peers = peers
         .into_iter()
         .map(node_to_member)
