@@ -1,9 +1,9 @@
 use atomic::Atomic;
-use memberlist_core::{transport::Node, types::{DelegateVersion, ProtocolVersion}};
+use memberlist_core::{transport::Node, types::{DelegateVersion, OneOrMore, ProtocolVersion}};
 
-use std::{sync::Arc, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
-use super::{Tags, LamportTime};
+use super::{LamportTime, MessageType, Tags};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, bytemuck::NoUninit)]
 #[repr(u8)]
@@ -100,5 +100,30 @@ impl<I, A> MemberState<I, A> {
     static ZERO: once_cell::sync::Lazy<Instant> =
       once_cell::sync::Lazy::new(|| Instant::now() - std::time::UNIX_EPOCH.elapsed().unwrap());
     *ZERO
+  }
+}
+
+
+/// Used to buffer intents for out-of-order deliveries.
+pub(crate) struct NodeIntent {
+  ty: MessageType,
+  wall_time: Instant,
+  ltime: LamportTime,
+}
+
+#[derive(Default)]
+pub(crate) struct Members<I, A> {
+  pub(crate) states: HashMap<I, MemberState<I, A>>,
+  recent_intents: HashMap<I, NodeIntent>,
+  pub(crate) left_members: OneOrMore<MemberState<I, A>>,
+  failed_members: OneOrMore<MemberState<I, A>>,
+}
+
+impl<I: Eq + core::hash::Hash, A: Eq + core::hash::Hash> Members<I, A> {
+  fn recent_intent(&self, id: &I, ty: MessageType) -> Option<LamportTime> {
+    match self.recent_intents.get(id) {
+      Some(intent) if intent.ty == ty => Some(intent.ltime),
+      _ => None,
+    }
   }
 }
