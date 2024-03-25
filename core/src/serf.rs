@@ -30,6 +30,8 @@ pub(crate) use delegate::*;
 mod query;
 pub use query::*;
 
+mod internal_query;
+
 const MAGIC_BYTE: u8 = 255;
 
 /// Maximum 128 KB snapshot

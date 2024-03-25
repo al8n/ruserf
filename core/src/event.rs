@@ -16,11 +16,22 @@ use memberlist_core::{
 use smol_str::SmolStr;
 
 use super::{
-  delegate::{Delegate, MergeDelegate, TransformDelegate},
+  delegate::{Delegate, TransformDelegate},
   error::Error,
-  types::{LamportTime, Member, MessageType, QueryResponseMessage, SerfMessageRef},
+  types::{LamportTime, Member, MessageType, QueryResponseMessage},
   Serf,
 };
+
+const INTERNAL_PING: &str = "ruserf-ping";
+const INTERNAL_CONFLICT: &str = "ruserf-conflict";
+#[cfg(feature = "encryption")]
+pub(crate) const INTERNAL_INSTALL_KEY: &str = "ruserf-install-key";
+#[cfg(feature = "encryption")]
+pub(crate) const INTERNAL_USE_KEY: &str = "ruserf-use-key";
+#[cfg(feature = "encryption")]
+pub(crate) const INTERNAL_REMOVE_KEY: &str = "ruserf-remove-key";
+#[cfg(feature = "encryption")]
+pub(crate) const INTERNAL_LIST_KEYS: &str = "ruserf-list-keys";
 
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -336,21 +347,65 @@ where
   }
 }
 
+impl<T, D> ConflictQueryEvent<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  pub(crate) fn create_response(
+    &self,
+    buf: Bytes,
+  ) -> QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> {
+    QueryResponseMessage {
+      ltime: self.ltime,
+      id: self.id,
+      from: self.ctx.this.inner.memberlist.advertise_node(),
+      flags: 0,
+      payload: buf,
+    }
+  }
+
+  pub(crate) async fn respond_with_message_and_response(
+    &self,
+    raw: Bytes,
+    resp: QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> Result<(), Error<T, D>> {
+    self
+      .ctx
+      .respond_with_message_and_response(self.relay_factor, raw, resp)
+      .await
+  }
+
+  /// Used to send a response to the user query
+  pub async fn respond(&self, msg: Bytes) -> Result<(), Error<T, D>> {
+    self
+      .ctx
+      .respond(
+        self.id,
+        self.ltime,
+        self.relay_factor,
+        self.from.cheap_clone(),
+        msg,
+      )
+      .await
+  }
+}
+
 pub enum InternalQueryEvent<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  Ping,
+  Ping(LamportTime),
   Conflict(ConflictQueryEvent<T, D>),
   #[cfg(feature = "encryption")]
-  InstallKey,
+  InstallKey(QueryEvent<T, D>),
   #[cfg(feature = "encryption")]
-  UseKey,
+  UseKey(QueryEvent<T, D>),
   #[cfg(feature = "encryption")]
-  RemoveKey,
+  RemoveKey(QueryEvent<T, D>),
   #[cfg(feature = "encryption")]
-  ListKey,
+  ListKey(QueryEvent<T, D>),
 }
 
 impl<D, T> Clone for InternalQueryEvent<T, D>
@@ -360,16 +415,16 @@ where
 {
   fn clone(&self) -> Self {
     match self {
-      Self::Ping => Self::Ping,
+      Self::Ping(t) => Self::Ping(*t),
       Self::Conflict(e) => Self::Conflict(e.clone()),
       #[cfg(feature = "encryption")]
-      Self::InstallKey => Self::InstallKey,
+      Self::InstallKey(e) => Self::InstallKey(e.clone()),
       #[cfg(feature = "encryption")]
-      Self::UseKey => Self::UseKey,
+      Self::UseKey(e) => Self::UseKey(e.clone()),
       #[cfg(feature = "encryption")]
-      Self::RemoveKey => Self::RemoveKey,
+      Self::RemoveKey(e) => Self::RemoveKey(e.clone()),
       #[cfg(feature = "encryption")]
-      Self::ListKey => Self::ListKey,
+      Self::ListKey(e) => Self::ListKey(e.clone()),
     }
   }
 }
@@ -379,14 +434,35 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  pub const fn as_str(&self) -> &'static str {
+  #[inline]
+  pub(crate) const fn as_str(&self) -> &'static str {
     match self {
-      Self::Ping => "ruserf-ping",
-      Self::Conflict(_) => "ruserf-conflict",
-      Self::InstallKey => "ruserf-install-key",
-      Self::UseKey => "ruserf-use-key",
-      Self::RemoveKey => "ruserf-remove-key",
-      Self::ListKey => "ruserf-list-keys",
+      Self::Ping(_) => INTERNAL_PING,
+      Self::Conflict(_) => INTERNAL_CONFLICT,
+      #[cfg(feature = "encryption")]
+      Self::InstallKey(_) => INTERNAL_INSTALL_KEY,
+      #[cfg(feature = "encryption")]
+      Self::UseKey(_) => INTERNAL_USE_KEY,
+      #[cfg(feature = "encryption")]
+      Self::RemoveKey(_) => INTERNAL_REMOVE_KEY,
+      #[cfg(feature = "encryption")]
+      Self::ListKey(_) => INTERNAL_LIST_KEYS,
+    }
+  }
+
+  #[inline]
+  pub(crate) const fn ltime(&self) -> LamportTime {
+    match self {
+      Self::Ping(t) => *t,
+      Self::Conflict(e) => e.ltime,
+      #[cfg(feature = "encryption")]
+      Self::InstallKey(e) => e.ltime,
+      #[cfg(feature = "encryption")]
+      Self::UseKey(e) => e.ltime,
+      #[cfg(feature = "encryption")]
+      Self::RemoveKey(e) => e.ltime,
+      #[cfg(feature = "encryption")]
+      Self::ListKey(e) => e.ltime,
     }
   }
 }
@@ -399,6 +475,92 @@ where
   pub(crate) query_timeout: Duration,
   pub(crate) span: Mutex<Option<Instant>>,
   pub(crate) this: Serf<T, D>,
+}
+
+impl<T, D> QueryContext<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  fn check_response_size(&self, resp: &[u8]) -> Result<(), Error<T, D>> {
+    let resp_len = resp.len();
+    if resp_len > self.this.inner.opts.query_response_size_limit {
+      Err(Error::QueryResponseTooLarge {
+        limit: self.this.inner.opts.query_response_size_limit,
+        got: resp_len,
+      })
+    } else {
+      Ok(())
+    }
+  }
+
+  async fn respond_with_message_and_response(
+    &self,
+    relay_factor: u8,
+    raw: Bytes,
+    resp: QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> Result<(), Error<T, D>> {
+    self.check_response_size(raw.as_ref())?;
+
+    let mut mu = self.span.lock().await;
+
+    if let Some(span) = *mu {
+      // Ensure we aren't past our response deadline
+      if span.elapsed() > self.query_timeout {
+        return Err(Error::QueryTimeout);
+      }
+
+      // Send the response directly to the originator
+      self
+        .this
+        .inner
+        .memberlist
+        .send(resp.from.address(), raw)
+        .await?;
+
+      // Relay the response through up to relayFactor other nodes
+      self
+        .this
+        .relay_response(relay_factor, resp.from.cheap_clone(), resp)
+        .await?;
+
+      // Clear the deadline, responses sent
+      *mu = None;
+      Ok(())
+    } else {
+      Err(Error::QueryAlreadyResponsed)
+    }
+  }
+
+  async fn respond(
+    &self,
+    id: u32,
+    ltime: LamportTime,
+    relay_factor: u8,
+    from: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+    msg: Bytes,
+  ) -> Result<(), Error<T, D>> {
+    let resp = QueryResponseMessage {
+      ltime,
+      id,
+      from,
+      flags: 0,
+      payload: msg,
+    };
+    let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&resp);
+    let mut buf = BytesMut::with_capacity(expected_encoded_len + 1); // +1 for the message type byte
+    buf.put_u8(MessageType::QueryResponse as u8);
+    buf.resize(expected_encoded_len + 1, 0);
+    let len =
+      <D as TransformDelegate>::encode_message(&resp, &mut buf[1..]).map_err(Error::transform)?;
+    debug_assert_eq!(
+      len, expected_encoded_len,
+      "expected encoded len {expected_encoded_len} is not match the actual encoded len {len}"
+    );
+    self
+      .respond_with_message_and_response(relay_factor, buf.freeze(), resp)
+      .await
+  }
 }
 
 /// Query is the struct used by EventQuery type events
@@ -476,15 +638,7 @@ where
   }
 
   pub(crate) fn check_response_size(&self, resp: &[u8]) -> Result<(), Error<T, D>> {
-    let resp_len = resp.len();
-    if resp_len > self.ctx.this.inner.opts.query_response_size_limit {
-      Err(Error::QueryResponseTooLarge {
-        limit: self.ctx.this.inner.opts.query_response_size_limit,
-        got: resp_len,
-      })
-    } else {
-      Ok(())
-    }
+    self.ctx.check_response_size(resp)
   }
 
   pub(crate) async fn respond_with_message_and_response(
@@ -492,55 +646,23 @@ where
     raw: Bytes,
     resp: QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
   ) -> Result<(), Error<T, D>> {
-    self.check_response_size(raw.as_ref())?;
-
-    let mut mu = self.ctx.span.lock().await;
-
-    if let Some(span) = *mu {
-      // Ensure we aren't past our response deadline
-      if span.elapsed() > self.ctx.query_timeout {
-        return Err(Error::QueryTimeout);
-      }
-
-      // Send the response directly to the originator
-      self
-        .ctx
-        .this
-        .inner
-        .memberlist
-        .send(self.from.address(), raw)
-        .await?;
-
-      // Relay the response through up to relayFactor other nodes
-      self
-        .ctx
-        .this
-        .relay_response(self.relay_factor, self.from.clone(), resp)
-        .await?;
-
-      // Clear the deadline, responses sent
-      *mu = None;
-      Ok(())
-    } else {
-      Err(Error::QueryAlreadyResponsed)
-    }
+    self
+      .ctx
+      .respond_with_message_and_response(self.relay_factor, raw, resp)
+      .await
   }
 
   /// Used to send a response to the user query
   pub async fn respond(&self, msg: Bytes) -> Result<(), Error<T, D>> {
-    let resp = self.create_response(msg);
-    let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&resp);
-    let mut buf = BytesMut::with_capacity(expected_encoded_len + 1); // +1 for the message type byte
-    buf.put_u8(MessageType::QueryResponse as u8);
-    buf.resize(expected_encoded_len + 1, 0);
-    let len =
-      <D as TransformDelegate>::encode_message(&resp, &mut buf[1..]).map_err(Error::transform)?;
-    debug_assert_eq!(
-      len, expected_encoded_len,
-      "expected encoded len {expected_encoded_len} is not match the actual encoded len {len}"
-    );
     self
-      .respond_with_message_and_response(buf.freeze(), resp)
+      .ctx
+      .respond(
+        self.id,
+        self.ltime,
+        self.relay_factor,
+        self.from.cheap_clone(),
+        msg,
+      )
       .await
   }
 }

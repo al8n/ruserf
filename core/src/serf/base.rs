@@ -4,6 +4,7 @@ use std::{
 };
 
 use atomic::Atomic;
+use futures::FutureExt;
 use memberlist_core::{
   agnostic_lite::RuntimeLite,
   bytes::{BufMut, Bytes, BytesMut},

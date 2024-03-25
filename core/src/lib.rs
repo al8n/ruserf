@@ -6,9 +6,9 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(docsrs, allow(unused_attributes))]
 
-use memberlist_core::tracing;
-
 pub(crate) mod broadcast;
+
+mod coalesce;
 
 ///
 pub mod coordinate;

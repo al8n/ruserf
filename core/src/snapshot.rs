@@ -19,7 +19,7 @@ use memberlist_core::{
   agnostic_lite::RuntimeLite,
   bytes::{BufMut, BytesMut},
   tracing,
-  transport::{AddressResolver, Id, Node, Transformable, Transport},
+  transport::{AddressResolver, Id, Node, Transport},
   types::TinyVec,
   CheapClone,
 };
@@ -27,7 +27,7 @@ use rand::seq::SliceRandom;
 
 use crate::{
   delegate::{Delegate, TransformDelegate},
-  event::{Event, EventKind, MemberEvent, MemberEventType, QueryEvent, UserEvent},
+  event::{Event, EventKind, MemberEvent, MemberEventType, UserEvent},
   invalid_data_io_error,
   types::{LamportClock, LamportTime},
 };
@@ -500,107 +500,106 @@ where
 
   /// Long running routine that is used to handle events
   async fn stream(mut self) {
-    // let mut clock_ticker = <T::Runtime as RuntimeLite>::interval(CLOCK_UPDATE_INTERVAL);
+    let mut clock_ticker = <T::Runtime as RuntimeLite>::interval(CLOCK_UPDATE_INTERVAL);
 
-    // // flushEvent is used to handle writing out an event
-    // macro_rules! flush_event {
-    //   ($this:ident <- $event:ident) => {{
-    //     // Stop recording events after a leave is issued
-    //     if $this.leaving {
-    //       return;
-    //     }
+    // flushEvent is used to handle writing out an event
+    macro_rules! flush_event {
+      ($this:ident <- $event:ident) => {{
+        // Stop recording events after a leave is issued
+        if $this.leaving {
+          return;
+        }
 
-    //     match $event.0 {
-    //       Either::Left(e) => match &e {
-    //         EventKind::Member(e) => $this.process_member_event(e),
-    //         EventKind::User(e) => $this.process_user_event(e),
-    //         EventKind::Query(e) => $this.process_query_event(e),
-    //         EventKind::InternalQuery { query: e, .. } => $this.process_query_event(e),
-    //       },
-    //       Either::Right(e) => match &*e {
-    //         EventKind::Member(e) => $this.process_member_event(e),
-    //         EventKind::User(e) => $this.process_user_event(e),
-    //         EventKind::Query(e) => $this.process_query_event(e),
-    //         EventKind::InternalQuery { query: e, .. } => $this.process_query_event(e),
-    //       },
-    //     }
-    //   }};
-    // }
+        match $event.0 {
+          Either::Left(e) => match &e {
+            EventKind::Member(e) => $this.process_member_event(e),
+            EventKind::User(e) => $this.process_user_event(e),
+            EventKind::Query(e) => $this.process_query_event(e.ltime),
+            EventKind::InternalQuery(e) => $this.process_query_event(e.ltime()),
+          },
+          Either::Right(e) => match &*e {
+            EventKind::Member(e) => $this.process_member_event(e),
+            EventKind::User(e) => $this.process_user_event(e),
+            EventKind::Query(e) => $this.process_query_event(e.ltime),
+            EventKind::InternalQuery(e) => $this.process_query_event(e.ltime()),
+          },
+        }
+      }};
+    }
 
-    // loop {
-    //   futures::select! {
-    //     _ = self.leave_rx.recv().fuse() => {
-    //       self.leaving = true;
+    loop {
+      futures::select! {
+        _ = self.leave_rx.recv().fuse() => {
+          self.leaving = true;
 
-    //       // If we plan to re-join, keep our state
-    //       if self.rejoin_after_leave {
-    //         self.alive_nodes.clear();
-    //       }
-    //       self.try_append(SnapshotRecord::Leave);
-    //       let fh = self.fh.as_mut().unwrap();
-    //       if let Err(e) = fh.flush() {
-    //         tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
-    //       }
+          // If we plan to re-join, keep our state
+          if self.rejoin_after_leave {
+            self.alive_nodes.clear();
+          }
+          self.try_append(SnapshotRecord::Leave);
+          let fh = self.fh.as_mut().unwrap();
+          if let Err(e) = fh.flush() {
+            tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
+          }
 
-    //       if let Err(e) = fh.get_mut().sync_all() {
-    //         tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
-    //       }
-    //     }
-    //     ev = self.stream_rx.recv().fuse() => {
-    //       match ev {
-    //         Ok(ev) => flush_event!(self <- ev),
-    //         Err(e) => {
-    //           tracing::error!(target="ruserf", err=%e, "stream channel is closed");
-    //           return;
-    //         },
-    //       }
-    //     }
-    //     _ = futures::StreamExt::next(&mut clock_ticker).fuse() => {
-    //       self.update_clock();
-    //     }
-    //     _ = self.shutdown_rx.recv().fuse() => {
-    //       // Setup a timeout
-    //       let flush_timeout = <T::Runtime as RuntimeLite>::sleep(SHUTDOWN_FLUSH_TIMEOUT);
-    //       futures::pin_mut!(flush_timeout);
+          if let Err(e) = fh.get_mut().sync_all() {
+            tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
+          }
+        }
+        ev = self.stream_rx.recv().fuse() => {
+          match ev {
+            Ok(ev) => flush_event!(self <- ev),
+            Err(e) => {
+              tracing::error!(target="ruserf", err=%e, "stream channel is closed");
+              return;
+            },
+          }
+        }
+        _ = futures::StreamExt::next(&mut clock_ticker).fuse() => {
+          self.update_clock();
+        }
+        _ = self.shutdown_rx.recv().fuse() => {
+          // Setup a timeout
+          let flush_timeout = <T::Runtime as RuntimeLite>::sleep(SHUTDOWN_FLUSH_TIMEOUT);
+          futures::pin_mut!(flush_timeout);
 
-    //       // snapshot the clock
-    //       self.update_clock();
+          // snapshot the clock
+          self.update_clock();
 
-    //       // Clear out the buffers
-    //       loop {
-    //         futures::select! {
-    //           ev = self.stream_rx.recv().fuse() => {
-    //             match ev {
-    //               Ok(ev) => flush_event!(self <- ev),
-    //               Err(e) => {
-    //                 tracing::error!(target="ruserf", err=%e, "stream channel is closed");
-    //                 return;
-    //               },
-    //             }
-    //           }
-    //           _ = (&mut flush_timeout).fuse() => {
-    //             break;
-    //           }
-    //           default => {
-    //             break;
-    //           }
-    //         }
-    //       }
+          // Clear out the buffers
+          loop {
+            futures::select! {
+              ev = self.stream_rx.recv().fuse() => {
+                match ev {
+                  Ok(ev) => flush_event!(self <- ev),
+                  Err(e) => {
+                    tracing::error!(target="ruserf", err=%e, "stream channel is closed");
+                    return;
+                  },
+                }
+              }
+              _ = (&mut flush_timeout).fuse() => {
+                break;
+              }
+              default => {
+                break;
+              }
+            }
+          }
 
-    //       let fh = self.fh.as_mut().unwrap();
-    //       if let Err(e) = fh.flush() {
-    //         tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
-    //       }
+          let fh = self.fh.as_mut().unwrap();
+          if let Err(e) = fh.flush() {
+            tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
+          }
 
-    //       if let Err(e) = fh.get_mut().sync_all() {
-    //         tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
-    //       }
-    //       self.wait_tx.close();
-    //       return;
-    //     }
-    //   }
-    // }
-    todo!()
+          if let Err(e) = fh.get_mut().sync_all() {
+            tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
+          }
+          self.wait_tx.close();
+          return;
+        }
+      }
+    }
   }
 
   /// Used to handle a single user event
@@ -616,9 +615,8 @@ where
   }
 
   /// Used to handle a single query event
-  fn process_query_event(&mut self, e: &QueryEvent<T, D>) {
+  fn process_query_event(&mut self, ltime: LamportTime) {
     // Ignore old clocks
-    let ltime = e.ltime;
     if ltime <= self.last_event_clock {
       return;
     }

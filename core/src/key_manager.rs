@@ -12,10 +12,13 @@ use memberlist_core::{
 };
 use smol_str::SmolStr;
 
+use crate::event::{
+  INTERNAL_INSTALL_KEY, INTERNAL_LIST_KEYS, INTERNAL_REMOVE_KEY, INTERNAL_USE_KEY,
+};
+
 use super::{
   delegate::{Delegate, TransformDelegate},
   error::Error,
-  event::InternalQueryEvent,
   serf::{NodeResponse, QueryResponse},
   types::{KeyRequestMessage, MessageType, SerfMessage},
   Serf,
@@ -88,7 +91,7 @@ where
   ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
-      .handle_key_request(Some(key), InternalQueryEvent::InstallKey, opts)
+      .handle_key_request(Some(key), INTERNAL_INSTALL_KEY, opts)
       .await
   }
 
@@ -102,7 +105,7 @@ where
   ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
-      .handle_key_request(Some(key), InternalQueryEvent::UseKey, opts)
+      .handle_key_request(Some(key), INTERNAL_USE_KEY, opts)
       .await
   }
 
@@ -116,7 +119,7 @@ where
   ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
-      .handle_key_request(Some(key), InternalQueryEvent::RemoveKey, opts)
+      .handle_key_request(Some(key), INTERNAL_REMOVE_KEY, opts)
       .await
   }
 
@@ -128,14 +131,14 @@ where
   pub async fn list_keys(&self) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.read().await;
     self
-      .handle_key_request(None, InternalQueryEvent::ListKey, None)
+      .handle_key_request(None, INTERNAL_LIST_KEYS, None)
       .await
   }
 
   pub(crate) async fn handle_key_request(
     &self,
     key: Option<SecretKey>,
-    ty: InternalQueryEvent<T, D>,
+    ty: &str,
     opts: Option<KeyRequestOptions>,
   ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let kr = KeyRequestMessage { key };
@@ -159,7 +162,7 @@ where
       q_param.relay_factor = opts.relay_factor;
     }
     let qresp: QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> = serf
-      .query(SmolStr::new(ty.as_str()), buf.freeze(), Some(q_param))
+      .query(SmolStr::new(ty), buf.freeze(), Some(q_param))
       .await?;
 
     // Handle the response stream and populate the KeyResponse

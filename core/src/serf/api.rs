@@ -1,5 +1,6 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
+use api::internal_query::SerfQueries;
 use futures::FutureExt;
 use memberlist_core::{
   agnostic_lite::RuntimeLite,
@@ -12,6 +13,7 @@ use memberlist_core::{
 use smol_str::SmolStr;
 
 use crate::{
+  coalesce::{coalesced_event, MemberEventCoalescer, UserEventCoalescer},
   coordinate::{Coordinate, CoordinateOptions},
   delegate::TransformDelegate,
   error::{Error, JoinError},
@@ -41,51 +43,51 @@ where
     delegate: Option<D>,
     opts: Options,
   ) -> Result<Self, Error<T, D>> {
-    // if opts.max_user_event_size > USER_EVENT_SIZE_LIMIT {
-    //   return Err(Error::UserEventLimitTooLarge(USER_EVENT_SIZE_LIMIT));
-    // }
+    if opts.max_user_event_size > USER_EVENT_SIZE_LIMIT {
+      return Err(Error::UserEventLimitTooLarge(USER_EVENT_SIZE_LIMIT));
+    }
 
-    // // Check that the meta data length is okay
-    // if let Some(tags) = opts.tags.load().as_ref() {
-    //   let len = <D as TransformDelegate>::tags_encoded_len(tags);
-    //   if len > Meta::MAX_SIZE {
-    //     return Err(Error::TagsTooLarge(len));
-    //   }
-    // }
+    // Check that the meta data length is okay
+    if let Some(tags) = opts.tags.load().as_ref() {
+      let len = <D as TransformDelegate>::tags_encoded_len(tags);
+      if len > Meta::MAX_SIZE {
+        return Err(Error::TagsTooLarge(len));
+      }
+    }
 
-    // let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
+    let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
 
-    // let event_tx = ev.map(|mut event_tx| {
-    //   // Check if serf member event coalescing is enabled
-    //   if opts.coalesce_period > Duration::ZERO && opts.quiescent_period > Duration::ZERO {
-    //     let c = MemberEventCoalescer::new();
+    let event_tx = ev.map(|mut event_tx| {
+      // Check if serf member event coalescing is enabled
+      if opts.coalesce_period > Duration::ZERO && opts.quiescent_period > Duration::ZERO {
+        let c = MemberEventCoalescer::new();
 
-    //     event_tx = coalesced_event(
-    //       event_tx,
-    //       shutdown_rx.clone(),
-    //       opts.coalesce_period,
-    //       opts.quiescent_period,
-    //       c,
-    //     );
-    //   }
+        event_tx = coalesced_event(
+          event_tx,
+          shutdown_rx.clone(),
+          opts.coalesce_period,
+          opts.quiescent_period,
+          c,
+        );
+      }
 
-    //   // Check if user event coalescing is enabled
-    //   if opts.user_coalesce_period > Duration::ZERO && opts.user_quiescent_period > Duration::ZERO {
-    //     let c = UserEventCoalescer::new();
-    //     event_tx = coalesced_event(
-    //       event_tx,
-    //       shutdown_rx.clone(),
-    //       opts.user_coalesce_period,
-    //       opts.user_quiescent_period,
-    //       c,
-    //     );
-    //   }
+      // Check if user event coalescing is enabled
+      if opts.user_coalesce_period > Duration::ZERO && opts.user_quiescent_period > Duration::ZERO {
+        let c = UserEventCoalescer::new();
+        event_tx = coalesced_event(
+          event_tx,
+          shutdown_rx.clone(),
+          opts.user_coalesce_period,
+          opts.user_quiescent_period,
+          c,
+        );
+      }
 
-    //   // Listen for internal Serf queries. This is setup before the snapshotter, since
-    //   // we want to capture the query-time, but the internal listener does not passthrough
-    //   // the queries
-    //   SerfQueries::new(event_tx, shutdown_rx.clone())
-    // });
+      // Listen for internal Serf queries. This is setup before the snapshotter, since
+      // we want to capture the query-time, but the internal listener does not passthrough
+      // the queries
+      SerfQueries::new(event_tx, shutdown_rx.clone())
+    });
 
     // let clock = LamportClock::new();
     // let event_clock = LamportClock::new();
