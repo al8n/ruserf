@@ -3,7 +3,6 @@ use smol_str::SmolStr;
 
 use super::LamportTime;
 
-
 /// Used to buffer events to prevent re-delivery
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -19,7 +18,6 @@ pub struct UserEvent {
   pub(crate) name: SmolStr,
   pub(crate) payload: Bytes,
 }
-
 
 /// Used for user-generated events
 #[viewit::viewit]

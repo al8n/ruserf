@@ -1,5 +1,8 @@
 use atomic::Atomic;
-use memberlist_core::{transport::Node, types::{DelegateVersion, OneOrMore, ProtocolVersion}};
+use memberlist_core::{
+  transport::Node,
+  types::{DelegateVersion, OneOrMore, ProtocolVersion},
+};
 
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
@@ -68,7 +71,6 @@ mod serde_member_status {
   }
 }
 
-
 /// A single member of the Serf cluster.
 #[viewit::viewit(vis_all = "pub(crate)")]
 #[derive(Debug)]
@@ -103,24 +105,23 @@ impl<I, A> MemberState<I, A> {
   }
 }
 
-
 /// Used to buffer intents for out-of-order deliveries.
 pub(crate) struct NodeIntent {
-  ty: MessageType,
-  wall_time: Instant,
-  ltime: LamportTime,
+  pub(crate) ty: MessageType,
+  pub(crate) wall_time: Instant,
+  pub(crate) ltime: LamportTime,
 }
 
 #[derive(Default)]
 pub(crate) struct Members<I, A> {
   pub(crate) states: HashMap<I, MemberState<I, A>>,
-  recent_intents: HashMap<I, NodeIntent>,
+  pub(crate) recent_intents: HashMap<I, NodeIntent>,
   pub(crate) left_members: OneOrMore<MemberState<I, A>>,
-  failed_members: OneOrMore<MemberState<I, A>>,
+  pub(crate) failed_members: OneOrMore<MemberState<I, A>>,
 }
 
 impl<I: Eq + core::hash::Hash, A: Eq + core::hash::Hash> Members<I, A> {
-  fn recent_intent(&self, id: &I, ty: MessageType) -> Option<LamportTime> {
+  pub(crate) fn recent_intent(&self, id: &I, ty: MessageType) -> Option<LamportTime> {
     match self.recent_intents.get(id) {
       Some(intent) if intent.ty == ty => Some(intent.ltime),
       _ => None,

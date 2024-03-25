@@ -13,7 +13,7 @@ pub struct KeyRequestMessage {
   pub(crate) key: Option<SecretKey>,
 }
 
-/// Key 
+/// Key
 #[viewit::viewit]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 #[cfg(feature = "encryption")]
@@ -28,7 +28,6 @@ pub struct KeyResponseMessage {
   /// Used in listing queries to relay the primary key
   primary_key: Option<SecretKey>,
 }
-
 
 /// KeyResponse is used to relay a query for a list of all keys in use.
 #[derive(Default)]

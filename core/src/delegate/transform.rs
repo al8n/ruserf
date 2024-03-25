@@ -5,7 +5,8 @@ use memberlist_core::{
 };
 
 use crate::{
-  coordinate::Coordinate, types::{AsMessageRef, Filter, SerfMessage, Tags, UnknownMessageType}
+  coordinate::Coordinate,
+  types::{AsMessageRef, Filter, SerfMessage, Tags, UnknownMessageType},
 };
 
 /// A delegate for encoding and decoding.
@@ -29,7 +30,9 @@ pub trait TransformDelegate: Send + Sync + 'static {
   ) -> Result<usize, Self::Error>;
 
   /// Decodes [`Node`] from the given bytes, returning the number of bytes consumed and the node.
-  fn decode_node(bytes: impl AsRef<[u8]>) -> Result<(usize, Node<Self::Id, Self::Address>), Self::Error>;
+  fn decode_node(
+    bytes: impl AsRef<[u8]>,
+  ) -> Result<(usize, Node<Self::Id, Self::Address>), Self::Error>;
 
   fn id_encoded_len(id: &Self::Id) -> usize;
 
@@ -58,9 +61,9 @@ pub trait TransformDelegate: Send + Sync + 'static {
   fn message_encoded_len(msg: impl AsMessageRef<Self::Id, Self::Address>) -> usize;
 
   /// Encodes the message into the given buffer, returning the number of bytes written.
-  /// 
+  ///
   /// **NOTE**:
-  /// 
+  ///
   /// 1. The buffer must be large enough to hold the encoded message.
   /// The length of the buffer can be obtained by calling [`TransformDelegate::message_encoded_len`].
   /// 2. A message type byte will be automatically prepended to the buffer,
@@ -68,11 +71,11 @@ pub trait TransformDelegate: Send + Sync + 'static {
   fn encode_message(
     msg: impl AsMessageRef<Self::Id, Self::Address>,
     dst: impl AsMut<[u8]>,
-  ) -> Result<usize, Self::Error>; 
+  ) -> Result<usize, Self::Error>;
 
   fn decode_message(
     bytes: impl AsRef<[u8]>,
-  ) -> Result<SerfMessage<Self::Id, Self::Address>, Self::Error>;
+  ) -> Result<(usize, SerfMessage<Self::Id, Self::Address>), Self::Error>;
 }
 
 /// The error type for the LPE transformation.
@@ -182,7 +185,9 @@ where
     Transformable::encode(node, dst).map_err(Self::Error::Node)
   }
 
-  fn decode_node(bytes: impl AsRef<[u8]>) -> Result<(usize, Node<Self::Id, Self::Address>), Self::Error> {
+  fn decode_node(
+    bytes: impl AsRef<[u8]>,
+  ) -> Result<(usize, Node<Self::Id, Self::Address>), Self::Error> {
     Transformable::decode(bytes.as_ref()).map_err(Self::Error::Node)
   }
 
@@ -247,7 +252,7 @@ where
 
   fn decode_message(
     bytes: impl AsRef<[u8]>,
-  ) -> Result<SerfMessage<Self::Id, Self::Address>, Self::Error> {
+  ) -> Result<(usize, SerfMessage<Self::Id, Self::Address>), Self::Error> {
     todo!()
   }
 }

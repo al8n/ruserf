@@ -11,13 +11,14 @@ use memberlist_core::{
   bytes::{BufMut, Bytes, BytesMut},
   transport::{AddressResolver, Node, Transport},
   types::TinyVec,
+  CheapClone,
 };
 use smol_str::SmolStr;
 
 use super::{
   delegate::{Delegate, MergeDelegate, TransformDelegate},
   error::Error,
-  types::{Member, LamportTime, QueryResponseMessage, SerfMessageRef},
+  types::{LamportTime, Member, MessageType, QueryResponseMessage, SerfMessageRef},
   Serf,
 };
 
@@ -135,7 +136,7 @@ where
   Member(MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>),
   User(UserEvent),
   Query(QueryEvent<T, D>),
-  InternalQuery(InternalQueryEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>),
+  InternalQuery(InternalQueryEvent<T, D>),
 }
 
 impl<D, T> Clone for EventKind<T, D>
@@ -317,9 +318,24 @@ where
   pub(crate) relay_factor: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]
+impl<D, T> Clone for ConflictQueryEvent<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  fn clone(&self) -> Self {
+    Self {
+      ltime: self.ltime,
+      name: self.name.clone(),
+      conflict: self.conflict.cheap_clone(),
+      ctx: self.ctx.clone(),
+      id: self.id,
+      from: self.from.cheap_clone(),
+      relay_factor: self.relay_factor,
+    }
+  }
+}
+
 pub enum InternalQueryEvent<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
@@ -337,7 +353,32 @@ where
   ListKey,
 }
 
-impl<I, A> InternalQueryEvent<I, A> {
+impl<D, T> Clone for InternalQueryEvent<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  fn clone(&self) -> Self {
+    match self {
+      Self::Ping => Self::Ping,
+      Self::Conflict(e) => Self::Conflict(e.clone()),
+      #[cfg(feature = "encryption")]
+      Self::InstallKey => Self::InstallKey,
+      #[cfg(feature = "encryption")]
+      Self::UseKey => Self::UseKey,
+      #[cfg(feature = "encryption")]
+      Self::RemoveKey => Self::RemoveKey,
+      #[cfg(feature = "encryption")]
+      Self::ListKey => Self::ListKey,
+    }
+  }
+}
+
+impl<T, D> InternalQueryEvent<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
   pub const fn as_str(&self) -> &'static str {
     match self {
       Self::Ping => "ruserf-ping",
@@ -361,10 +402,10 @@ where
 }
 
 /// Query is the struct used by EventQuery type events
-pub struct QueryEvent<T: Transport, D: Delegate>
+pub struct QueryEvent<T, D>
 where
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
   pub(crate) ltime: LamportTime,
   pub(crate) name: SmolStr,
@@ -380,10 +421,8 @@ where
 
 impl<D, T> AsRef<QueryEvent<T, D>> for QueryEvent<T, D>
 where
-  D: Delegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   fn as_ref(&self) -> &QueryEvent<T, D> {
     self
@@ -392,10 +431,8 @@ where
 
 impl<D, T> Clone for QueryEvent<T, D>
 where
-  D: MergeDelegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   fn clone(&self) -> Self {
     Self {
@@ -412,10 +449,8 @@ where
 
 impl<D, T> core::fmt::Display for QueryEvent<T, D>
 where
-  D: Delegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "query")
@@ -426,8 +461,6 @@ impl<D, T> QueryEvent<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
 {
   pub(crate) fn create_response(
     &self,
@@ -436,7 +469,7 @@ where
     QueryResponseMessage {
       ltime: self.ltime,
       id: self.id,
-      from: self.ctx.this.inner.memberlist.local_id().clone(),
+      from: self.ctx.this.inner.memberlist.advertise_node(),
       flags: 0,
       payload: buf,
     }
@@ -470,7 +503,13 @@ where
       }
 
       // Send the response directly to the originator
-      self.ctx.this.inner.memberlist.send(&self.from, raw).await?;
+      self
+        .ctx
+        .this
+        .inner
+        .memberlist
+        .send(self.from.address(), raw)
+        .await?;
 
       // Relay the response through up to relayFactor other nodes
       self
@@ -492,9 +531,10 @@ where
     let resp = self.create_response(msg);
     let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&resp);
     let mut buf = BytesMut::with_capacity(expected_encoded_len + 1); // +1 for the message type byte
-    buf.put_u8(SerfMessageRef::QueryResponse as u8);
+    buf.put_u8(MessageType::QueryResponse as u8);
     buf.resize(expected_encoded_len + 1, 0);
-    let len = <D as TransformDelegate>::encode_message(&resp, &mut buf[1..])?;
+    let len =
+      <D as TransformDelegate>::encode_message(&resp, &mut buf[1..]).map_err(Error::transform)?;
     debug_assert_eq!(
       len, expected_encoded_len,
       "expected encoded len {expected_encoded_len} is not match the actual encoded len {len}"

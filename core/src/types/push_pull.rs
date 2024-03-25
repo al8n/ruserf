@@ -10,17 +10,18 @@ use super::{LamportTime, UserEvents};
 #[viewit::viewit]
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(
-  bound(
+#[cfg_attr(
+  feature = "serde",
+  serde(bound(
     serialize = "I: core::cmp::Eq + core::hash::Hash + serde::Serialize, A: core::cmp::Eq + core::hash::Hash + serde::Serialize",
     deserialize = "I: core::cmp::Eq + core::hash::Hash + serde::Deserialize<'de>, A: core::cmp::Eq + core::hash::Hash + serde::Deserialize<'de>"
-  )
-))]
+  ))
+)]
 pub struct PushPull<I, A> {
   /// Current node lamport time
   ltime: LamportTime,
   /// Maps the node to its status time
-  status_ltimes: HashMap<I, LamportTime>,
+  status_ltimes: HashMap<Node<I, A>, LamportTime>,
   /// List of left nodes
   left_members: IndexSet<Node<I, A>>,
   /// Lamport time for event clock
@@ -40,7 +41,7 @@ pub struct PushPullRef<'a, I, A> {
   /// Current node lamport time
   ltime: LamportTime,
   /// Maps the node to its status time
-  status_ltimes: &'a HashMap<I, LamportTime>,
+  status_ltimes: &'a HashMap<Node<I, A>, LamportTime>,
   /// List of left nodes
   left_members: &'a IndexSet<Node<I, A>>,
   /// Lamport time for event clock

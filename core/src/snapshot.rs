@@ -26,10 +26,10 @@ use memberlist_core::{
 use rand::seq::SliceRandom;
 
 use crate::{
-  types::{LamportClock, LamportTime},
   delegate::{Delegate, TransformDelegate},
   event::{Event, EventKind, MemberEvent, MemberEventType, QueryEvent, UserEvent},
   invalid_data_io_error,
+  types::{LamportClock, LamportTime},
 };
 
 /// How often we force a flush of the snapshot file
@@ -89,7 +89,7 @@ pub enum SnapshotError {
   Replay(std::io::Error),
 }
 
-enum SnapshotRecord<'a, I, A> {
+enum SnapshotRecord<'a, I: Clone, A: Clone> {
   Alive(Cow<'a, Node<I, A>>),
   NotAlive(Cow<'a, Node<I, A>>),
   Clock(LamportTime),
@@ -128,13 +128,13 @@ where
         if encoded_len <= MAX_INLINED_BYTES {
           let mut buf = [0u8; MAX_INLINED_BYTES];
           buf[0] = Self::$status;
-          T::encode_node(node, &mut buf[1..])?;
+          T::encode_node(node, &mut buf[1..]).map_err(invalid_data_io_error)?;
           buf[1 + encoded_node_len] = b'\n';
           w.write_all(&buf[..encoded_len]).map(|_| encoded_len)
         } else {
           let mut buf = BytesMut::with_capacity(encoded_len);
           buf.put_u8(Self::$status);
-          T::encode_node(node, &mut buf)?;
+          T::encode_node(node, &mut buf).map_err(invalid_data_io_error)?;
           buf.put_u8(b'\n');
           w.write_all(&buf).map(|_| encoded_len)
         }
@@ -177,8 +177,8 @@ pub(crate) struct ReplayResult<I, A> {
 }
 
 pub(crate) fn open_and_replay_snapshot<
-  I,
-  A,
+  I: Id,
+  A: CheapClone + core::hash::Hash + Eq + Send + Sync + 'static,
   T: TransformDelegate<Id = I, Address = A>,
   P: AsRef<std::path::Path>,
 >(
@@ -224,37 +224,38 @@ pub(crate) fn open_and_replay_snapshot<
     let src = &buf[..buf.len() - 1];
     // Match on the prefix
     match src[0] {
-      SnapshotRecord::ALIVE => {
-        let id = TransformDelegate::decode(&src[1..]).map_err(SnapshotError::Replay)?;
-        alive_nodes.insert(id);
-      }
-      SnapshotRecord::NOT_ALIVE => {
-        let id =
+      SnapshotRecord::<I, A>::ALIVE => {
+        let (_, node) =
           T::decode_node(&src[1..]).map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
-        alive_nodes.remove(&id);
+        alive_nodes.insert(node);
       }
-      SnapshotRecord::CLOCK => {
+      SnapshotRecord::<I, A>::NOT_ALIVE => {
+        let (_, node) =
+          T::decode_node(&src[1..]).map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
+        alive_nodes.remove(&node);
+      }
+      SnapshotRecord::<I, A>::CLOCK => {
         let t = u64::from_be_bytes([
           src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
         ]);
         last_clock = LamportTime(t);
       }
-      SnapshotRecord::EVENT_CLOCK => {
+      SnapshotRecord::<I, A>::EVENT_CLOCK => {
         let t = u64::from_be_bytes([
           src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
         ]);
         last_event_clock = LamportTime(t);
       }
-      SnapshotRecord::QUERY_CLOCK => {
+      SnapshotRecord::<I, A>::QUERY_CLOCK => {
         let t = u64::from_be_bytes([
           src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
         ]);
         last_query_clock = LamportTime(t);
       }
-      SnapshotRecord::COORDINATE => {
+      SnapshotRecord::<I, A>::COORDINATE => {
         continue;
       }
-      SnapshotRecord::LEAVE => {
+      SnapshotRecord::<I, A>::LEAVE => {
         // Ignore a leave if we plan on re-joining
         if rejoin_after_leave {
           tracing::info!(target = "ruserf", "ignoring previous leave in snapshot");
@@ -265,7 +266,7 @@ pub(crate) fn open_and_replay_snapshot<
         last_event_clock = LamportTime::ZERO;
         last_query_clock = LamportTime::ZERO;
       }
-      SnapshotRecord::COMMENT => {
+      SnapshotRecord::<I, A>::COMMENT => {
         continue;
       }
       v => {
@@ -408,7 +409,7 @@ where
       metric_labels,
     };
 
-    let mut alive_nodes = this.alive_nodes.iter().cloned().collect::<Vec<_>>();
+    let mut alive_nodes = this.alive_nodes.iter().cloned().collect::<TinyVec<_>>();
     alive_nodes.shuffle(&mut rand::thread_rng());
 
     // Start handling new commands
@@ -499,106 +500,107 @@ where
 
   /// Long running routine that is used to handle events
   async fn stream(mut self) {
-    let mut clock_ticker = <T::Runtime as RuntimeLite>::interval(CLOCK_UPDATE_INTERVAL);
+    // let mut clock_ticker = <T::Runtime as RuntimeLite>::interval(CLOCK_UPDATE_INTERVAL);
 
-    // flushEvent is used to handle writing out an event
-    macro_rules! flush_event {
-      ($this:ident <- $event:ident) => {{
-        // Stop recording events after a leave is issued
-        if $this.leaving {
-          return;
-        }
+    // // flushEvent is used to handle writing out an event
+    // macro_rules! flush_event {
+    //   ($this:ident <- $event:ident) => {{
+    //     // Stop recording events after a leave is issued
+    //     if $this.leaving {
+    //       return;
+    //     }
 
-        match $event.0 {
-          Either::Left(e) => match &e {
-            EventKind::Member(e) => $this.process_member_event(e),
-            EventKind::User(e) => $this.process_user_event(e),
-            EventKind::Query(e) => $this.process_query_event(e),
-            EventKind::InternalQuery { query: e, .. } => $this.process_query_event(e),
-          },
-          Either::Right(e) => match &*e {
-            EventKind::Member(e) => $this.process_member_event(e),
-            EventKind::User(e) => $this.process_user_event(e),
-            EventKind::Query(e) => $this.process_query_event(e),
-            EventKind::InternalQuery { query: e, .. } => $this.process_query_event(e),
-          },
-        }
-      }};
-    }
+    //     match $event.0 {
+    //       Either::Left(e) => match &e {
+    //         EventKind::Member(e) => $this.process_member_event(e),
+    //         EventKind::User(e) => $this.process_user_event(e),
+    //         EventKind::Query(e) => $this.process_query_event(e),
+    //         EventKind::InternalQuery { query: e, .. } => $this.process_query_event(e),
+    //       },
+    //       Either::Right(e) => match &*e {
+    //         EventKind::Member(e) => $this.process_member_event(e),
+    //         EventKind::User(e) => $this.process_user_event(e),
+    //         EventKind::Query(e) => $this.process_query_event(e),
+    //         EventKind::InternalQuery { query: e, .. } => $this.process_query_event(e),
+    //       },
+    //     }
+    //   }};
+    // }
 
-    loop {
-      futures::select! {
-        _ = self.leave_rx.recv().fuse() => {
-          self.leaving = true;
+    // loop {
+    //   futures::select! {
+    //     _ = self.leave_rx.recv().fuse() => {
+    //       self.leaving = true;
 
-          // If we plan to re-join, keep our state
-          if self.rejoin_after_leave {
-            self.alive_nodes.clear();
-          }
-          self.try_append(SnapshotRecord::Leave);
-          let fh = self.fh.as_mut().unwrap();
-          if let Err(e) = fh.flush() {
-            tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
-          }
+    //       // If we plan to re-join, keep our state
+    //       if self.rejoin_after_leave {
+    //         self.alive_nodes.clear();
+    //       }
+    //       self.try_append(SnapshotRecord::Leave);
+    //       let fh = self.fh.as_mut().unwrap();
+    //       if let Err(e) = fh.flush() {
+    //         tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
+    //       }
 
-          if let Err(e) = fh.get_mut().sync_all() {
-            tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
-          }
-        }
-        ev = self.stream_rx.recv().fuse() => {
-          match ev {
-            Ok(ev) => flush_event!(self <- ev),
-            Err(e) => {
-              tracing::error!(target="ruserf", err=%e, "stream channel is closed");
-              return;
-            },
-          }
-        }
-        _ = futures::StreamExt::next(&mut clock_ticker).fuse() => {
-          self.update_clock();
-        }
-        _ = self.shutdown_rx.recv().fuse() => {
-          // Setup a timeout
-          let flush_timeout = <T::Runtime as RuntimeLite>::sleep(SHUTDOWN_FLUSH_TIMEOUT);
-          futures::pin_mut!(flush_timeout);
+    //       if let Err(e) = fh.get_mut().sync_all() {
+    //         tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
+    //       }
+    //     }
+    //     ev = self.stream_rx.recv().fuse() => {
+    //       match ev {
+    //         Ok(ev) => flush_event!(self <- ev),
+    //         Err(e) => {
+    //           tracing::error!(target="ruserf", err=%e, "stream channel is closed");
+    //           return;
+    //         },
+    //       }
+    //     }
+    //     _ = futures::StreamExt::next(&mut clock_ticker).fuse() => {
+    //       self.update_clock();
+    //     }
+    //     _ = self.shutdown_rx.recv().fuse() => {
+    //       // Setup a timeout
+    //       let flush_timeout = <T::Runtime as RuntimeLite>::sleep(SHUTDOWN_FLUSH_TIMEOUT);
+    //       futures::pin_mut!(flush_timeout);
 
-          // snapshot the clock
-          self.update_clock();
+    //       // snapshot the clock
+    //       self.update_clock();
 
-          // Clear out the buffers
-          loop {
-            futures::select! {
-              ev = self.stream_rx.recv().fuse() => {
-                match ev {
-                  Ok(ev) => flush_event!(self <- ev),
-                  Err(e) => {
-                    tracing::error!(target="ruserf", err=%e, "stream channel is closed");
-                    return;
-                  },
-                }
-              }
-              _ = (&mut flush_timeout).fuse() => {
-                break;
-              }
-              default => {
-                break;
-              }
-            }
-          }
+    //       // Clear out the buffers
+    //       loop {
+    //         futures::select! {
+    //           ev = self.stream_rx.recv().fuse() => {
+    //             match ev {
+    //               Ok(ev) => flush_event!(self <- ev),
+    //               Err(e) => {
+    //                 tracing::error!(target="ruserf", err=%e, "stream channel is closed");
+    //                 return;
+    //               },
+    //             }
+    //           }
+    //           _ = (&mut flush_timeout).fuse() => {
+    //             break;
+    //           }
+    //           default => {
+    //             break;
+    //           }
+    //         }
+    //       }
 
-          let fh = self.fh.as_mut().unwrap();
-          if let Err(e) = fh.flush() {
-            tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
-          }
+    //       let fh = self.fh.as_mut().unwrap();
+    //       if let Err(e) = fh.flush() {
+    //         tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
+    //       }
 
-          if let Err(e) = fh.get_mut().sync_all() {
-            tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
-          }
-          self.wait_tx.close();
-          return;
-        }
-      }
-    }
+    //       if let Err(e) = fh.get_mut().sync_all() {
+    //         tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
+    //       }
+    //       self.wait_tx.close();
+    //       return;
+    //     }
+    //   }
+    // }
+    todo!()
   }
 
   /// Used to handle a single user event
@@ -633,16 +635,16 @@ where
     match e.ty {
       MemberEventType::Join => {
         for m in e.members() {
-          let id = m.id();
-          self.alive_nodes.insert(id.clone());
-          self.try_append(SnapshotRecord::Alive(Cow::Borrowed(id)))
+          let node = m.node();
+          self.alive_nodes.insert(node.cheap_clone());
+          self.try_append(SnapshotRecord::Alive(Cow::Borrowed(node)))
         }
       }
       MemberEventType::Leave | MemberEventType::Failed => {
         for m in e.members() {
-          let id = m.id();
-          self.alive_nodes.remove(id);
-          self.try_append(SnapshotRecord::NotAlive(Cow::Borrowed(id)));
+          let node = m.node();
+          self.alive_nodes.remove(node);
+          self.try_append(SnapshotRecord::NotAlive(Cow::Borrowed(node)));
         }
       }
       _ => {}
@@ -691,7 +693,7 @@ where
   ) -> Result<(), SnapshotError> {
     // TODO: metrics
     let f = self.fh.as_mut().unwrap();
-    let n = l.encode(f).map_err(SnapshotError::Write)?;
+    let n = l.encode::<D, _>(f).map_err(SnapshotError::Write)?;
 
     // check if we should flush
     if self.last_flush.elapsed() > FLUSH_INTERVAL {
@@ -750,21 +752,21 @@ where
     let mut offset = 0u64;
     for node in self.alive_nodes.iter() {
       offset += SnapshotRecord::Alive(Cow::Borrowed(node))
-        .encode(&mut buf)
+        .encode::<D, _>(&mut buf)
         .map_err(SnapshotError::WriteNew)? as u64;
     }
 
     // Write out the clocks
     offset += SnapshotRecord::Clock(self.last_clock)
-      .encode(&mut buf)
+      .encode::<D, _>(&mut buf)
       .map_err(SnapshotError::WriteNew)? as u64;
 
     offset += SnapshotRecord::EventClock(self.last_event_clock)
-      .encode(&mut buf)
+      .encode::<D, _>(&mut buf)
       .map_err(SnapshotError::WriteNew)? as u64;
 
     offset += SnapshotRecord::QueryClock(self.last_query_clock)
-      .encode(&mut buf)
+      .encode::<D, _>(&mut buf)
       .map_err(SnapshotError::WriteNew)? as u64;
 
     // Flush the new snapshot
@@ -840,38 +842,38 @@ where
       let src = &buf[..buf.len() - 1];
       // Match on the prefix
       match src[0] {
-        SnapshotRecord::ALIVE => {
-          let id = <D as TransformDelegate>::decode_node(&src[1..])
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::ALIVE => {
+          let (_, node) = <D as TransformDelegate>::decode_node(&src[1..])
             .map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
-          self.alive_nodes.insert(id);
+          self.alive_nodes.insert(node);
         }
-        SnapshotRecord::NOT_ALIVE => {
-          let id = <D as TransformDelegate>::decode_node(&src[1..])
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::NOT_ALIVE => {
+          let (_, node) = <D as TransformDelegate>::decode_node(&src[1..])
             .map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
-          self.alive_nodes.remove(&id);
+          self.alive_nodes.remove(&node);
         }
-        SnapshotRecord::CLOCK => {
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::CLOCK => {
           let t = u64::from_be_bytes([
             src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
           ]);
           self.last_clock = LamportTime(t);
         }
-        SnapshotRecord::EVENT_CLOCK => {
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::EVENT_CLOCK => {
           let t = u64::from_be_bytes([
             src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
           ]);
           self.last_event_clock = LamportTime(t);
         }
-        SnapshotRecord::QUERY_CLOCK => {
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::QUERY_CLOCK => {
           let t = u64::from_be_bytes([
             src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
           ]);
           self.last_query_clock = LamportTime(t);
         }
-        SnapshotRecord::COORDINATE => {
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::COORDINATE => {
           continue;
         }
-        SnapshotRecord::LEAVE => {
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::LEAVE => {
           // Ignore a leave if we plan on re-joining
           if self.rejoin_after_leave {
             tracing::info!(target = "ruserf", "ignoring previous leave in snapshot");
@@ -882,7 +884,7 @@ where
           self.last_event_clock = LamportTime(0);
           self.last_query_clock = LamportTime(0);
         }
-        SnapshotRecord::COMMENT => {
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::COMMENT => {
           continue;
         }
         v => {

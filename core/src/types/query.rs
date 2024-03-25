@@ -2,12 +2,7 @@ use smol_str::SmolStr;
 
 use std::time::Duration;
 
-
-use memberlist_core::{
-  bytes::Bytes,
-  transport::Node,
-  types::TinyVec,
-};
+use memberlist_core::{bytes::Bytes, transport::Node, types::TinyVec};
 
 use super::LamportTime;
 
@@ -83,4 +78,3 @@ impl<I, A> QueryResponseMessage<I, A> {
     (QueryFlag::from_bits_retain(self.flags) & QueryFlag::ACK) != QueryFlag::empty()
   }
 }
-

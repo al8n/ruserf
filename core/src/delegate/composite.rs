@@ -1,11 +1,13 @@
-
 use memberlist_core::{
   transport::{Id, Node},
   types::TinyVec,
   CheapClone,
 };
 
-use crate::{coordinate::Coordinate, types::{AsMessageRef, Filter, Member, SerfMessage, Tags}};
+use crate::{
+  coordinate::Coordinate,
+  types::{AsMessageRef, Filter, Member, SerfMessage, Tags},
+};
 
 use super::{
   DefaultMergeDelegate, Delegate, LpeTransfromDelegate, MergeDelegate, NoopReconnectDelegate,
@@ -62,7 +64,7 @@ impl<I, A, M, R, T> CompositeDelegate<I, A, M, R, T> {
       reconnect,
       merge: self.merge,
       transform: self.transform,
-      _m: std::marker::PhantomData, 
+      _m: std::marker::PhantomData,
     }
   }
 }
@@ -223,7 +225,7 @@ where
 
   fn decode_message(
     bytes: impl AsRef<[u8]>,
-  ) -> Result<SerfMessage<Self::Id, Self::Address>, Self::Error> {
+  ) -> Result<(usize, SerfMessage<Self::Id, Self::Address>), Self::Error> {
     T::decode_message(bytes)
   }
 }

@@ -1,12 +1,42 @@
-use std::{collections::HashMap, sync::{atomic::AtomicBool, Arc}};
+use std::{
+  collections::HashMap,
+  sync::{atomic::AtomicBool, Arc},
+};
 
 use async_lock::{Mutex, RwLock};
-use memberlist_core::{queue::TransmitLimitedQueue, transport::{AddressResolver, Transport}, types::MediumVec, Memberlist};
+use memberlist_core::{
+  queue::TransmitLimitedQueue,
+  transport::{AddressResolver, Transport},
+  types::MediumVec,
+  Memberlist,
+};
 
-use super::{coordinate::{CoordinateClient, Coordinate}, delegate::{CompositeDelegate, Delegate}, types::{LamportClock, LamportTime, Members}, Options};
+use super::{
+  broadcast::SerfBroadcast,
+  coordinate::{Coordinate, CoordinateClient},
+  delegate::{CompositeDelegate, Delegate},
+  event::Event,
+  snapshot::SnapshotHandle,
+  types::{LamportClock, LamportTime, Members, UserEvents},
+  Options,
+};
+
+mod api;
+mod base;
+
+mod delegate;
+pub(crate) use delegate::*;
 
 mod query;
 pub use query::*;
+
+const MAGIC_BYTE: u8 = 255;
+
+/// Maximum 128 KB snapshot
+const SNAPSHOT_SIZE_LIMIT: u64 = 128 * 1024;
+
+/// Maximum 9KB for event name and payload
+const USER_EVENT_SIZE_LIMIT: usize = 9 * 1024;
 
 /// Exports the default delegate type
 pub type DefaultDelegate<T> = CompositeDelegate<
@@ -32,6 +62,12 @@ pub(crate) struct QueryCore<I, A> {
   responses: HashMap<LamportTime, QueryResponse<I, A>>,
   min_time: LamportTime,
   buffer: Vec<Option<Queries>>,
+}
+
+#[viewit::viewit]
+pub(crate) struct EventCore {
+  min_time: LamportTime,
+  buffer: Vec<Option<UserEvents>>,
 }
 
 /// The state of the Serf instance.
@@ -60,23 +96,18 @@ impl core::fmt::Display for SerfState {
   }
 }
 
-pub(crate) struct SerfCore<T: Transport, D = DefaultDelegate<T>>
+pub(crate) struct SerfCore<T, D = DefaultDelegate<T>>
 where
-  D: Delegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
   pub(crate) clock: LamportClock,
   pub(crate) event_clock: LamportClock,
   pub(crate) query_clock: LamportClock,
 
-  pub(crate) broadcasts: Arc<
-    TransmitLimitedQueue<SerfBroadcast<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
-  >,
-  pub(crate) event_broadcasts: Arc<
-    TransmitLimitedQueue<SerfBroadcast<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
-  >,
-  pub(crate) query_broadcasts: Arc<
-    TransmitLimitedQueue<SerfBroadcast<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
-  >,
+  pub(crate) broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast>>,
+  pub(crate) event_broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast>>,
+  pub(crate) query_broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast>>,
 
   pub(crate) memberlist: Memberlist<T, SerfDelegate<T, D>>,
   pub(crate) members:
@@ -93,9 +124,9 @@ where
 
   join_lock: Mutex<()>,
 
-  // snapshot: Option<SnapshotHandle>,
-  // key_manager: KeyManager<T, D>,
-
+  snapshot: Option<SnapshotHandle>,
+  #[cfg(feature = "encryption")]
+  key_manager: crate::key_manager::KeyManager<T, D>,
   shutdown_tx: async_channel::Sender<()>,
   shutdown_rx: async_channel::Receiver<()>,
 

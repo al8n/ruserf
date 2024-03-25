@@ -1,19 +1,32 @@
-use std::{collections::HashSet, sync::Arc, time::{Duration, Instant}};
+use std::{
+  collections::HashSet,
+  sync::{atomic::Ordering, Arc},
+  time::{Duration, Instant},
+};
 
 use async_channel::{Receiver, Sender};
 use async_lock::Mutex;
+use futures::{
+  stream::{FuturesUnordered, StreamExt},
+  FutureExt,
+};
 use memberlist_core::{
-  bytes::Bytes,
-  transport::{AddressResolver, Node, Transport},
-  types::{OneOrMore, SmallVec, TinyVec},
+  bytes::{BufMut, Bytes, BytesMut},
   tracing,
-  CheapClone
+  transport::{AddressResolver, Id, Node, Transport},
+  types::{OneOrMore, SmallVec, TinyVec},
+  CheapClone,
 };
 
-use crate::{delegate::{Delegate, TransformDelegate}, types::{Filter, LamportTime, QueryMessage, QueryResponseMessage}};
+use crate::{
+  delegate::{Delegate, TransformDelegate},
+  error::Error,
+  types::{
+    Filter, LamportTime, Member, MemberStatus, MessageType, QueryMessage, QueryResponseMessage,
+  },
+};
 
 use super::Serf;
-
 
 impl<I, A> QueryMessage<I, A> {
   #[inline]
@@ -59,9 +72,15 @@ pub struct QueryParam<I, A> {
   timeout: Duration,
 }
 
-impl<I, A> QueryParam<I, A> {
+impl<I, A> QueryParam<I, A>
+where
+  I: Id,
+  A: CheapClone + Send + 'static,
+{
   /// Used to convert the filters into the wire format
-  pub(crate) fn encode_filters<W: TransformDelegate>(&self) -> Result<SmallVec<Bytes>, W::Error> {
+  pub(crate) fn encode_filters<W: TransformDelegate<Id = I, Address = A>>(
+    &self,
+  ) -> Result<TinyVec<Bytes>, W::Error> {
     let mut filters = TinyVec::with_capacity(self.filters.len());
     for filter in self.filters.iter() {
       filters.push(W::encode_filter(filter)?);
@@ -274,7 +293,7 @@ impl<I, A> QueryResponse<I, A> {
         Ok(())
       } else if let Some((tx, _)) = &self.inner.channel.ack_ch {
         futures::select! {
-          _ = tx.send(nr.from.clone()).fuse() => {
+          _ = tx.send(nr.from.cheap_clone()).fuse() => {
             c.acks.insert(nr.from.clone());
             Ok(())
           },
@@ -297,7 +316,6 @@ pub struct NodeResponse<I, A> {
   from: Node<I, A>,
   payload: Bytes,
 }
-
 
 #[inline]
 fn random_members<I, A>(
@@ -337,8 +355,8 @@ where
   /// gossip_interval * query_timeout_mult * log(N+1)
   /// ```
   pub async fn default_query_timeout(&self) -> Duration {
-    let n = self.inner.memberlist.alive_members().await;
-    let mut timeout = self.inner.opts.showbiz_options.gossip_interval();
+    let n = self.inner.memberlist.num_online_members().await;
+    let mut timeout = self.inner.opts.memberlist_options.gossip_interval();
     timeout *= self.inner.opts.query_timeout_mult as u32;
     timeout *= (f64::log10((n + 1) as f64) + 0.5) as u32; // Using ceil approximation
     timeout
@@ -388,15 +406,15 @@ where
         Filter::Tag(tag) => {
           // Check if we match this regex
           if let Some(tags) = &*self.inner.opts.tags.load() {
-            if let Some(expr) = tags.get(&filter.tag) {
-              match regex::Regex::new(&filter.expr) {
+            if let Some(expr) = tags.get(&tag.tag) {
+              match regex::Regex::new(&tag.expr) {
                 Ok(re) => {
                   if !re.is_match(expr) {
                     return false;
                   }
                 }
                 Err(err) => {
-                  tracing::warn!(target = "ruserf", err=%err, "failed to compile filter regex ({})", filter.expr);
+                  tracing::warn!(target = "ruserf", err=%err, "failed to compile filter regex ({})", tag.expr);
                   return false;
                 }
               }
@@ -406,14 +424,6 @@ where
           } else {
             return false;
           }
-        }
-        val => {
-          tracing::warn!(
-            target = "ruserf",
-            "query has unrecognized filter type {}",
-            val
-          );
-          return false;
         }
       }
     }
@@ -450,7 +460,7 @@ where
             Some(m.member.clone())
           }
         })
-        .collect::<TinyVec<_>>()
+        .collect::<SmallVec<_>>()
     };
 
     if members.is_empty() {
@@ -471,10 +481,12 @@ where
     raw.put_u8(MessageType::Relay as u8);
     raw.resize(expected_encoded_len + 1 + 1, 0);
     let mut encoded = 1;
-    encoded += <D as TransformDelegate>::encode_node(&node, &mut raw[encoded..])?;
+    encoded += <D as TransformDelegate>::encode_node(&node, &mut raw[encoded..])
+      .map_err(Error::transform)?;
     raw[encoded] = MessageType::QueryResponse as u8;
     encoded += 1;
-    encoded += <D as TransformDelegate>::encode_message(&resp, &mut raw[encoded..])?;
+    encoded += <D as TransformDelegate>::encode_message(&resp, &mut raw[encoded..])
+      .map_err(Error::transform)?;
 
     debug_assert_eq!(
       encoded - 1 - 1,
@@ -488,7 +500,7 @@ where
     // Relay to a random set of peers.
     let relay_members = random_members(relay_factor as usize, members);
 
-    let mut futs = relay_members
+    let futs: FuturesUnordered<_> = relay_members
       .into_iter()
       .map(|m| {
         let raw = raw.clone();
@@ -496,23 +508,26 @@ where
           self
             .inner
             .memberlist
-            .send(&m.id, raw)
+            .send(m.node.address(), raw)
             .await
             .map_err(|e| (m, e))
         }
       })
-      .collect::<FuturesUnordered<_>>();
+      .collect();
 
-    let errs = futs
-      .filter_map(|res| {
-        if let Err((m, e)) = res {
-          Some((m, e))
-        } else {
-          None
-        }
-      })
-      .collect::<TinyVec<_>>()
-      .await;
+    let mut errs = TinyVec::new();
+    let stream = StreamExt::filter_map(futs, |res| async move {
+      if let Err((m, e)) = res {
+        Some((m, e))
+      } else {
+        None
+      }
+    });
+    futures::pin_mut!(stream);
+
+    while let Some(err) = stream.next().await {
+      errs.push(err);
+    }
 
     if !errs.is_empty() {
       return Err(Error::Relay(From::from(errs)));

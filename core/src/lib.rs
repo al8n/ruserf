@@ -8,10 +8,15 @@
 
 use memberlist_core::tracing;
 
-/// 
+pub(crate) mod broadcast;
+
+///
 pub mod coordinate;
 
 pub mod event;
+
+/// Errors for `ruserf`.
+pub mod error;
 
 /// Delegate traits and its implementations.
 pub mod delegate;
@@ -22,12 +27,20 @@ pub use options::*;
 /// The types used in `ruserf`.
 pub mod types;
 
+/// Secret key management.
+#[cfg(feature = "encryption")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
+pub mod key_manager;
+
 mod serf;
 pub use serf::*;
 
-// mod snapshot;
-// pub use snapshot::*;
+mod snapshot;
+pub use snapshot::*;
+
+fn invalid_data_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> std::io::Error {
+  std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+}
 
 #[test]
-fn test_() {
-}
+fn test_() {}

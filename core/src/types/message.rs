@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use memberlist_core::transport::Node;
 
-use super::{JoinMessage, LeaveMessage, Member, PushPull, PushPullRef, QueryMessage, QueryResponseMessage, UserEventMessage};
+use super::{
+  JoinMessage, LeaveMessage, Member, PushPull, PushPullRef, QueryMessage, QueryResponseMessage,
+  UserEventMessage,
+};
 
 #[cfg(feature = "encryption")]
 use super::{KeyRequestMessage, KeyResponseMessage};
-
 
 #[derive(Debug, thiserror::Error)]
 #[error("unknown message type byte: {0}")]
@@ -93,7 +95,6 @@ pub trait AsMessageRef<I, A> {
   /// Converts this type into a shared reference of the (usually inferred) input type.
   fn as_message_ref(&self) -> SerfMessageRef<I, A>;
 }
-
 
 /// The reference type of [`SerfMessage`].
 #[derive(Debug)]
