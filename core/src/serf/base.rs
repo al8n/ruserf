@@ -4,9 +4,9 @@ use std::{
 };
 
 use atomic::Atomic;
-use futures::{FutureExt, StreamExt};
+use futures::{Future, FutureExt, StreamExt};
 use memberlist_core::{
-  agnostic_lite::RuntimeLite,
+  agnostic_lite::{AsyncSpawner, RuntimeLite},
   bytes::{BufMut, Bytes, BytesMut},
   tracing,
   transport::{MaybeResolvedAddress, Node},
@@ -129,7 +129,7 @@ where
 
   /// Serialize the current keyring and save it to a file.
   #[cfg(feature = "encryption")]
-  pub(crate) fn write_keyring_file(&self) -> std::io::Result<()> {
+  pub(crate) async fn write_keyring_file(&self) -> std::io::Result<()> {
     use base64::{engine::general_purpose, Engine as _};
 
     let Some(path) = self.inner.opts.keyring_file() else {
@@ -139,8 +139,9 @@ where
     if let Some(keyring) = self.inner.memberlist.keyring() {
       let encoded_keys = keyring
         .keys()
+        .await
         .map(|k| general_purpose::STANDARD.encode(k))
-        .collect::<Vec<_>>();
+        .collect::<TinyVec<_>>();
 
       #[cfg(unix)]
       {
@@ -534,7 +535,7 @@ where
   pub(crate) async fn handle_query(
     &self,
     q: QueryMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-    ty: Option<InternalQueryEvent<T, D>>,
+    ty: Option<InternalQueryEvent<T::Id>>,
   ) -> bool {
     // Witness a potentially newer time
     self.inner.query_clock.witness(q.ltime);
@@ -1348,6 +1349,7 @@ where
           matching,
           responses
         );
+
         if let Err(e) = this.shutdown().await {
           tracing::error!(target = "ruserf", err=%e, "failed to shutdown");
         }

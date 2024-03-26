@@ -462,7 +462,7 @@ where
     name: SmolStr,
     payload: Bytes,
     params: Option<QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
-    ty: InternalQueryEvent<T, D>,
+    ty: InternalQueryEvent<T::Id>,
   ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
   {
     self.query_in(name, payload, params, Some(ty)).await
@@ -473,7 +473,7 @@ where
     name: SmolStr,
     payload: Bytes,
     params: Option<QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
-    ty: Option<InternalQueryEvent<T, D>>,
+    ty: Option<InternalQueryEvent<T::Id>>,
   ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
   {
     // Provide default parameters if none given.
@@ -758,7 +758,7 @@ where
         SerfState::Shutdown => return Ok(()),
         SerfState::Left => {}
         _ => {
-          tracing::warn!(target = "ruserf", "shutdown without a leave");
+          tracing::warn!("ruserf: shutdown without a leave");
         }
       }
 

@@ -819,7 +819,7 @@ mod tests {
     fields.push(c.adjustment);
     fields.push(c.height);
 
-    for (_, field) in fields.iter_mut().enumerate() {
+    for field in fields.iter_mut() {
       assert!(c.is_valid());
       *field = f64::NAN;
     }

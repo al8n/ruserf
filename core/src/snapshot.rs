@@ -515,13 +515,13 @@ where
             EventKind::Member(e) => $this.process_member_event(e),
             EventKind::User(e) => $this.process_user_event(e),
             EventKind::Query(e) => $this.process_query_event(e.ltime),
-            EventKind::InternalQuery(e) => $this.process_query_event(e.ltime()),
+            EventKind::InternalQuery { query, .. } => $this.process_query_event(query.ltime),
           },
           Either::Right(e) => match &*e {
             EventKind::Member(e) => $this.process_member_event(e),
             EventKind::User(e) => $this.process_user_event(e),
             EventKind::Query(e) => $this.process_query_event(e.ltime),
-            EventKind::InternalQuery(e) => $this.process_query_event(e.ltime()),
+            EventKind::InternalQuery { query, .. } => $this.process_query_event(query.ltime),
           },
         }
       }};

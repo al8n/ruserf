@@ -14,12 +14,12 @@ use smol_str::SmolStr;
 use crate::{
   delegate::{Delegate, TransformDelegate},
   error::Error,
-  event::{ConflictQueryEvent, Event, EventKind, InternalQueryEvent, QueryEvent},
+  event::{Event, EventKind, InternalQueryEvent, QueryEvent},
   types::{MessageType, QueryResponseMessage, SerfMessage},
 };
 
 #[cfg(feature = "encryption")]
-use crate::types::{KeyRequestMessage, KeyResponseMessage};
+use crate::types::KeyResponseMessage;
 
 /// Used to compute the max number of keys in a list key
 /// response. eg 1024/25 = 40. a message with max size of 1024 bytes cannot
@@ -32,8 +32,6 @@ pub(crate) struct SerfQueries<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   in_rx: Receiver<Event<T, D>>,
   out_tx: Sender<Event<T, D>>,
@@ -44,8 +42,6 @@ impl<D, T> SerfQueries<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   pub(crate) fn new(out_tx: Sender<Event<T, D>>, shutdown_rx: Receiver<()>) -> Sender<Event<T, D>> {
     let (in_tx, in_rx) = bounded(1024);
@@ -94,26 +90,26 @@ where
     macro_rules! handle_query {
       ($ev: expr) => {{
         match $ev {
-          EventKind::InternalQuery(ev) => match ev {
-            InternalQueryEvent::Ping(_) => {}
-            InternalQueryEvent::Conflict(ev) => {
-              Self::handle_conflict(&ev).await;
+          EventKind::InternalQuery { kind, query } => match kind {
+            InternalQueryEvent::Ping => {}
+            InternalQueryEvent::Conflict(conflict) => {
+              Self::handle_conflict(&conflict, &query).await;
             }
             #[cfg(feature = "encryption")]
-            InternalQueryEvent::InstallKey(ev) => {
-              Self::handle_install_key(&ev).await;
+            InternalQueryEvent::InstallKey => {
+              Self::handle_install_key(&query).await;
             }
             #[cfg(feature = "encryption")]
-            InternalQueryEvent::UseKey(ev) => {
-              Self::handle_use_key(&ev).await;
+            InternalQueryEvent::UseKey => {
+              Self::handle_use_key(&query).await;
             }
             #[cfg(feature = "encryption")]
-            InternalQueryEvent::RemoveKey(ev) => {
-              Self::handle_remove_key(&ev).await;
+            InternalQueryEvent::RemoveKey => {
+              Self::handle_remove_key(&query).await;
             }
             #[cfg(feature = "encryption")]
-            InternalQueryEvent::ListKey(ev) => {
-              Self::handle_list_keys(&ev).await;
+            InternalQueryEvent::ListKey => {
+              Self::handle_list_keys(&query).await;
             }
           },
           _ => unreachable!(),
@@ -130,24 +126,24 @@ where
   /// invoked when we get a query that is attempting to
   /// disambiguate a name conflict. They payload is a node name, and the response
   /// should the address we believe that node is at, if any.
-  async fn handle_conflict(ev: &ConflictQueryEvent<T, D>) {
+  async fn handle_conflict(conflict: &T::Id, ev: &QueryEvent<T, D>) {
     // The target node id is the payload
 
     // Do not respond to the query if it is about us
-    if ev.conflict.eq(ev.ctx.this.inner.memberlist.local_id()) {
+    if conflict.eq(ev.ctx.this.inner.memberlist.local_id()) {
       return;
     }
 
     tracing::debug!(
       target = "ruserf",
       "got conflict resolution query for '{}'",
-      ev.conflict
+      conflict
     );
 
     // Look for the member info
     let out = {
       let members = ev.ctx.this.inner.members.read().await;
-      members.states.get(&ev.conflict).cloned()
+      members.states.get(conflict).cloned()
     };
 
     // Encode the response
@@ -179,7 +175,7 @@ where
         tracing::warn!(
           target = "ruserf",
           "no member status found for '{}'",
-          ev.conflict
+          conflict
         );
         // TODO: consider send something back?
         if let Err(e) = ev.respond(Bytes::new()).await {
@@ -202,13 +198,13 @@ where
       Ok((_, msg)) => match msg {
         SerfMessage::KeyRequest(req) => req,
         msg => {
-          tracing::error!(target = "ruserf", "unexpected message type");
+          tracing::error!(err = "unexpected message type", "ruserf: {}", msg.as_str());
           Self::send_key_response(q, &mut response).await;
           return;
         }
       },
       Err(e) => {
-        tracing::error!(target="ruserf", err=%e, "failed to decode key request");
+        tracing::error!(err=%e, "ruserf: failed to decode key request");
         Self::send_key_response(q, &mut response).await;
         return;
       }
@@ -216,20 +212,20 @@ where
 
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
-        target = "ruserf",
-        err = "no keyring to modify (encryption not enabled)"
+        err = "no keyring to modify (encryption not enabled)",
+        "ruserf: encryption not enabled"
       );
       response.msg = SmolStr::new("No keyring to modify (encryption not enabled)");
       Self::send_key_response(q, &mut response).await;
       return;
     }
 
-    tracing::info!(target = "ruserf", "received install-key query");
+    tracing::info!("ruserf: received install-key query");
     if let Some(kr) = q.ctx.this.inner.memberlist.keyring() {
       kr.insert(req.key.unwrap());
       if q.ctx.this.inner.opts.keyring_file.is_some() {
-        if let Err(e) = q.ctx.this.write_keyring_file() {
-          tracing::error!(target="ruserf", err=%e, "failed to write keyring file");
+        if let Err(e) = q.ctx.this.write_keyring_file().await {
+          tracing::error!(err=%e, "ruserf: failed to write keyring file");
           response.msg = SmolStr::new(e.to_string());
           Self::send_key_response(q, &mut response).await;
           return;
@@ -257,13 +253,13 @@ where
       Ok((_, msg)) => match msg {
         SerfMessage::KeyRequest(req) => req,
         msg => {
-          tracing::error!(target = "ruserf", "unexpected message type");
+          tracing::error!(err="unexpected message type", "ruserf: {}", msg.as_str());
           Self::send_key_response(q, &mut response).await;
           return;
         }
       },
       Err(e) => {
-        tracing::error!(target="ruserf", err=%e, "failed to decode key request");
+        tracing::error!(err=%e, "ruserf: failed to decode key request");
         Self::send_key_response(q, &mut response).await;
         return;
       }
@@ -279,18 +275,18 @@ where
       return;
     }
 
-    tracing::info!(target = "ruserf", "received use-key query");
+    tracing::info!("ruserf: received use-key query");
     if let Some(kr) = q.ctx.this.inner.memberlist.keyring() {
-      if let Err(e) = kr.use_key(&req.key.unwrap()) {
-        tracing::error!(target="ruserf", err=%e, "failed to change primary key");
+      if let Err(e) = kr.use_key(&req.key.unwrap()).await {
+        tracing::error!(err=%e, "ruserf: failed to change primary key");
         response.msg = SmolStr::new(e.to_string());
         Self::send_key_response(q, &mut response).await;
         return;
       }
 
       if q.ctx.this.inner.opts.keyring_file.is_some() {
-        if let Err(e) = q.ctx.this.write_keyring_file() {
-          tracing::error!(target="ruserf", err=%e, "failed to write keyring file");
+        if let Err(e) = q.ctx.this.write_keyring_file().await {
+          tracing::error!(err=%e, "ruserf: failed to write keyring file");
           response.msg = SmolStr::new(e.to_string());
           Self::send_key_response(q, &mut response).await;
           return;
@@ -301,8 +297,8 @@ where
       Self::send_key_response(q, &mut response).await;
     } else {
       tracing::error!(
-        target = "ruserf",
-        err = "encryption enabled but keyring is empty"
+        err = "encryption enabled but keyring is empty",
+        "ruserf: keyring is empty"
       );
       response.msg = SmolStr::new("encryption enabled but keyring is empty");
       Self::send_key_response(q, &mut response).await;
@@ -318,7 +314,7 @@ where
       Ok((_, msg)) => match msg {
         SerfMessage::KeyRequest(req) => req,
         msg => {
-          tracing::error!(target = "ruserf", "unexpected message type");
+          tracing::error!(err="unexpected message type", "ruserf: {}", msg.as_str());
           Self::send_key_response(q, &mut response).await;
           return;
         }
@@ -342,7 +338,7 @@ where
 
     tracing::info!(target = "ruserf", "received remove-key query");
     if let Some(kr) = q.ctx.this.inner.memberlist.keyring() {
-      if let Err(e) = kr.remove(&req.key.unwrap()) {
+      if let Err(e) = kr.remove(&req.key.unwrap()).await {
         tracing::error!(target="ruserf", err=%e, "failed to remove key");
         response.msg = SmolStr::new(e.to_string());
         Self::send_key_response(q, &mut response).await;
@@ -350,7 +346,7 @@ where
       }
 
       if q.ctx.this.inner.opts.keyring_file.is_some() {
-        if let Err(e) = q.ctx.this.write_keyring_file() {
+        if let Err(e) = q.ctx.this.write_keyring_file().await {
           tracing::error!(target="ruserf", err=%e, "failed to write keyring file");
           response.msg = SmolStr::new(e.to_string());
           Self::send_key_response(q, &mut response).await;
@@ -388,11 +384,11 @@ where
 
     tracing::info!(target = "ruserf", "received list-keys query");
     if let Some(kr) = q.ctx.this.inner.memberlist.keyring() {
-      for k in kr.keys() {
+      for k in kr.keys().await {
         response.keys.push(k);
       }
 
-      let primary_key = kr.primary_key();
+      let primary_key = kr.primary_key().await;
       response.primary_key = Some(primary_key);
       response.result = true;
       Self::send_key_response(q, &mut response).await;

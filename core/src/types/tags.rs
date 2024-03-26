@@ -52,11 +52,21 @@ impl FromIterator<(SmolStr, SmolStr)> for Tags {
   }
 }
 
+impl Default for Tags {
+  #[inline]
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl Tags {
+  /// Create a new Tags
+  #[inline]
   pub fn new() -> Self {
     Self(HashMap::new())
   }
 
+  /// Create a new Tags with a capacity
   pub fn with_capacity(cap: usize) -> Self {
     Self(HashMap::with_capacity(cap))
   }

@@ -78,7 +78,7 @@ where
   pub(crate) fn kind(&self) -> &EventKind<T, D> {
     match &self.0 {
       Either::Left(e) => e,
-      Either::Right(e) => &**e,
+      Either::Right(e) => e,
     }
   }
 
@@ -124,20 +124,18 @@ where
   }
 }
 
-// impl<D, T> From<(InternalQueryEventType, QueryEvent<T, D>)> for Event<T, D>
-// where
-//   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-//   T: Transport,
-//   <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-//   <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
-// {
-//   fn from(value: (InternalQueryEventType, QueryEvent<T, D>)) -> Self {
-//     Self(Either::Left(EventKind::InternalQuery {
-//       ty: value.0,
-//       query: value.1,
-//     }))
-//   }
-// }
+impl<D, T> From<(InternalQueryEvent<T::Id>, QueryEvent<T, D>)> for Event<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  fn from(value: (InternalQueryEvent<T::Id>, QueryEvent<T, D>)) -> Self {
+    Self(Either::Left(EventKind::InternalQuery {
+      kind: value.0,
+      query: value.1,
+    }))
+  }
+}
 
 pub(crate) enum EventKind<T, D>
 where
@@ -147,7 +145,10 @@ where
   Member(MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>),
   User(UserEvent),
   Query(QueryEvent<T, D>),
-  InternalQuery(InternalQueryEvent<T, D>),
+  InternalQuery {
+    kind: InternalQueryEvent<T::Id>,
+    query: QueryEvent<T, D>,
+  },
 }
 
 impl<D, T> Clone for EventKind<T, D>
@@ -160,7 +161,10 @@ where
       Self::Member(e) => Self::Member(e.clone()),
       Self::User(e) => Self::User(e.clone()),
       Self::Query(e) => Self::Query(e.clone()),
-      Self::InternalQuery(e) => Self::InternalQuery(e.clone()),
+      Self::InternalQuery { kind, query } => Self::InternalQuery {
+        kind: kind.clone(),
+        query: query.clone(),
+      },
     }
   }
 }
@@ -312,157 +316,53 @@ impl core::fmt::Display for UserEvent {
   }
 }
 
-pub struct ConflictQueryEvent<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
+pub enum InternalQueryEvent<I>
 {
-  pub(crate) ltime: LamportTime,
-  pub(crate) name: SmolStr,
-  pub(crate) conflict: T::Id,
-
-  pub(crate) ctx: Arc<QueryContext<T, D>>,
-  pub(crate) id: u32,
-  /// source node
-  pub(crate) from: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  /// Number of duplicate responses to relay back to sender
-  pub(crate) relay_factor: u8,
+  Ping,
+  Conflict(I),
+  #[cfg(feature = "encryption")]
+  InstallKey,
+  #[cfg(feature = "encryption")]
+  UseKey,
+  #[cfg(feature = "encryption")]
+  RemoveKey,
+  #[cfg(feature = "encryption")]
+  ListKey,
 }
 
-impl<D, T> Clone for ConflictQueryEvent<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn clone(&self) -> Self {
-    Self {
-      ltime: self.ltime,
-      name: self.name.clone(),
-      conflict: self.conflict.cheap_clone(),
-      ctx: self.ctx.clone(),
-      id: self.id,
-      from: self.from.cheap_clone(),
-      relay_factor: self.relay_factor,
-    }
-  }
-}
-
-impl<T, D> ConflictQueryEvent<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  pub(crate) fn create_response(
-    &self,
-    buf: Bytes,
-  ) -> QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> {
-    QueryResponseMessage {
-      ltime: self.ltime,
-      id: self.id,
-      from: self.ctx.this.inner.memberlist.advertise_node(),
-      flags: 0,
-      payload: buf,
-    }
-  }
-
-  pub(crate) async fn respond_with_message_and_response(
-    &self,
-    raw: Bytes,
-    resp: QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  ) -> Result<(), Error<T, D>> {
-    self
-      .ctx
-      .respond_with_message_and_response(self.relay_factor, raw, resp)
-      .await
-  }
-
-  /// Used to send a response to the user query
-  pub async fn respond(&self, msg: Bytes) -> Result<(), Error<T, D>> {
-    self
-      .ctx
-      .respond(
-        self.id,
-        self.ltime,
-        self.relay_factor,
-        self.from.cheap_clone(),
-        msg,
-      )
-      .await
-  }
-}
-
-pub enum InternalQueryEvent<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  Ping(LamportTime),
-  Conflict(ConflictQueryEvent<T, D>),
-  #[cfg(feature = "encryption")]
-  InstallKey(QueryEvent<T, D>),
-  #[cfg(feature = "encryption")]
-  UseKey(QueryEvent<T, D>),
-  #[cfg(feature = "encryption")]
-  RemoveKey(QueryEvent<T, D>),
-  #[cfg(feature = "encryption")]
-  ListKey(QueryEvent<T, D>),
-}
-
-impl<D, T> Clone for InternalQueryEvent<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
+impl<I: Clone> Clone for InternalQueryEvent<I>
 {
   fn clone(&self) -> Self {
     match self {
-      Self::Ping(t) => Self::Ping(*t),
+      Self::Ping => Self::Ping,
       Self::Conflict(e) => Self::Conflict(e.clone()),
       #[cfg(feature = "encryption")]
-      Self::InstallKey(e) => Self::InstallKey(e.clone()),
+      Self::InstallKey => Self::InstallKey,
       #[cfg(feature = "encryption")]
-      Self::UseKey(e) => Self::UseKey(e.clone()),
+      Self::UseKey => Self::UseKey,
       #[cfg(feature = "encryption")]
-      Self::RemoveKey(e) => Self::RemoveKey(e.clone()),
+      Self::RemoveKey => Self::RemoveKey,
       #[cfg(feature = "encryption")]
-      Self::ListKey(e) => Self::ListKey(e.clone()),
+      Self::ListKey => Self::ListKey,
     }
   }
 }
 
-impl<T, D> InternalQueryEvent<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
+impl<I> InternalQueryEvent<I>
 {
   #[inline]
   pub(crate) const fn as_str(&self) -> &'static str {
     match self {
-      Self::Ping(_) => INTERNAL_PING,
+      Self::Ping => INTERNAL_PING,
       Self::Conflict(_) => INTERNAL_CONFLICT,
       #[cfg(feature = "encryption")]
-      Self::InstallKey(_) => INTERNAL_INSTALL_KEY,
+      Self::InstallKey => INTERNAL_INSTALL_KEY,
       #[cfg(feature = "encryption")]
-      Self::UseKey(_) => INTERNAL_USE_KEY,
+      Self::UseKey => INTERNAL_USE_KEY,
       #[cfg(feature = "encryption")]
-      Self::RemoveKey(_) => INTERNAL_REMOVE_KEY,
+      Self::RemoveKey => INTERNAL_REMOVE_KEY,
       #[cfg(feature = "encryption")]
-      Self::ListKey(_) => INTERNAL_LIST_KEYS,
-    }
-  }
-
-  #[inline]
-  pub(crate) const fn ltime(&self) -> LamportTime {
-    match self {
-      Self::Ping(t) => *t,
-      Self::Conflict(e) => e.ltime,
-      #[cfg(feature = "encryption")]
-      Self::InstallKey(e) => e.ltime,
-      #[cfg(feature = "encryption")]
-      Self::UseKey(e) => e.ltime,
-      #[cfg(feature = "encryption")]
-      Self::RemoveKey(e) => e.ltime,
-      #[cfg(feature = "encryption")]
-      Self::ListKey(e) => e.ltime,
+      Self::ListKey => INTERNAL_LIST_KEYS,
     }
   }
 }
