@@ -1,45 +1,60 @@
 use std::{
-  collections::{HashMap, HashSet},
-  future::Future,
+  collections::HashSet,
   sync::{atomic::Ordering, Arc},
   time::{Duration, Instant},
 };
 
-use agnostic::Runtime;
 use async_channel::{Receiver, Sender};
 use async_lock::Mutex;
-use serde::{Deserialize, Serialize};
-use showbiz_core::{
-  bytes::Bytes,
-  futures_util::{self, FutureExt},
-  humantime_serde, tracing,
-  transport::Transport,
-  NodeId,
+use futures::{
+  stream::{FuturesUnordered, StreamExt},
+  FutureExt,
+};
+use memberlist_core::{
+  bytes::{BufMut, Bytes, BytesMut},
+  tracing,
+  transport::{AddressResolver, Id, Node, Transport},
+  types::{OneOrMore, SmallVec, TinyVec},
+  CheapClone,
 };
 
 use crate::{
-  clock::LamportTime,
-  delegate::MergeDelegate,
+  delegate::{Delegate, TransformDelegate},
   error::Error,
   types::{
-    decode_message, encode_filter, encode_relay_message, FilterType, FilterTypeRef, MessageType,
-    QueryResponseMessage, Tag, TagRef,
+    Filter, LamportTime, Member, MemberStatus, MessageType, QueryMessage, QueryResponseMessage,
   },
-  Member, MemberStatus, ReconnectTimeoutOverrider, Serf,
 };
+
+use super::Serf;
+
+impl<I, A> QueryMessage<I, A> {
+  #[inline]
+  pub(crate) fn response(&self, num_nodes: usize) -> QueryResponse<I, A> {
+    QueryResponse::new(
+      self.id,
+      self.ltime,
+      num_nodes,
+      Instant::now() + self.timeout,
+      self.ack(),
+    )
+  }
+}
 
 /// Provided to [`Serf::query`] to configure the parameters of the
 /// query. If not provided, sane defaults will be used.
 #[viewit::viewit]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueryParam {
-  /// If provided, we restrict the nodes that should respond to those
-  /// with names in this list
-  filter_nodes: Vec<NodeId>,
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct QueryParam<I, A> {
+  // /// If provided, we restrict the nodes that should respond to those
+  // /// with names in this list
+  // filter_nodes: Vec<Node<I, A>>,
 
-  /// Maps a tag name to a regular expression that is applied
-  /// to restrict the nodes that should respond
-  filter_tags: HashMap<String, String>,
+  // /// Maps a tag name to a regular expression that is applied
+  // /// to restrict the nodes that should respond
+  // filter_tags: HashMap<SmolStr, SmolStr>,
+  filters: OneOrMore<Filter<I, A>>,
 
   /// If true, we are requesting an delivery acknowledgement from
   /// every node that meets the filter requirement. This means nodes
@@ -53,54 +68,51 @@ pub struct QueryParam {
 
   /// The timeout limits how long the query is left open. If not provided,
   /// then a default timeout is used based on the configuration of Serf
-  #[serde(with = "humantime_serde")]
+  #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   timeout: Duration,
 }
 
-impl QueryParam {
+impl<I, A> QueryParam<I, A>
+where
+  I: Id,
+  A: CheapClone + Send + 'static,
+{
   /// Used to convert the filters into the wire format
-  pub(crate) fn encode_filters(&self) -> Result<Vec<Bytes>, rmp_serde::encode::Error> {
-    let mut filters = Vec::with_capacity(self.filter_nodes.len() + self.filter_tags.len());
-
-    // Add the node filter
-    if !self.filter_nodes.is_empty() {
-      let filter = FilterTypeRef::Node(&self.filter_nodes);
-      filters.push(encode_filter(filter)?);
-    }
-
-    // Add the tag filter
-    for (t, expr) in self.filter_tags.iter() {
-      let filter = FilterTypeRef::Tag(TagRef { tag: t, expr });
-      filters.push(encode_filter(filter)?);
+  pub(crate) fn encode_filters<W: TransformDelegate<Id = I, Address = A>>(
+    &self,
+  ) -> Result<TinyVec<Bytes>, W::Error> {
+    let mut filters = TinyVec::with_capacity(self.filters.len());
+    for filter in self.filters.iter() {
+      filters.push(W::encode_filter(filter)?);
     }
 
     Ok(filters)
   }
 }
 
-struct QueryResponseChannel {
+struct QueryResponseChannel<I, A> {
   /// Used to send the name of a node for which we've received an ack
-  ack_ch: Option<(Sender<NodeId>, Receiver<NodeId>)>,
+  ack_ch: Option<(Sender<Node<I, A>>, Receiver<Node<I, A>>)>,
   /// Used to send a response from a node
-  resp_ch: (Sender<NodeResponse>, Receiver<NodeResponse>),
+  resp_ch: (Sender<NodeResponse<I, A>>, Receiver<NodeResponse<I, A>>),
 }
 
-pub(crate) struct QueryResponseCore {
+pub(crate) struct QueryResponseCore<I, A> {
   closed: bool,
-  acks: HashSet<NodeId>,
-  responses: HashSet<NodeId>,
+  acks: HashSet<Node<I, A>>,
+  responses: HashSet<Node<I, A>>,
 }
 
-pub(crate) struct QueryResponseInner {
-  core: Mutex<QueryResponseCore>,
-  channel: QueryResponseChannel,
+pub(crate) struct QueryResponseInner<I, A> {
+  core: Mutex<QueryResponseCore<I, A>>,
+  channel: QueryResponseChannel<I, A>,
 }
 
 /// Returned for each new Query. It is used to collect
 /// Ack's as well as responses and to provide those back to a client.
 #[viewit::viewit(vis_all = "pub(crate)")]
 #[derive(Clone)]
-pub struct QueryResponse {
+pub struct QueryResponse<I, A> {
   /// The duration of the query
   deadline: Instant,
 
@@ -111,10 +123,10 @@ pub struct QueryResponse {
   ltime: LamportTime,
 
   #[viewit(getter(vis = "pub(crate)", const, style = "ref"))]
-  inner: Arc<QueryResponseInner>,
+  inner: Arc<QueryResponseInner<I, A>>,
 }
 
-impl QueryResponse {
+impl<I, A> QueryResponse<I, A> {
   #[inline]
   pub fn new(id: u32, ltime: LamportTime, num_nodes: usize, deadline: Instant, ack: bool) -> Self {
     let (ack_ch, acks) = if ack {
@@ -148,14 +160,14 @@ impl QueryResponse {
   /// Channel will be closed when the query is finished. This is nil,
   /// if the query did not specify RequestAck.
   #[inline]
-  pub fn ack_rx(&self) -> Option<async_channel::Receiver<NodeId>> {
+  pub fn ack_rx(&self) -> Option<async_channel::Receiver<Node<I, A>>> {
     self.inner.channel.ack_ch.as_ref().map(|(_, r)| r.clone())
   }
 
   /// Returns a channel that can be used to listen for responses.
   /// Channel will be closed when the query is finished.
   #[inline]
-  pub fn response_rx(&self) -> async_channel::Receiver<NodeResponse> {
+  pub fn response_rx(&self) -> async_channel::Receiver<NodeResponse<I, A>> {
     self.inner.channel.resp_ch.1.clone()
   }
 
@@ -185,13 +197,12 @@ impl QueryResponse {
   }
 
   #[inline]
-  pub(crate) async fn handle_query_response<T, D, O>(&self, resp: QueryResponseMessage)
+  pub(crate) async fn handle_query_response<T, D>(&self, resp: QueryResponseMessage<I, A>)
   where
-    D: MergeDelegate,
+    I: Eq + std::hash::Hash + CheapClone,
+    A: Eq + std::hash::Hash + CheapClone,
+    D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
     T: Transport,
-    O: ReconnectTimeoutOverrider,
-    <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
   {
     // Check if the query is closed
     let mut c = self.inner.core.lock().await;
@@ -201,12 +212,12 @@ impl QueryResponse {
 
     // Process each type of response
     if resp.ack() {
-      if let Some(Err(e)) = self.send_ack::<T, D, O>(&mut c, &resp).await {
-        tracing::warn!(target = "ruserf", "{}", e);
+      if let Some(Err(e)) = self.send_ack::<T, D>(&mut *c, &resp).await {
+        tracing::warn!("ruserf: {}", e);
       }
     } else if let Some(Err(e)) = self
-      .send_response::<T, D, O>(
-        &mut c,
+      .send_response::<T, D>(
+        &mut *c,
         NodeResponse {
           from: resp.from,
           payload: resp.payload,
@@ -214,23 +225,22 @@ impl QueryResponse {
       )
       .await
     {
-      tracing::warn!(target = "ruserf", "{}", e);
+      tracing::warn!("ruserf: {}", e);
     }
   }
 
   /// Sends a response on the response channel ensuring the channel is not closed.
   #[inline]
-  pub(crate) async fn send_response<T, D, O>(
+  pub(crate) async fn send_response<T, D>(
     &self,
-    c: &mut QueryResponseCore,
-    nr: NodeResponse,
-  ) -> Option<Result<(), Error<T, D, O>>>
+    c: &mut QueryResponseCore<I, A>,
+    nr: NodeResponse<I, A>,
+  ) -> Option<Result<(), Error<T, D>>>
   where
-    D: MergeDelegate,
+    I: Eq + std::hash::Hash + CheapClone,
+    A: Eq + std::hash::Hash + CheapClone,
+    D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
     T: Transport,
-    O: ReconnectTimeoutOverrider,
-    <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
   {
     // Exit early if this is a duplicate ack
     if c.responses.contains(&nr.from) {
@@ -243,8 +253,8 @@ impl QueryResponse {
       if c.closed {
         Ok(())
       } else {
-        let id = nr.from.clone();
-        futures_util::select! {
+        let id = nr.from.cheap_clone();
+        futures::select! {
           _ = self.inner.channel.resp_ch.0.send(nr).fuse() => {
             c.responses.insert(id);
             Ok(())
@@ -259,17 +269,16 @@ impl QueryResponse {
 
   /// Sends a response on the ack channel ensuring the channel is not closed.
   #[inline]
-  pub(crate) async fn send_ack<T, D, O>(
+  pub(crate) async fn send_ack<T, D>(
     &self,
-    c: &mut QueryResponseCore,
-    nr: &QueryResponseMessage,
-  ) -> Option<Result<(), Error<T, D, O>>>
+    c: &mut QueryResponseCore<I, A>,
+    nr: &QueryResponseMessage<I, A>,
+  ) -> Option<Result<(), Error<T, D>>>
   where
-    D: MergeDelegate,
+    I: Eq + std::hash::Hash + CheapClone,
+    A: Eq + std::hash::Hash + CheapClone,
+    D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
     T: Transport,
-    O: ReconnectTimeoutOverrider,
-    <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
   {
     // Exit early if this is a duplicate ack
     if c.acks.contains(&nr.from) {
@@ -283,8 +292,8 @@ impl QueryResponse {
       if c.closed {
         Ok(())
       } else if let Some((tx, _)) = &self.inner.channel.ack_ch {
-        futures_util::select! {
-          _ = tx.send(nr.from.clone()).fuse() => {
+        futures::select! {
+          _ = tx.send(nr.from.cheap_clone()).fuse() => {
             c.acks.insert(nr.from.clone());
             Ok(())
           },
@@ -301,19 +310,44 @@ impl QueryResponse {
 
 /// Used to represent a single response from a node
 #[viewit::viewit]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct NodeResponse {
-  from: NodeId,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct NodeResponse<I, A> {
+  from: Node<I, A>,
   payload: Bytes,
 }
 
-impl<T, D, O> Serf<T, D, O>
+#[inline]
+fn random_members<I, A>(
+  k: usize,
+  mut members: SmallVec<Arc<Member<I, A>>>,
+) -> SmallVec<Arc<Member<I, A>>> {
+  let n = members.len();
+  if n == 0 {
+    return SmallVec::new();
+  }
+
+  // The modified Fisher-Yates algorithm, but up to 3*n times to ensure exhaustive search for small n.
+  let rounds = 3 * n;
+  let mut i = 0;
+
+  while i < rounds && i < n {
+    let j = rand::random::<usize>() % (n - i) + i;
+    members.swap(i, j);
+    i += 1;
+    if i >= k && i >= rounds {
+      break;
+    }
+  }
+
+  members.truncate(k);
+  members
+}
+
+impl<T, D> Serf<T, D>
 where
-  D: MergeDelegate,
-  O: ReconnectTimeoutOverrider,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as std::future::Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
 {
   /// Returns the default timeout value for a query
   /// Computed as
@@ -321,18 +355,19 @@ where
   /// gossip_interval * query_timeout_mult * log(N+1)
   /// ```
   pub async fn default_query_timeout(&self) -> Duration {
-    let n = self.inner.memberlist.alive_members().await;
-    let mut timeout = self.inner.opts.showbiz_options.gossip_interval();
+    let n = self.inner.memberlist.num_online_members().await;
+    let mut timeout = self.inner.opts.memberlist_options.gossip_interval();
     timeout *= self.inner.opts.query_timeout_mult as u32;
     timeout *= (f64::log10((n + 1) as f64) + 0.5) as u32; // Using ceil approximation
     timeout
   }
 
   /// Used to return the default query parameters
-  pub async fn default_query_param(&self) -> QueryParam {
+  pub async fn default_query_param(
+    &self,
+  ) -> QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> {
     QueryParam {
-      filter_nodes: vec![],
-      filter_tags: HashMap::new(),
+      filters: OneOrMore::new(),
       request_ack: false,
       relay_factor: 0,
       timeout: self.default_query_timeout().await,
@@ -342,50 +377,46 @@ where
   pub(crate) fn should_process_query(&self, filters: &[Bytes]) -> bool {
     for filter in filters.iter() {
       if filter.is_empty() {
-        tracing::warn!(target = "ruserf", "empty filter");
+        tracing::warn!("ruserf: empty filter");
         return false;
       }
 
-      match filter[0] {
-        FilterType::NODE => {
-          // Decode the filter
-          let nodes = match decode_message::<Vec<NodeId>>(&filter[1..]) {
-            Ok(nodes) => nodes,
-            Err(err) => {
-              tracing::warn!(target = "ruserf", err=%err, "failed to decode node filter");
-              return false;
-            }
-          };
+      let filter = match <D as TransformDelegate>::decode_filter(filter) {
+        Ok((read, filter)) => {
+          tracing::trace!(read=%read, filter=?filter, "ruserf: decoded filter successully");
+          filter
+        }
+        Err(err) => {
+          tracing::warn!(
+            err = %err,
+            "ruserf: failed to decode filter"
+          );
+          return false;
+        }
+      };
 
+      match filter {
+        Filter::Node(nodes) => {
           // Check if we are being targeted
           let found = nodes
             .iter()
-            .any(|n| n.name() == self.inner.opts.showbiz_options.name());
+            .any(|n| n.id().eq(self.inner.memberlist.local_id()));
           if !found {
             return false;
           }
         }
-        FilterType::TAG => {
-          // Decode the filter
-          let filter = match decode_message::<Tag>(&filter[1..]) {
-            Ok(filter) => filter,
-            Err(err) => {
-              tracing::warn!(target = "ruserf", err=%err, "failed to decode tag filter");
-              return false;
-            }
-          };
-
+        Filter::Tag(tag) => {
           // Check if we match this regex
           if let Some(tags) = &*self.inner.opts.tags.load() {
-            if let Some(expr) = tags.get(&filter.tag) {
-              match regex::Regex::new(&filter.expr) {
+            if let Some(expr) = tags.get(&tag.tag) {
+              match regex::Regex::new(&tag.expr) {
                 Ok(re) => {
                   if !re.is_match(expr) {
                     return false;
                   }
                 }
                 Err(err) => {
-                  tracing::warn!(target = "ruserf", err=%err, "failed to compile filter regex ({})", filter.expr);
+                  tracing::warn!(err=%err, "ruserf: failed to compile filter regex ({})", tag.expr);
                   return false;
                 }
               }
@@ -396,14 +427,6 @@ where
             return false;
           }
         }
-        val => {
-          tracing::warn!(
-            target = "ruserf",
-            "query has unrecognized filter type {}",
-            val
-          );
-          return false;
-        }
       }
     }
     true
@@ -412,9 +435,9 @@ where
   pub(crate) async fn relay_response(
     &self,
     relay_factor: u8,
-    node_id: NodeId,
-    resp: QueryResponseMessage,
-  ) -> Result<(), Error<T, D, O>> {
+    node: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+    resp: QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> Result<(), Error<T, D>> {
     if relay_factor == 0 {
       return Ok(());
     }
@@ -439,7 +462,7 @@ where
             Some(m.member.clone())
           }
         })
-        .collect::<Vec<_>>()
+        .collect::<SmallVec<_>>()
     };
 
     if members.is_empty() {
@@ -447,41 +470,66 @@ where
     }
 
     // Prep the relay message, which is a wrapped version of the original.
-    let raw = encode_relay_message(MessageType::QueryResponse, node_id, &resp)?;
-
-    if raw.len() > self.inner.opts.query_response_size_limit {
+    // let relay_msg = SerfRelayMessage::new(node, SerfMessage::QueryResponse(resp));
+    let expected_encoded_len = <D as TransformDelegate>::node_encoded_len(&node)
+      + <D as TransformDelegate>::message_encoded_len(&resp);
+    if expected_encoded_len > self.inner.opts.query_response_size_limit {
       return Err(Error::RelayedResponseTooLarge(
         self.inner.opts.query_response_size_limit,
       ));
     }
 
+    let mut raw = BytesMut::with_capacity(expected_encoded_len + 1 + 1); // +1 for relay message type byte, +1 for the message type byte
+    raw.put_u8(MessageType::Relay as u8);
+    raw.resize(expected_encoded_len + 1 + 1, 0);
+    let mut encoded = 1;
+    encoded += <D as TransformDelegate>::encode_node(&node, &mut raw[encoded..])
+      .map_err(Error::transform)?;
+    raw[encoded] = MessageType::QueryResponse as u8;
+    encoded += 1;
+    encoded += <D as TransformDelegate>::encode_message(&resp, &mut raw[encoded..])
+      .map_err(Error::transform)?;
+
+    debug_assert_eq!(
+      encoded - 1 - 1,
+      expected_encoded_len,
+      "expected encoded len {} mismatch the actual encoded len {}",
+      expected_encoded_len,
+      encoded
+    );
+
+    let raw = Bytes::from(raw);
     // Relay to a random set of peers.
     let relay_members = random_members(relay_factor as usize, members);
 
-    let futs = relay_members.into_iter().map(|m| {
-      // TODO: make send to accept Arc<Message> to avoid cloning
-      let raw = raw.clone();
-      async move {
-        self
-          .inner
-          .memberlist
-          .send(&m.id, raw)
-          .await
-          .map_err(|e| (m, e))
-      }
-    });
-
-    let errs = futures_util::future::join_all(futs)
-      .await
+    let futs: FuturesUnordered<_> = relay_members
       .into_iter()
-      .filter_map(|rst| {
-        if let Err((m, e)) = rst {
-          Some((m, e))
-        } else {
-          None
+      .map(|m| {
+        let raw = raw.clone();
+        async move {
+          self
+            .inner
+            .memberlist
+            .send(m.node.address(), raw)
+            .await
+            .map_err(|e| (m, e))
         }
       })
-      .collect::<Vec<_>>();
+      .collect();
+
+    let mut errs = TinyVec::new();
+    let stream = StreamExt::filter_map(futs, |res| async move {
+      if let Err((m, e)) = res {
+        Some((m, e))
+      } else {
+        None
+      }
+    });
+    futures::pin_mut!(stream);
+
+    while let Some(err) = stream.next().await {
+      errs.push(err);
+    }
 
     if !errs.is_empty() {
       return Err(Error::Relay(From::from(errs)));
@@ -489,28 +537,4 @@ where
 
     Ok(())
   }
-}
-
-#[inline]
-fn random_members(k: usize, mut members: Vec<Arc<Member>>) -> Vec<Arc<Member>> {
-  let n = members.len();
-  if n == 0 {
-    return Vec::new();
-  }
-
-  // The modified Fisher-Yates algorithm, but up to 3*n times to ensure exhaustive search for small n.
-  let rounds = 3 * n;
-  let mut i = 0;
-
-  while i < rounds && i < n {
-    let j = rand::random::<usize>() % (n - i) + i;
-    members.swap(i, j);
-    i += 1;
-    if i >= k && i >= rounds {
-      break;
-    }
-  }
-
-  members.truncate(k);
-  members
 }

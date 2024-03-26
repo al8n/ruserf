@@ -1,31 +1,40 @@
 use std::{collections::HashMap, future::Future, marker::PhantomData, sync::Arc};
 
-use agnostic::Runtime;
 use async_channel::Sender;
 use either::Either;
-use showbiz_core::{futures_util::Stream, transport::Transport, NodeId};
+use futures::Stream;
+use memberlist_core::{
+  agnostic_lite::RuntimeLite,
+  transport::{AddressResolver, Node, Transport},
+  types::TinyVec,
+  CheapClone,
+};
 
 use crate::{
-  delegate::MergeDelegate,
+  delegate::Delegate,
   event::{Event, EventKind, MemberEvent, MemberEventType},
-  Member, ReconnectTimeoutOverrider,
+  types::Member,
 };
 
 use super::Coalescer;
 
-pub(crate) struct CoalesceEvent {
+pub(crate) struct CoalesceEvent<I, A> {
   ty: MemberEventType,
-  member: Arc<Member>,
+  member: Arc<Member<I, A>>,
 }
 
 #[derive(Default)]
-pub(crate) struct MemberEventCoalescer<T, D, O> {
-  last_events: HashMap<NodeId, MemberEventType>,
-  latest_events: HashMap<NodeId, CoalesceEvent>,
-  _m: PhantomData<(T, D, O)>,
+pub(crate) struct MemberEventCoalescer<T: Transport, D> {
+  last_events:
+    HashMap<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, MemberEventType>,
+  latest_events: HashMap<
+    Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+    CoalesceEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  >,
+  _m: PhantomData<D>,
 }
 
-impl<T, D, O> MemberEventCoalescer<T, D, O> {
+impl<T: Transport, D> MemberEventCoalescer<T, D> {
   pub(crate) fn new() -> Self {
     Self {
       last_events: HashMap::new(),
@@ -35,31 +44,28 @@ impl<T, D, O> MemberEventCoalescer<T, D, O> {
   }
 }
 
-#[showbiz_core::async_trait::async_trait]
-impl<T, D, O> Coalescer for MemberEventCoalescer<T, D, O>
+impl<T, D> Coalescer for MemberEventCoalescer<T, D>
 where
-  D: MergeDelegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  O: ReconnectTimeoutOverrider,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
+  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   type Delegate = D;
   type Transport = T;
-  type Overrider = O;
 
   fn name(&self) -> &'static str {
     "member_event_coalescer"
   }
 
-  fn handle(&self, event: &Event<Self::Transport, Self::Delegate, Self::Overrider>) -> bool {
+  fn handle(&self, event: &Event<Self::Transport, Self::Delegate>) -> bool {
     match &event.0 {
       Either::Left(e) => matches!(e, EventKind::Member(_)),
       Either::Right(e) => matches!(&**e, EventKind::Member(_)),
     }
   }
 
-  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate, Self::Overrider>) {
+  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate>) {
     match event.0 {
       Either::Left(ev) => {
         let EventKind::Member(event) = ev else {
@@ -70,7 +76,7 @@ where
         for member in members {
           self
             .latest_events
-            .insert(member.id().clone(), CoalesceEvent { ty, member });
+            .insert(member.node().cheap_clone(), CoalesceEvent { ty, member });
         }
       }
       Either::Right(ev) => {
@@ -82,7 +88,7 @@ where
         let ty = event.ty();
         for member in event.members() {
           self.latest_events.insert(
-            member.id().clone(),
+            member.node().cheap_clone(),
             CoalesceEvent {
               ty,
               member: member.clone(),
@@ -95,10 +101,12 @@ where
 
   async fn flush(
     &mut self,
-    out_tx: &Sender<Event<Self::Transport, Self::Delegate, Self::Overrider>>,
+    out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
   ) -> Result<(), super::ClosedOutChannel> {
-    let mut events: HashMap<MemberEventType, MemberEvent> =
-      HashMap::with_capacity(self.latest_events.len());
+    let mut events: HashMap<
+      MemberEventType,
+      MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+    > = HashMap::with_capacity(self.latest_events.len());
     // Coalesce the various events we got into a single set of events.
     for (id, cev) in self.latest_events.drain() {
       match self.last_events.get(&id) {
@@ -117,7 +125,7 @@ where
             std::collections::hash_map::Entry::Vacant(ent) => {
               ent.insert(MemberEvent {
                 ty: cev.ty,
-                members: vec![cev.member],
+                members: TinyVec::from(cev.member),
               });
             }
           }

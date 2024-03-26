@@ -5,62 +5,52 @@ pub(crate) use user::*;
 
 use std::{future::Future, time::Duration};
 
-use agnostic::Runtime;
 use async_channel::{bounded, Receiver, Sender};
-use showbiz_core::{
-  futures_util::{self, FutureExt, Stream},
+use futures::{FutureExt, Stream};
+use memberlist_core::{
+  agnostic_lite::RuntimeLite,
   tracing,
-  transport::Transport,
+  transport::{AddressResolver, Transport},
 };
 
-use super::{delegate::MergeDelegate, event::Event, serf::ReconnectTimeoutOverrider};
+use crate::delegate::Delegate;
+
+use super::event::Event;
 
 pub(crate) struct ClosedOutChannel;
 
-#[showbiz_core::async_trait::async_trait]
 pub(crate) trait Coalescer: Send + Sync + 'static {
-  type Delegate: MergeDelegate;
+  type Delegate: Delegate<
+    Id = <Self::Transport as Transport>::Id,
+    Address = <<Self::Transport as Transport>::Resolver as AddressResolver>::ResolvedAddress,
+  >;
   type Transport: Transport;
-  type Overrider: ReconnectTimeoutOverrider;
 
   fn name(&self) -> &'static str;
 
-  fn handle(&self, event: &Event<Self::Transport, Self::Delegate, Self::Overrider>) -> bool
-  where
-    <<<Self::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<<Self::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send;
+  fn handle(&self, event: &Event<Self::Transport, Self::Delegate>) -> bool;
 
   /// Invoked to coalesce the given event
-  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate, Self::Overrider>)
-  where
-    <<<Self::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<<Self::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send;
+  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate>);
 
   /// Invoked to flush the coalesced events
-  async fn flush(
+  fn flush(
     &mut self,
-    out_tx: &Sender<Event<Self::Transport, Self::Delegate, Self::Overrider>>,
-  ) -> Result<(), ClosedOutChannel>
-  where
-    <<<Self::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
-    <<<Self::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send;
+    out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
+  ) -> impl Future<Output = Result<(), ClosedOutChannel>> + Send;
 }
 
 /// Returns an event channel where the events are coalesced
 /// using the given coalescer.
 pub(crate) fn coalesced_event<C: Coalescer>(
-  out_tx: Sender<Event<C::Transport, C::Delegate, C::Overrider>>,
+  out_tx: Sender<Event<C::Transport, C::Delegate>>,
   shutdown_rx: Receiver<()>,
   c_period: Duration,
   q_period: Duration,
   c: C,
-) -> Sender<Event<C::Transport, C::Delegate, C::Overrider>>
-where
-  <<<C::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<<C::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
+) -> Sender<Event<C::Transport, C::Delegate>> {
   let (in_tx, in_rx) = bounded(1024);
-  <<C::Transport as Transport>::Runtime as Runtime>::spawn_detach(coalesce_loop::<C>(
+  <<C::Transport as Transport>::Runtime as RuntimeLite>::spawn_detach(coalesce_loop::<C>(
     in_rx,
     out_tx,
     shutdown_rx,
@@ -74,22 +64,19 @@ where
 /// A simple long-running routine that manages the high-level
 /// flow of coalescing based on quiescence and a maximum quantum period.
 async fn coalesce_loop<C: Coalescer>(
-  in_rx: Receiver<Event<C::Transport, C::Delegate, C::Overrider>>,
-  out_tx: Sender<Event<C::Transport, C::Delegate, C::Overrider>>,
+  in_rx: Receiver<Event<C::Transport, C::Delegate>>,
+  out_tx: Sender<Event<C::Transport, C::Delegate>>,
   shutdown_rx: Receiver<()>,
   coalesce_peirod: Duration,
   quiescent_period: Duration,
   mut c: C,
-) where
-  <<<C::Transport as Transport>::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<<C::Transport as Transport>::Runtime as Runtime>::Interval as Stream>::Item: Send,
-{
+) {
   let mut quiescent = None;
   let mut quantum = None;
   let mut shutdown = false;
 
   loop {
-    futures_util::select! {
+    futures::select! {
       ev = in_rx.recv().fuse() => {
         let Ok(ev) = ev else {
           // if we receive an error, it means the channel is closed. We should return
@@ -99,7 +86,7 @@ async fn coalesce_loop<C: Coalescer>(
         // Ignore any non handled events
         if !c.handle(&ev) {
           if let Err(e) = out_tx.send(ev).await {
-            tracing::error!(target = "ruserf", err=%e, "fail send event to out channel in {} coalesce thread", c.name());
+            tracing::error!(err=%e, "ruserf: fail send event to out channel in {} coalesce thread", c.name());
             return;
           }
           continue;
@@ -108,9 +95,9 @@ async fn coalesce_loop<C: Coalescer>(
         // Start a new quantum if we need to
         // and restart the quiescent timer
         if quantum.is_none() {
-          quantum = Some(<<C::Transport as Transport>::Runtime as Runtime>::sleep(coalesce_peirod));
+          quantum = Some(<<C::Transport as Transport>::Runtime as RuntimeLite>::sleep(coalesce_peirod));
         }
-        quiescent = Some(<<C::Transport as Transport>::Runtime as Runtime>::sleep(quiescent_period));
+        quiescent = Some(<<C::Transport as Transport>::Runtime as RuntimeLite>::sleep(quiescent_period));
 
         // Coalesce the event
         c.coalesce(ev);
@@ -125,7 +112,7 @@ async fn coalesce_loop<C: Coalescer>(
       }.fuse() => {
         // Flush the coalesced events
         if c.flush(&out_tx).await.is_err() {
-          tracing::error!(target = "ruserf", err="closed channel", "fail send event to out channel in {} coalesce thread", c.name());
+          tracing::error!(err="closed channel", "ruserf: fail send event to out channel in {} coalesce thread", c.name());
           return;
         }
 
@@ -147,7 +134,7 @@ async fn coalesce_loop<C: Coalescer>(
       }.fuse() => {
         // Flush the coalesced events
         if c.flush(&out_tx).await.is_err() {
-          tracing::error!(target = "ruserf", err="closed channel", "fail send event to out channel in {} coalesce thread", c.name());
+          tracing::error!(err="closed channel", "ruserf: fail send event to out channel in {} coalesce thread", c.name());
           return;
         }
 

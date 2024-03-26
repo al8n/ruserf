@@ -6,31 +6,30 @@ use std::{
   io::{BufRead, BufReader, BufWriter, Seek, Write},
   mem,
   path::PathBuf,
-  sync::Arc,
   time::{Duration, Instant},
 };
 
 #[cfg(unix)]
 use std::os::unix::prelude::OpenOptionsExt;
 
-use agnostic::Runtime;
 use async_channel::{Receiver, Sender};
 use either::Either;
-use rand::seq::SliceRandom;
-use showbiz_core::{
+use futures::{FutureExt, Stream};
+use memberlist_core::{
+  agnostic_lite::RuntimeLite,
   bytes::{BufMut, BytesMut},
-  futures_util::{self, FutureExt, Stream},
-  metrics, tracing,
-  transport::Transport,
-  NodeId,
+  tracing,
+  transport::{AddressResolver, Id, MaybeResolvedAddress, Node, Transport},
+  types::TinyVec,
+  CheapClone,
 };
+use rand::seq::SliceRandom;
 
 use crate::{
-  clock::{LamportClock, LamportTime},
-  codec::NodeIdCodec,
-  delegate::MergeDelegate,
-  event::{Event, EventKind, MemberEvent, MemberEventType, QueryEvent, UserEvent},
-  ReconnectTimeoutOverrider,
+  delegate::{Delegate, TransformDelegate},
+  event::{Event, EventKind, MemberEvent, MemberEventType, UserEvent},
+  invalid_data_io_error,
+  types::{LamportClock, LamportTime},
 };
 
 /// How often we force a flush of the snapshot file
@@ -90,9 +89,9 @@ pub enum SnapshotError {
   Replay(std::io::Error),
 }
 
-enum SnapshotRecord<'a> {
-  Alive(Cow<'a, NodeId>),
-  NotAlive(Cow<'a, NodeId>),
+enum SnapshotRecord<'a, I: Clone, A: Clone> {
+  Alive(Cow<'a, Node<I, A>>),
+  NotAlive(Cow<'a, Node<I, A>>),
   Clock(LamportTime),
   EventClock(LamportTime),
   QueryClock(LamportTime),
@@ -101,7 +100,13 @@ enum SnapshotRecord<'a> {
   Comment,
 }
 
-impl<'a> SnapshotRecord<'a> {
+const MAX_INLINED_BYTES: usize = 64;
+
+impl<'a, I, A> SnapshotRecord<'a, I, A>
+where
+  I: Id,
+  A: CheapClone + Send + Sync + 'static,
+{
   const ALIVE: u8 = 0;
   const NOT_ALIVE: u8 = 1;
   const CLOCK: u8 = 2;
@@ -111,16 +116,28 @@ impl<'a> SnapshotRecord<'a> {
   const LEAVE: u8 = 6;
   const COMMENT: u8 = 7;
 
-  fn encode<W: Write>(&self, w: &mut W) -> std::io::Result<usize> {
+  fn encode<T: TransformDelegate<Id = I, Address = A>, W: Write>(
+    &self,
+    w: &mut W,
+  ) -> std::io::Result<usize> {
     macro_rules! encode {
-      ($id: ident::$status: ident) => {{
-        let id = $id.as_ref();
-        let encoded_id_len = NodeIdCodec::encoded_len(id);
-        let mut buf = BytesMut::with_capacity(2 + encoded_id_len);
-        buf.put_u8(Self::$status);
-        id.encode(&mut buf);
-        buf.put_u8(b'\n');
-        w.write_all(&buf).map(|_| 2 + encoded_id_len)
+      ($node: ident::$status: ident) => {{
+        let node = $node.as_ref();
+        let encoded_node_len = T::node_encoded_len(node);
+        let encoded_len = 2 + encoded_node_len;
+        if encoded_len <= MAX_INLINED_BYTES {
+          let mut buf = [0u8; MAX_INLINED_BYTES];
+          buf[0] = Self::$status;
+          T::encode_node(node, &mut buf[1..]).map_err(invalid_data_io_error)?;
+          buf[1 + encoded_node_len] = b'\n';
+          w.write_all(&buf[..encoded_len]).map(|_| encoded_len)
+        } else {
+          let mut buf = BytesMut::with_capacity(encoded_len);
+          buf.put_u8(Self::$status);
+          T::encode_node(node, &mut buf).map_err(invalid_data_io_error)?;
+          buf.put_u8(b'\n');
+          w.write_all(&buf).map(|_| encoded_len)
+        }
       }};
       ($t: ident($status: ident)) => {{
         const N: usize = 2 * mem::size_of::<u8>() + mem::size_of::<u64>();
@@ -149,8 +166,8 @@ impl<'a> SnapshotRecord<'a> {
 }
 
 #[viewit::viewit]
-pub(crate) struct ReplayResult {
-  alive_nodes: HashSet<NodeId>,
+pub(crate) struct ReplayResult<I, A> {
+  alive_nodes: HashSet<Node<I, A>>,
   last_clock: LamportTime,
   last_event_clock: LamportTime,
   last_query_clock: LamportTime,
@@ -159,10 +176,15 @@ pub(crate) struct ReplayResult {
   path: PathBuf,
 }
 
-pub(crate) fn open_and_replay_snapshot<P: AsRef<std::path::Path>>(
+pub(crate) fn open_and_replay_snapshot<
+  I: Id,
+  A: CheapClone + core::hash::Hash + Eq + Send + Sync + 'static,
+  T: TransformDelegate<Id = I, Address = A>,
+  P: AsRef<std::path::Path>,
+>(
   p: &P,
   rejoin_after_leave: bool,
-) -> Result<ReplayResult, SnapshotError> {
+) -> Result<ReplayResult<I, A>, SnapshotError> {
   // Try to open the file
   #[cfg(unix)]
   let fh = OpenOptions::new()
@@ -202,39 +224,41 @@ pub(crate) fn open_and_replay_snapshot<P: AsRef<std::path::Path>>(
     let src = &buf[..buf.len() - 1];
     // Match on the prefix
     match src[0] {
-      SnapshotRecord::ALIVE => {
-        let id = NodeIdCodec::decode(&src[1..]).map_err(SnapshotError::Replay)?;
-        alive_nodes.insert(id);
+      SnapshotRecord::<I, A>::ALIVE => {
+        let (_, node) =
+          T::decode_node(&src[1..]).map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
+        alive_nodes.insert(node);
       }
-      SnapshotRecord::NOT_ALIVE => {
-        let id = <NodeId as NodeIdCodec>::decode(&src[1..]).map_err(SnapshotError::Replay)?;
-        alive_nodes.remove(&id);
+      SnapshotRecord::<I, A>::NOT_ALIVE => {
+        let (_, node) =
+          T::decode_node(&src[1..]).map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
+        alive_nodes.remove(&node);
       }
-      SnapshotRecord::CLOCK => {
+      SnapshotRecord::<I, A>::CLOCK => {
         let t = u64::from_be_bytes([
           src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
         ]);
         last_clock = LamportTime(t);
       }
-      SnapshotRecord::EVENT_CLOCK => {
+      SnapshotRecord::<I, A>::EVENT_CLOCK => {
         let t = u64::from_be_bytes([
           src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
         ]);
         last_event_clock = LamportTime(t);
       }
-      SnapshotRecord::QUERY_CLOCK => {
+      SnapshotRecord::<I, A>::QUERY_CLOCK => {
         let t = u64::from_be_bytes([
           src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
         ]);
         last_query_clock = LamportTime(t);
       }
-      SnapshotRecord::COORDINATE => {
+      SnapshotRecord::<I, A>::COORDINATE => {
         continue;
       }
-      SnapshotRecord::LEAVE => {
+      SnapshotRecord::<I, A>::LEAVE => {
         // Ignore a leave if we plan on re-joining
         if rejoin_after_leave {
-          tracing::info!(target = "ruserf", "ignoring previous leave in snapshot");
+          tracing::info!("ruserf: ignoring previous leave in snapshot");
           continue;
         }
         alive_nodes.clear();
@@ -242,15 +266,11 @@ pub(crate) fn open_and_replay_snapshot<P: AsRef<std::path::Path>>(
         last_event_clock = LamportTime::ZERO;
         last_query_clock = LamportTime::ZERO;
       }
-      SnapshotRecord::COMMENT => {
+      SnapshotRecord::<I, A>::COMMENT => {
         continue;
       }
       v => {
-        tracing::warn!(
-          target = "ruserf",
-          "unrecognized snapshot record {v}: {:?}",
-          buf
-        );
+        tracing::warn!("ruserf: unrecognized snapshot record {v}: {:?}", buf);
       }
     }
   }
@@ -286,7 +306,7 @@ impl SnapshotHandle {
   /// Used to remove known nodes to prevent a restart from
   /// causing a join. Otherwise nodes will re-join after leaving!
   pub(crate) async fn leave(&self) {
-    futures_util::select! {
+    futures::select! {
       _ = self.leave_tx.send(()).fuse() => {},
       _ = self.shutdown_rx.recv().fuse() => {},
     }
@@ -295,12 +315,14 @@ impl SnapshotHandle {
 
 /// Responsible for ingesting events and persisting
 /// them to disk, and providing a recovery mechanism at start time.
-pub(crate) struct Snapshot<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+pub(crate) struct Snapshot<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
+  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
-  alive_nodes: HashSet<NodeId>,
+  alive_nodes: HashSet<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
   clock: LamportClock,
   fh: Option<BufWriter<File>>,
   last_flush: Instant,
@@ -313,29 +335,38 @@ where
   path: PathBuf,
   offset: u64,
   rejoin_after_leave: bool,
-  stream_rx: Receiver<Event<T, D, O>>,
+  stream_rx: Receiver<Event<T, D>>,
   shutdown_rx: Receiver<()>,
   wait_tx: Sender<()>,
   last_attempted_compaction: Instant,
   #[cfg(feature = "metrics")]
-  metric_labels: Arc<Vec<metrics::Label>>,
+  metric_labels: std::sync::Arc<memberlist_core::types::MetricLabels>,
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> Snapshot<T, D, O>
+impl<D, T> Snapshot<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
+  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   #[allow(clippy::type_complexity)]
   pub(crate) fn from_replay_result(
-    replay_result: ReplayResult,
+    replay_result: ReplayResult<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     min_compact_size: u64,
     rejoin_after_leave: bool,
     clock: LamportClock,
-    out_tx: Option<Sender<Event<T, D, O>>>,
+    out_tx: Option<Sender<Event<T, D>>>,
     shutdown_rx: Receiver<()>,
-    #[cfg(feature = "metrics")] metric_labels: Arc<Vec<metrics::Label>>,
-  ) -> Result<(Sender<Event<T, D, O>>, Vec<NodeId>, SnapshotHandle), SnapshotError> {
+    #[cfg(feature = "metrics")] metric_labels: std::sync::Arc<memberlist_core::types::MetricLabels>,
+  ) -> Result<
+    (
+      Sender<Event<T, D>>,
+      TinyVec<Node<T::Id, MaybeResolvedAddress<T>>>,
+      SnapshotHandle,
+    ),
+    SnapshotError,
+  > {
     let (in_tx, in_rx) = async_channel::bounded(EVENT_CH_SIZE);
     let (stream_tx, stream_rx) = async_channel::bounded(EVENT_CH_SIZE);
     let (leave_tx, leave_rx) = async_channel::bounded(1);
@@ -374,17 +405,25 @@ where
       metric_labels,
     };
 
-    let mut alive_nodes = this.alive_nodes.iter().cloned().collect::<Vec<_>>();
+    let mut alive_nodes = this
+      .alive_nodes
+      .iter()
+      .map(|n| {
+        let id = n.id().cheap_clone();
+        let addr = n.address().cheap_clone();
+        Node::new(id, MaybeResolvedAddress::resolved(addr))
+      })
+      .collect::<TinyVec<_>>();
     alive_nodes.shuffle(&mut rand::thread_rng());
 
     // Start handling new commands
-    <T::Runtime as Runtime>::spawn_detach(Self::tee_stream(
+    <T::Runtime as RuntimeLite>::spawn_detach(Self::tee_stream(
       in_rx,
       stream_tx,
       out_tx,
       shutdown_rx.clone(),
     ));
-    <T::Runtime as Runtime>::spawn_detach(this.stream());
+    <T::Runtime as RuntimeLite>::spawn_detach(this.stream());
 
     Ok((
       in_tx,
@@ -400,22 +439,22 @@ where
   /// A long running routine that is used to copy events
   /// to the output channel and the internal event handler.
   async fn tee_stream(
-    in_rx: Receiver<Event<T, D, O>>,
-    stream_tx: Sender<Event<T, D, O>>,
-    out_tx: Option<Sender<Event<T, D, O>>>,
+    in_rx: Receiver<Event<T, D>>,
+    stream_tx: Sender<Event<T, D>>,
+    out_tx: Option<Sender<Event<T, D>>>,
     shutdown_rx: Receiver<()>,
   ) {
     macro_rules! flush_event {
       ($event:ident) => {{
         // Forward to the internal stream, do not block
-        futures_util::select! {
+        futures::select! {
           _ = stream_tx.send($event.clone()).fuse() => {}
           default => {}
         }
 
         // Forward the event immediately, do not block
         if let Some(ref out_tx) = out_tx {
-          futures_util::select! {
+          futures::select! {
             _ = out_tx.send($event).fuse() => {}
             default => {}
           }
@@ -424,7 +463,7 @@ where
     }
 
     loop {
-      futures_util::select! {
+      futures::select! {
         ev = in_rx.recv().fuse() => {
           match ev {
             Ok(ev) => {
@@ -432,7 +471,7 @@ where
               flush_event!(ev)
             },
             Err(e) => {
-              tracing::error!(target = "ruserf", err=%e, "tee stream: fail to receive from inbound channel");
+              tracing::error!(err=%e, "ruserf: tee stream: fail to receive from inbound channel");
               return;
             }
           }
@@ -445,7 +484,7 @@ where
 
     // Drain any remaining events before exiting
     loop {
-      futures_util::select! {
+      futures::select! {
         ev = in_rx.recv().fuse() => {
           match ev {
             Ok(ev) => {
@@ -453,7 +492,7 @@ where
               flush_event!(ev)
             },
             Err(e) => {
-              tracing::error!(target = "ruserf", err=%e, "tee stream: fail to receive from inbound channel");
+              tracing::error!(err=%e, "ruserf: tee stream: fail to receive from inbound channel");
               return;
             }
           }
@@ -465,7 +504,7 @@ where
 
   /// Long running routine that is used to handle events
   async fn stream(mut self) {
-    let mut clock_ticker = <T::Runtime as Runtime>::interval(CLOCK_UPDATE_INTERVAL);
+    let mut clock_ticker = <T::Runtime as RuntimeLite>::interval(CLOCK_UPDATE_INTERVAL);
 
     // flushEvent is used to handle writing out an event
     macro_rules! flush_event {
@@ -479,21 +518,21 @@ where
           Either::Left(e) => match &e {
             EventKind::Member(e) => $this.process_member_event(e),
             EventKind::User(e) => $this.process_user_event(e),
-            EventKind::Query(e) => $this.process_query_event(e),
-            EventKind::InternalQuery { query: e, .. } => $this.process_query_event(e),
+            EventKind::Query(e) => $this.process_query_event(e.ltime),
+            EventKind::InternalQuery { query, .. } => $this.process_query_event(query.ltime),
           },
           Either::Right(e) => match &*e {
             EventKind::Member(e) => $this.process_member_event(e),
             EventKind::User(e) => $this.process_user_event(e),
-            EventKind::Query(e) => $this.process_query_event(e),
-            EventKind::InternalQuery { query: e, .. } => $this.process_query_event(e),
+            EventKind::Query(e) => $this.process_query_event(e.ltime),
+            EventKind::InternalQuery { query, .. } => $this.process_query_event(query.ltime),
           },
         }
       }};
     }
 
     loop {
-      futures_util::select! {
+      futures::select! {
         _ = self.leave_rx.recv().fuse() => {
           self.leaving = true;
 
@@ -520,20 +559,20 @@ where
             },
           }
         }
-        _ = futures_util::StreamExt::next(&mut clock_ticker).fuse() => {
+        _ = futures::StreamExt::next(&mut clock_ticker).fuse() => {
           self.update_clock();
         }
         _ = self.shutdown_rx.recv().fuse() => {
           // Setup a timeout
-          let flush_timeout = <T::Runtime as Runtime>::sleep(SHUTDOWN_FLUSH_TIMEOUT);
-          futures_util::pin_mut!(flush_timeout);
+          let flush_timeout = <T::Runtime as RuntimeLite>::sleep(SHUTDOWN_FLUSH_TIMEOUT);
+          futures::pin_mut!(flush_timeout);
 
           // snapshot the clock
           self.update_clock();
 
           // Clear out the buffers
           loop {
-            futures_util::select! {
+            futures::select! {
               ev = self.stream_rx.recv().fuse() => {
                 match ev {
                   Ok(ev) => flush_event!(self <- ev),
@@ -580,9 +619,8 @@ where
   }
 
   /// Used to handle a single query event
-  fn process_query_event(&mut self, e: &QueryEvent<T, D, O>) {
+  fn process_query_event(&mut self, ltime: LamportTime) {
     // Ignore old clocks
-    let ltime = e.ltime;
     if ltime <= self.last_event_clock {
       return;
     }
@@ -592,20 +630,23 @@ where
   }
 
   /// Used to handle a single member event
-  fn process_member_event(&mut self, e: &MemberEvent) {
+  fn process_member_event(
+    &mut self,
+    e: &MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) {
     match e.ty {
       MemberEventType::Join => {
         for m in e.members() {
-          let id = m.id();
-          self.alive_nodes.insert(id.clone());
-          self.try_append(SnapshotRecord::Alive(Cow::Borrowed(id)))
+          let node = m.node();
+          self.alive_nodes.insert(node.cheap_clone());
+          self.try_append(SnapshotRecord::Alive(Cow::Borrowed(node)))
         }
       }
       MemberEventType::Leave | MemberEventType::Failed => {
         for m in e.members() {
-          let id = m.id();
-          self.alive_nodes.remove(id);
-          self.try_append(SnapshotRecord::NotAlive(Cow::Borrowed(id)));
+          let node = m.node();
+          self.alive_nodes.remove(node);
+          self.try_append(SnapshotRecord::NotAlive(Cow::Borrowed(node)));
         }
       }
       _ => {}
@@ -624,31 +665,31 @@ where
     }
   }
 
-  fn try_append(&mut self, l: SnapshotRecord<'_>) {
+  fn try_append(
+    &mut self,
+    l: SnapshotRecord<'_, T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) {
     if let Err(e) = self.append_line(l) {
-      tracing::error!(target = "ruserf", err = %e, "failed to update snapshot");
+      tracing::error!(err = %e, "ruserf: failed to update snapshot");
       if self.last_attempted_compaction.elapsed() > SNAPSHOT_ERROR_RECOVERY_INTERVAL {
         self.last_attempted_compaction = Instant::now();
-        tracing::info!(
-          target = "ruserf",
-          "attempting compaction to recover from error..."
-        );
+        tracing::info!("ruserf: attempting compaction to recover from error...");
         if let Err(e) = self.compact() {
-          tracing::error!(target = "ruserf", err = %e, "compaction failed, will reattempt after {}s", SNAPSHOT_ERROR_RECOVERY_INTERVAL.as_secs());
+          tracing::error!(err = %e, "ruserf: compaction failed, will reattempt after {}s", SNAPSHOT_ERROR_RECOVERY_INTERVAL.as_secs());
         } else {
-          tracing::info!(
-            target = "ruserf",
-            "finished compaction, successfully recovered from error state"
-          );
+          tracing::info!("ruserf: finished compaction, successfully recovered from error state");
         }
       }
     }
   }
 
-  fn append_line(&mut self, l: SnapshotRecord<'_>) -> Result<(), SnapshotError> {
+  fn append_line(
+    &mut self,
+    l: SnapshotRecord<'_, T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> Result<(), SnapshotError> {
     // TODO: metrics
     let f = self.fh.as_mut().unwrap();
-    let n = l.encode(f).map_err(SnapshotError::Write)?;
+    let n = l.encode::<D, _>(f).map_err(SnapshotError::Write)?;
 
     // check if we should flush
     if self.last_flush.elapsed() > FLUSH_INTERVAL {
@@ -707,21 +748,21 @@ where
     let mut offset = 0u64;
     for node in self.alive_nodes.iter() {
       offset += SnapshotRecord::Alive(Cow::Borrowed(node))
-        .encode(&mut buf)
+        .encode::<D, _>(&mut buf)
         .map_err(SnapshotError::WriteNew)? as u64;
     }
 
     // Write out the clocks
     offset += SnapshotRecord::Clock(self.last_clock)
-      .encode(&mut buf)
+      .encode::<D, _>(&mut buf)
       .map_err(SnapshotError::WriteNew)? as u64;
 
     offset += SnapshotRecord::EventClock(self.last_event_clock)
-      .encode(&mut buf)
+      .encode::<D, _>(&mut buf)
       .map_err(SnapshotError::WriteNew)? as u64;
 
     offset += SnapshotRecord::QueryClock(self.last_query_clock)
-      .encode(&mut buf)
+      .encode::<D, _>(&mut buf)
       .map_err(SnapshotError::WriteNew)? as u64;
 
     // Flush the new snapshot
@@ -756,7 +797,6 @@ where
       .create(true)
       .append(true)
       .read(true)
-      .write(true)
       .mode(0o755)
       .open(&self.path)
       .map_err(SnapshotError::Open)?;
@@ -797,39 +837,41 @@ where
       let src = &buf[..buf.len() - 1];
       // Match on the prefix
       match src[0] {
-        SnapshotRecord::ALIVE => {
-          let id = NodeIdCodec::decode(&src[1..]).map_err(SnapshotError::Replay)?;
-          self.alive_nodes.insert(id);
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::ALIVE => {
+          let (_, node) = <D as TransformDelegate>::decode_node(&src[1..])
+            .map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
+          self.alive_nodes.insert(node);
         }
-        SnapshotRecord::NOT_ALIVE => {
-          let id = <NodeId as NodeIdCodec>::decode(&src[1..]).map_err(SnapshotError::Replay)?;
-          self.alive_nodes.remove(&id);
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::NOT_ALIVE => {
+          let (_, node) = <D as TransformDelegate>::decode_node(&src[1..])
+            .map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
+          self.alive_nodes.remove(&node);
         }
-        SnapshotRecord::CLOCK => {
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::CLOCK => {
           let t = u64::from_be_bytes([
             src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
           ]);
           self.last_clock = LamportTime(t);
         }
-        SnapshotRecord::EVENT_CLOCK => {
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::EVENT_CLOCK => {
           let t = u64::from_be_bytes([
             src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
           ]);
           self.last_event_clock = LamportTime(t);
         }
-        SnapshotRecord::QUERY_CLOCK => {
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::QUERY_CLOCK => {
           let t = u64::from_be_bytes([
             src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
           ]);
           self.last_query_clock = LamportTime(t);
         }
-        SnapshotRecord::COORDINATE => {
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::COORDINATE => {
           continue;
         }
-        SnapshotRecord::LEAVE => {
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::LEAVE => {
           // Ignore a leave if we plan on re-joining
           if self.rejoin_after_leave {
-            tracing::info!(target = "ruserf", "ignoring previous leave in snapshot");
+            tracing::info!("ruserf: ignoring previous leave in snapshot");
             continue;
           }
           self.alive_nodes.clear();
@@ -837,15 +879,11 @@ where
           self.last_event_clock = LamportTime(0);
           self.last_query_clock = LamportTime(0);
         }
-        SnapshotRecord::COMMENT => {
+        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::COMMENT => {
           continue;
         }
         v => {
-          tracing::warn!(
-            target = "ruserf",
-            "unrecognized snapshot record {v}: {:?}",
-            buf
-          );
+          tracing::warn!("ruserf: unrecognized snapshot record {v}: {:?}", buf);
         }
       }
     }

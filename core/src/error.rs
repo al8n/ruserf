@@ -1,13 +1,17 @@
-use std::{collections::HashMap, future::Future, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
-use agnostic::Runtime;
-use showbiz_core::{futures_util::Stream, transport::Transport, Address, NodeId};
+use memberlist_core::{
+  transport::{AddressResolver, MaybeResolvedAddress, Node, Transport},
+  types::{SmallVec, TinyVec},
+};
 
 use crate::{
-  delegate::{MergeDelegate, SerfDelegate},
-  snapshot::SnapshotError,
-  Member, ReconnectTimeoutOverrider, SerfState,
+  delegate::{Delegate, TransformDelegate},
+  serf::{SerfDelegate, SerfState},
+  types::Member,
 };
+
+pub use crate::{delegate::DelegateError, snapshot::SnapshotError};
 
 #[derive(Debug)]
 pub struct VoidError;
@@ -20,16 +24,16 @@ impl std::fmt::Display for VoidError {
 
 impl std::error::Error for VoidError {}
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+#[derive(thiserror::Error)]
+pub enum Error<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
   #[error("ruserf: {0}")]
-  Showbiz(#[from] ShowbizError<T, D, O>),
+  Memberlist(#[from] MemberlistError<T, D>),
   #[error("ruserf: {0}")]
-  MergeDelegate(D::Error),
+  Delegate(#[from] DelegateError<D>),
   #[error("ruserf: user event size limit exceeds limit of {0} bytes")]
   UserEventLimitTooLarge(usize),
   #[error("ruserf: user event exceeds sane limit of {0} bytes before encoding")]
@@ -55,11 +59,7 @@ where
   #[error("ruserf: relayed response exceeds limit of {0} bytes")]
   RelayedResponseTooLarge(usize),
   #[error("ruserf: relay error\n{0}")]
-  Relay(RelayError<T, D, O>),
-  #[error("ruserf: encode error: {0}")]
-  Encode(#[from] rmp_serde::encode::Error),
-  #[error("ruserf: decode error: {0}")]
-  Decode(#[from] rmp_serde::decode::Error),
+  Relay(RelayError<T, D>),
   #[error("ruserf: failed to deliver query response, dropping")]
   QueryResponseDeliveryFailed,
   #[error("ruserf: coordinates are disabled")]
@@ -68,105 +68,126 @@ where
   Snapshot(#[from] SnapshotError),
   #[error("ruserf: timed out broadcasting node removal")]
   RemovalBroadcastTimeout,
+  #[error("ruserf: timed out broadcasting channel closed")]
+  BroadcastChannelClosed,
 }
 
-pub struct ShowbizError<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>(
-  showbiz_core::error::Error<T, SerfDelegate<T, D, O>>,
-)
+impl<T, D> core::fmt::Debug for Error<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send;
-
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider>
-  From<showbiz_core::error::Error<T, SerfDelegate<T, D, O>>> for ShowbizError<T, D, O>
-where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
-  fn from(value: showbiz_core::error::Error<T, SerfDelegate<T, D, O>>) -> Self {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    write!(f, "{}", self)
+  }
+}
+
+impl<T, D> Error<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  #[inline]
+  pub fn transform(err: <D as TransformDelegate>::Error) -> Self {
+    Self::Delegate(DelegateError::TransformDelegate(err))
+  }
+}
+
+pub struct MemberlistError<T, D>(memberlist_core::error::Error<T, SerfDelegate<T, D>>)
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport;
+
+impl<T, D> From<memberlist_core::error::Error<T, SerfDelegate<T, D>>> for MemberlistError<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  fn from(value: memberlist_core::error::Error<T, SerfDelegate<T, D>>) -> Self {
     Self(value)
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> core::fmt::Display
-  for ShowbizError<T, D, O>
+impl<T, D> core::fmt::Display for MemberlistError<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "{}", self.0)
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> core::fmt::Debug
-  for ShowbizError<T, D, O>
+impl<T, D> core::fmt::Debug for MemberlistError<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "{}", self.0)
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider>
-  From<showbiz_core::error::Error<T, SerfDelegate<T, D, O>>> for Error<T, D, O>
+impl<T, D> std::error::Error for MemberlistError<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
-  fn from(value: showbiz_core::error::Error<T, SerfDelegate<T, D, O>>) -> Self {
-    Self::Showbiz(ShowbizError(value))
+}
+
+impl<T, D> From<memberlist_core::error::Error<T, SerfDelegate<T, D>>> for Error<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  fn from(value: memberlist_core::error::Error<T, SerfDelegate<T, D>>) -> Self {
+    Self::Memberlist(MemberlistError(value))
   }
 }
 
-pub struct RelayError<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>(
+pub struct RelayError<T, D>(
   #[allow(clippy::type_complexity)]
-  Vec<(
-    Arc<Member>,
-    showbiz_core::error::Error<T, SerfDelegate<T, D, O>>,
+  TinyVec<(
+    Arc<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+    memberlist_core::error::Error<T, SerfDelegate<T, D>>,
   )>,
 )
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send;
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport;
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider>
+impl<T, D>
   From<
-    Vec<(
-      Arc<Member>,
-      showbiz_core::error::Error<T, SerfDelegate<T, D, O>>,
+    TinyVec<(
+      Arc<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+      memberlist_core::error::Error<T, SerfDelegate<T, D>>,
     )>,
-  > for RelayError<T, D, O>
+  > for RelayError<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
   fn from(
-    value: Vec<(
-      Arc<Member>,
-      showbiz_core::error::Error<T, SerfDelegate<T, D, O>>,
+    value: TinyVec<(
+      Arc<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+      memberlist_core::error::Error<T, SerfDelegate<T, D>>,
     )>,
   ) -> Self {
     Self(value)
   }
 }
 
-impl<D, T, O> core::fmt::Display for RelayError<T, D, O>
+impl<T, D> core::fmt::Display for RelayError<T, D>
 where
-  D: MergeDelegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  O: ReconnectTimeoutOverrider,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     for (member, err) in self.0.iter() {
       writeln!(
         f,
         "\tfailed to send relay response to {}: {}",
-        member.id(),
+        member.node().id(),
         err
       )?;
     }
@@ -174,54 +195,50 @@ where
   }
 }
 
-impl<D, T, O> core::fmt::Debug for RelayError<T, D, O>
+impl<T, D> core::fmt::Debug for RelayError<T, D>
 where
-  D: MergeDelegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  O: ReconnectTimeoutOverrider,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     core::fmt::Display::fmt(self, f)
   }
 }
 
-impl<D, T, O> std::error::Error for RelayError<T, D, O>
+impl<T, D> std::error::Error for RelayError<T, D>
 where
-  D: MergeDelegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  O: ReconnectTimeoutOverrider,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
 }
 
 /// `JoinError` is returned when join is partially/totally failed.
-pub struct JoinError<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+pub struct JoinError<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
-  pub(crate) joined: Vec<NodeId>,
-  pub(crate) errors: HashMap<Address, Error<T, D, O>>,
-  pub(crate) broadcast_error: Option<Error<T, D, O>>,
+  pub(crate) joined: SmallVec<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+  pub(crate) errors: HashMap<Node<T::Id, MaybeResolvedAddress<T>>, Error<T, D>>,
+  pub(crate) broadcast_error: Option<Error<T, D>>,
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> JoinError<T, D, O>
+impl<T, D> JoinError<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
-  pub const fn broadcast_error(&self) -> Option<&Error<T, D, O>> {
+  pub const fn broadcast_error(&self) -> Option<&Error<T, D>> {
     self.broadcast_error.as_ref()
   }
 
-  pub const fn errors(&self) -> &HashMap<Address, Error<T, D, O>> {
+  pub const fn errors(&self) -> &HashMap<Node<T::Id, MaybeResolvedAddress<T>>, Error<T, D>> {
     &self.errors
   }
 
-  pub const fn joined(&self) -> &Vec<NodeId> {
+  pub const fn joined(
+    &self,
+  ) -> &SmallVec<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>> {
     &self.joined
   }
 
@@ -230,22 +247,20 @@ where
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> core::fmt::Debug
-  for JoinError<T, D, O>
+impl<T, D> core::fmt::Debug for JoinError<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "{}", self)
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> core::fmt::Display
-  for JoinError<T, D, O>
+impl<T, D> core::fmt::Display for JoinError<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     if !self.joined.is_empty() {
@@ -266,10 +281,9 @@ where
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> std::error::Error
-  for JoinError<T, D, O>
+impl<T, D> std::error::Error for JoinError<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
 }

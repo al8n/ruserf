@@ -1,5 +1,5 @@
 use async_channel::Sender;
-use showbiz_core::{async_trait, broadcast::Broadcast, Message};
+use memberlist_core::{bytes::Bytes, Broadcast};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub(crate) struct BroadcastId;
@@ -11,14 +11,15 @@ impl core::fmt::Display for BroadcastId {
 }
 
 #[viewit::viewit]
+#[derive(Debug)]
 pub(crate) struct SerfBroadcast {
-  msg: Message,
+  msg: Bytes,
   notify_tx: Option<Sender<()>>,
 }
 
-#[cfg_attr(not(feature = "nightly"), async_trait::async_trait)]
 impl Broadcast for SerfBroadcast {
   type Id = BroadcastId;
+  type Message = Bytes;
 
   fn id(&self) -> Option<&Self::Id> {
     None
@@ -28,26 +29,18 @@ impl Broadcast for SerfBroadcast {
     false
   }
 
-  fn message(&self) -> &Message {
+  fn message(&self) -> &Self::Message {
     &self.msg
   }
 
-  #[cfg(not(feature = "nightly"))]
   async fn finished(&self) {
     if let Some(ref tx) = self.notify_tx {
       tx.close();
     }
   }
 
-  #[cfg(feature = "nightly")]
-  fn finished<'a>(
-    &'a self,
-  ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'a {
-    async move {
-      if let Some(ref tx) = self.notify_tx {
-        tx.close();
-      }
-    }
+  fn encoded_len(msg: &Self::Message) -> usize {
+    todo!()
   }
 }
 

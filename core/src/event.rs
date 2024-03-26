@@ -3,25 +3,35 @@ use std::{
   time::{Duration, Instant},
 };
 
-use agnostic::Runtime;
 use async_lock::Mutex;
 use either::Either;
-use showbiz_core::{
-  bytes::Bytes,
-  futures_util::{Future, Stream},
-  transport::Transport,
-  Message, NodeId,
+use futures::{Future, Stream};
+use memberlist_core::{
+  agnostic_lite::RuntimeLite,
+  bytes::{BufMut, Bytes, BytesMut},
+  transport::{AddressResolver, Node, Transport},
+  types::TinyVec,
+  CheapClone,
 };
 use smol_str::SmolStr;
 
-use crate::{
-  delegate::MergeDelegate,
+use super::{
+  delegate::{Delegate, TransformDelegate},
   error::Error,
-  types::{encode_message, MessageType, QueryResponseMessage},
-  ReconnectTimeoutOverrider, Serf,
+  types::{LamportTime, Member, MessageType, QueryResponseMessage},
+  Serf,
 };
 
-use super::{clock::LamportTime, serf::Member};
+const INTERNAL_PING: &str = "ruserf-ping";
+const INTERNAL_CONFLICT: &str = "ruserf-conflict";
+#[cfg(feature = "encryption")]
+pub(crate) const INTERNAL_INSTALL_KEY: &str = "ruserf-install-key";
+#[cfg(feature = "encryption")]
+pub(crate) const INTERNAL_USE_KEY: &str = "ruserf-use-key";
+#[cfg(feature = "encryption")]
+pub(crate) const INTERNAL_REMOVE_KEY: &str = "ruserf-remove-key";
+#[cfg(feature = "encryption")]
+pub(crate) const INTERNAL_LIST_KEYS: &str = "ruserf-list-keys";
 
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -32,30 +42,31 @@ pub enum EventType {
   Query,
 }
 
-pub struct Event<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>(
-  pub(crate) Either<EventKind<T, D, O>, Arc<EventKind<T, D, O>>>,
-)
+pub struct Event<T, D>(pub(crate) Either<EventKind<T, D>, Arc<EventKind<T, D>>>)
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send;
-
-impl<D, T, O> Clone for Event<T, D, O>
-where
-  D: MergeDelegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  O: ReconnectTimeoutOverrider,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
+  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send;
+
+impl<D, T> Clone for Event<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
+  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   fn clone(&self) -> Self {
     Self(self.0.clone())
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> Event<T, D, O>
+impl<D, T> Event<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
+  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   pub(crate) fn into_right(self) -> Self {
     match self.0 {
@@ -64,10 +75,10 @@ where
     }
   }
 
-  pub(crate) fn kind(&self) -> &EventKind<T, D, O> {
+  pub(crate) fn kind(&self) -> &EventKind<T, D> {
     match &self.0 {
       Either::Left(e) => e,
-      Either::Right(e) => &**e,
+      Either::Right(e) => e,
     }
   }
 
@@ -76,95 +87,97 @@ where
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<MemberEvent>
-  for Event<T, D, O>
+impl<D, T> From<MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>
+  for Event<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
+  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
-  fn from(value: MemberEvent) -> Self {
+  fn from(value: MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>) -> Self {
     Self(Either::Left(EventKind::Member(value)))
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<UserEvent>
-  for Event<T, D, O>
+impl<D, T> From<UserEvent> for Event<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
+  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   fn from(value: UserEvent) -> Self {
     Self(Either::Left(EventKind::User(value)))
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<QueryEvent<T, D, O>>
-  for Event<T, D, O>
+impl<D, T> From<QueryEvent<T, D>> for Event<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
+  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
-  fn from(value: QueryEvent<T, D, O>) -> Self {
+  fn from(value: QueryEvent<T, D>) -> Self {
     Self(Either::Left(EventKind::Query(value)))
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider>
-  From<(InternalQueryEventType, QueryEvent<T, D, O>)> for Event<T, D, O>
+impl<D, T> From<(InternalQueryEvent<T::Id>, QueryEvent<T, D>)> for Event<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
-  fn from(value: (InternalQueryEventType, QueryEvent<T, D, O>)) -> Self {
+  fn from(value: (InternalQueryEvent<T::Id>, QueryEvent<T, D>)) -> Self {
     Self(Either::Left(EventKind::InternalQuery {
-      ty: value.0,
+      kind: value.0,
       query: value.1,
     }))
   }
 }
 
-pub(crate) enum EventKind<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+pub(crate) enum EventKind<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
-  Member(MemberEvent),
+  Member(MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>),
   User(UserEvent),
-  Query(QueryEvent<T, D, O>),
+  Query(QueryEvent<T, D>),
   InternalQuery {
-    ty: InternalQueryEventType,
-    query: QueryEvent<T, D, O>,
+    kind: InternalQueryEvent<T::Id>,
+    query: QueryEvent<T, D>,
   },
 }
 
-impl<D, T, O> Clone for EventKind<T, D, O>
+impl<D, T> Clone for EventKind<T, D>
 where
-  D: MergeDelegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  O: ReconnectTimeoutOverrider,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn clone(&self) -> Self {
     match self {
       Self::Member(e) => Self::Member(e.clone()),
       Self::User(e) => Self::User(e.clone()),
       Self::Query(e) => Self::Query(e.clone()),
-      Self::InternalQuery { ty, query } => Self::InternalQuery {
-        ty: *ty,
+      Self::InternalQuery { kind, query } => Self::InternalQuery {
+        kind: kind.clone(),
         query: query.clone(),
       },
     }
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> EventKind<T, D, O>
+impl<D, T> EventKind<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
   #[inline]
-  pub const fn member(event: MemberEvent) -> Self {
+  pub const fn member(
+    event: MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> Self {
     Self::Member(event)
   }
 
@@ -174,40 +187,38 @@ where
   }
 
   #[inline]
-  pub const fn query(event: QueryEvent<T, D, O>) -> Self {
+  pub const fn query(event: QueryEvent<T, D>) -> Self {
     Self::Query(event)
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<MemberEvent>
-  for EventKind<T, D, O>
+impl<D, T> From<MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>
+  for EventKind<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
-  fn from(event: MemberEvent) -> Self {
+  fn from(event: MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>) -> Self {
     Self::Member(event)
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<UserEvent>
-  for EventKind<T, D, O>
+impl<D, T> From<UserEvent> for EventKind<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
   fn from(event: UserEvent) -> Self {
     Self::User(event)
   }
 }
 
-impl<D: MergeDelegate, T: Transport, O: ReconnectTimeoutOverrider> From<QueryEvent<T, D, O>>
-  for EventKind<T, D, O>
+impl<D, T> From<QueryEvent<T, D>> for EventKind<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
-  fn from(event: QueryEvent<T, D, O>) -> Self {
+  fn from(event: QueryEvent<T, D>) -> Self {
     Self::Query(event)
   }
 }
@@ -255,20 +266,20 @@ impl core::fmt::Display for MemberEventType {
 /// MemberEvent is the struct used for member related events
 /// Because Serf coalesces events, an event may contain multiple members.
 #[derive(Debug, Clone)]
-pub struct MemberEvent {
+pub struct MemberEvent<I, A> {
   pub(crate) ty: MemberEventType,
   // TODO: use an enum to avoid allocate when there is only one member
-  pub(crate) members: Vec<Arc<Member>>,
+  pub(crate) members: TinyVec<Arc<Member<I, A>>>,
 }
 
-impl core::fmt::Display for MemberEvent {
+impl<I, A> core::fmt::Display for MemberEvent<I, A> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "{}", self.ty)
   }
 }
 
-impl MemberEvent {
-  pub fn new(ty: MemberEventType, members: Vec<Arc<Member>>) -> Self {
+impl<I, A> MemberEvent<I, A> {
+  pub fn new(ty: MemberEventType, members: TinyVec<Arc<Member<I, A>>>) -> Self {
     Self { ty, members }
   }
 
@@ -276,13 +287,13 @@ impl MemberEvent {
     self.ty
   }
 
-  pub fn members(&self) -> &[Arc<Member>] {
+  pub fn members(&self) -> &[Arc<Member<I, A>>] {
     &self.members
   }
 }
 
-impl From<MemberEvent> for (MemberEventType, Vec<Arc<Member>>) {
-  fn from(event: MemberEvent) -> Self {
+impl<I, A> From<MemberEvent<I, A>> for (MemberEventType, TinyVec<Arc<Member<I, A>>>) {
+  fn from(event: MemberEvent<I, A>) -> Self {
     (event.ty, event.members)
   }
 }
@@ -305,79 +316,182 @@ impl core::fmt::Display for UserEvent {
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]
-pub(crate) enum InternalQueryEventType {
+pub enum InternalQueryEvent<I> {
   Ping,
-  Conflict,
+  Conflict(I),
+  #[cfg(feature = "encryption")]
   InstallKey,
+  #[cfg(feature = "encryption")]
   UseKey,
+  #[cfg(feature = "encryption")]
   RemoveKey,
+  #[cfg(feature = "encryption")]
   ListKey,
 }
 
-impl InternalQueryEventType {
-  pub(crate) const fn as_str(&self) -> &'static str {
+impl<I: Clone> Clone for InternalQueryEvent<I> {
+  fn clone(&self) -> Self {
     match self {
-      InternalQueryEventType::Ping => "ruserf-ping",
-      InternalQueryEventType::Conflict => "ruserf-conflict",
-      InternalQueryEventType::InstallKey => "ruserf-install-key",
-      InternalQueryEventType::UseKey => "ruserf-use-key",
-      InternalQueryEventType::RemoveKey => "ruserf-remove-key",
-      InternalQueryEventType::ListKey => "ruserf-list-keys",
+      Self::Ping => Self::Ping,
+      Self::Conflict(e) => Self::Conflict(e.clone()),
+      #[cfg(feature = "encryption")]
+      Self::InstallKey => Self::InstallKey,
+      #[cfg(feature = "encryption")]
+      Self::UseKey => Self::UseKey,
+      #[cfg(feature = "encryption")]
+      Self::RemoveKey => Self::RemoveKey,
+      #[cfg(feature = "encryption")]
+      Self::ListKey => Self::ListKey,
     }
   }
 }
 
-pub(crate) struct QueryContext<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+impl<I> InternalQueryEvent<I> {
+  #[inline]
+  pub(crate) const fn as_str(&self) -> &'static str {
+    match self {
+      Self::Ping => INTERNAL_PING,
+      Self::Conflict(_) => INTERNAL_CONFLICT,
+      #[cfg(feature = "encryption")]
+      Self::InstallKey => INTERNAL_INSTALL_KEY,
+      #[cfg(feature = "encryption")]
+      Self::UseKey => INTERNAL_USE_KEY,
+      #[cfg(feature = "encryption")]
+      Self::RemoveKey => INTERNAL_REMOVE_KEY,
+      #[cfg(feature = "encryption")]
+      Self::ListKey => INTERNAL_LIST_KEYS,
+    }
+  }
+}
+
+pub(crate) struct QueryContext<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
   pub(crate) query_timeout: Duration,
   pub(crate) span: Mutex<Option<Instant>>,
-  pub(crate) this: Serf<T, D, O>,
+  pub(crate) this: Serf<T, D>,
+}
+
+impl<T, D> QueryContext<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  fn check_response_size(&self, resp: &[u8]) -> Result<(), Error<T, D>> {
+    let resp_len = resp.len();
+    if resp_len > self.this.inner.opts.query_response_size_limit {
+      Err(Error::QueryResponseTooLarge {
+        limit: self.this.inner.opts.query_response_size_limit,
+        got: resp_len,
+      })
+    } else {
+      Ok(())
+    }
+  }
+
+  async fn respond_with_message_and_response(
+    &self,
+    relay_factor: u8,
+    raw: Bytes,
+    resp: QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> Result<(), Error<T, D>> {
+    self.check_response_size(raw.as_ref())?;
+
+    let mut mu = self.span.lock().await;
+
+    if let Some(span) = *mu {
+      // Ensure we aren't past our response deadline
+      if span.elapsed() > self.query_timeout {
+        return Err(Error::QueryTimeout);
+      }
+
+      // Send the response directly to the originator
+      self
+        .this
+        .inner
+        .memberlist
+        .send(resp.from.address(), raw)
+        .await?;
+
+      // Relay the response through up to relayFactor other nodes
+      self
+        .this
+        .relay_response(relay_factor, resp.from.cheap_clone(), resp)
+        .await?;
+
+      // Clear the deadline, responses sent
+      *mu = None;
+      Ok(())
+    } else {
+      Err(Error::QueryAlreadyResponsed)
+    }
+  }
+
+  async fn respond(
+    &self,
+    id: u32,
+    ltime: LamportTime,
+    relay_factor: u8,
+    from: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+    msg: Bytes,
+  ) -> Result<(), Error<T, D>> {
+    let resp = QueryResponseMessage {
+      ltime,
+      id,
+      from,
+      flags: 0,
+      payload: msg,
+    };
+    let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&resp);
+    let mut buf = BytesMut::with_capacity(expected_encoded_len + 1); // +1 for the message type byte
+    buf.put_u8(MessageType::QueryResponse as u8);
+    buf.resize(expected_encoded_len + 1, 0);
+    let len =
+      <D as TransformDelegate>::encode_message(&resp, &mut buf[1..]).map_err(Error::transform)?;
+    debug_assert_eq!(
+      len, expected_encoded_len,
+      "expected encoded len {expected_encoded_len} is not match the actual encoded len {len}"
+    );
+    self
+      .respond_with_message_and_response(relay_factor, buf.freeze(), resp)
+      .await
+  }
 }
 
 /// Query is the struct used by EventQuery type events
-pub struct QueryEvent<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+pub struct QueryEvent<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
   pub(crate) ltime: LamportTime,
   pub(crate) name: SmolStr,
   pub(crate) payload: Bytes,
 
-  pub(crate) ctx: Arc<QueryContext<T, D, O>>,
+  pub(crate) ctx: Arc<QueryContext<T, D>>,
   pub(crate) id: u32,
   /// source node
-  pub(crate) from: NodeId,
+  pub(crate) from: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
   /// Number of duplicate responses to relay back to sender
   pub(crate) relay_factor: u8,
 }
 
-impl<D, T, O> AsRef<QueryEvent<T, D, O>> for QueryEvent<T, D, O>
+impl<D, T> AsRef<QueryEvent<T, D>> for QueryEvent<T, D>
 where
-  D: MergeDelegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  O: ReconnectTimeoutOverrider,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
-  fn as_ref(&self) -> &QueryEvent<T, D, O> {
+  fn as_ref(&self) -> &QueryEvent<T, D> {
     self
   }
 }
 
-impl<D, T, O> Clone for QueryEvent<T, D, O>
+impl<D, T> Clone for QueryEvent<T, D>
 where
-  D: MergeDelegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  O: ReconnectTimeoutOverrider,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn clone(&self) -> Self {
     Self {
@@ -392,90 +506,60 @@ where
   }
 }
 
-impl<D, T, O> core::fmt::Display for QueryEvent<T, D, O>
+impl<D, T> core::fmt::Display for QueryEvent<T, D>
 where
-  D: MergeDelegate,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  O: ReconnectTimeoutOverrider,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "query")
   }
 }
 
-impl<D, T, O> QueryEvent<T, D, O>
+impl<D, T> QueryEvent<T, D>
 where
-  D: MergeDelegate,
-  O: ReconnectTimeoutOverrider,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
 {
-  pub(crate) fn create_response(&self, buf: Bytes) -> QueryResponseMessage {
+  pub(crate) fn create_response(
+    &self,
+    buf: Bytes,
+  ) -> QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> {
     QueryResponseMessage {
       ltime: self.ltime,
       id: self.id,
-      from: self.ctx.this.inner.memberlist.local_id().clone(),
+      from: self.ctx.this.inner.memberlist.advertise_node(),
       flags: 0,
       payload: buf,
     }
   }
 
-  pub(crate) fn check_response_size(&self, resp: &[u8]) -> Result<(), Error<T, D, O>> {
-    let resp_len = resp.len();
-    if resp_len > self.ctx.this.inner.opts.query_response_size_limit {
-      Err(Error::QueryResponseTooLarge {
-        limit: self.ctx.this.inner.opts.query_response_size_limit,
-        got: resp_len,
-      })
-    } else {
-      Ok(())
-    }
+  pub(crate) fn check_response_size(&self, resp: &[u8]) -> Result<(), Error<T, D>> {
+    self.ctx.check_response_size(resp)
   }
 
   pub(crate) async fn respond_with_message_and_response(
     &self,
-    raw: Message,
-    resp: QueryResponseMessage,
-  ) -> Result<(), Error<T, D, O>> {
-    self.check_response_size(raw.as_slice())?;
-
-    let mut mu = self.ctx.span.lock().await;
-
-    if let Some(span) = *mu {
-      // Ensure we aren't past our response deadline
-      if span.elapsed() > self.ctx.query_timeout {
-        return Err(Error::QueryTimeout);
-      }
-
-      // Send the response directly to the originator
-      self.ctx.this.inner.memberlist.send(&self.from, raw).await?;
-
-      // Relay the response through up to relayFactor other nodes
-      self
-        .ctx
-        .this
-        .relay_response(self.relay_factor, self.from.clone(), resp)
-        .await?;
-
-      // Clear the deadline, responses sent
-      *mu = None;
-      Ok(())
-    } else {
-      Err(Error::QueryAlreadyResponsed)
-    }
+    raw: Bytes,
+    resp: QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> Result<(), Error<T, D>> {
+    self
+      .ctx
+      .respond_with_message_and_response(self.relay_factor, raw, resp)
+      .await
   }
 
   /// Used to send a response to the user query
-  pub async fn respond(&self, msg: Bytes) -> Result<(), Error<T, D, O>> {
-    let resp = self.create_response(msg);
-
-    // Encode response
-    match encode_message(MessageType::QueryResponse, &resp) {
-      Ok(raw) => self.respond_with_message_and_response(raw, resp).await,
-      Err(e) => Err(Error::Encode(e)),
-    }
+  pub async fn respond(&self, msg: Bytes) -> Result<(), Error<T, D>> {
+    self
+      .ctx
+      .respond(
+        self.id,
+        self.ltime,
+        self.relay_factor,
+        self.from.cheap_clone(),
+        msg,
+      )
+      .await
   }
 }

@@ -1,40 +1,34 @@
-use std::{collections::HashMap, future::Future, sync::OnceLock};
+use std::{collections::HashMap, sync::OnceLock};
 
-use agnostic::Runtime;
 use async_channel::Receiver;
 use async_lock::RwLock;
-use showbiz_core::{
-  futures_util::{self, Stream, StreamExt},
-  security::SecretKey,
+use futures::StreamExt;
+use memberlist_core::{
+  bytes::{BufMut, BytesMut},
   tracing,
-  transport::Transport,
-  NodeId,
+  transport::{AddressResolver, Transport},
+  types::SecretKey,
+  CheapClone,
 };
 use smol_str::SmolStr;
 
-use crate::{
-  delegate::MergeDelegate,
-  error::Error,
-  event::InternalQueryEventType,
-  internal_query::NodeKeyResponse,
-  query::{NodeResponse, QueryResponse},
-  types::{decode_message, encode_message, MessageType},
-  ReconnectTimeoutOverrider, Serf,
+use crate::event::{
+  INTERNAL_INSTALL_KEY, INTERNAL_LIST_KEYS, INTERNAL_REMOVE_KEY, INTERNAL_USE_KEY,
 };
 
-/// KeyRequest is used to contain input parameters which get broadcasted to all
-/// nodes as part of a key query operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[repr(transparent)]
-pub(crate) struct KeyRequest {
-  pub(crate) key: Option<SecretKey>,
-}
+use super::{
+  delegate::{Delegate, TransformDelegate},
+  error::Error,
+  serf::{NodeResponse, QueryResponse},
+  types::{KeyRequestMessage, MessageType, SerfMessage},
+  Serf,
+};
 
 /// KeyResponse is used to relay a query for a list of all keys in use.
 #[derive(Default)]
-pub struct KeyResponse {
+pub struct KeyResponse<I> {
   /// Map of node id to response message
-  messages: HashMap<NodeId, SmolStr>,
+  messages: HashMap<I, SmolStr>,
   /// Total nodes memberlist knows of
   num_nodes: usize,
   /// Total responses received
@@ -60,23 +54,20 @@ pub struct KeyRequestOptions {
 
 /// `KeyManager` encapsulates all functionality within Serf for handling
 /// encryption keyring changes across a cluster.
-pub struct KeyManager<T: Transport, D: MergeDelegate, O: ReconnectTimeoutOverrider>
+pub struct KeyManager<T, D>
 where
-  <<T::Runtime as Runtime>::Sleep as Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as Stream>::Item: Send,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
 {
-  serf: OnceLock<Serf<T, D, O>>,
+  serf: OnceLock<Serf<T, D>>,
   /// The lock is used to serialize keys related handlers
   l: RwLock<()>,
 }
 
-impl<T, D, O> KeyManager<T, D, O>
+impl<T, D> KeyManager<T, D>
 where
-  D: MergeDelegate,
-  O: ReconnectTimeoutOverrider,
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as Runtime>::Sleep as std::future::Future>::Output: Send,
-  <<T::Runtime as Runtime>::Interval as futures_util::Stream>::Item: Send,
 {
   pub(crate) fn new() -> Self {
     Self {
@@ -85,7 +76,7 @@ where
     }
   }
 
-  pub(crate) fn store(&self, serf: Serf<T, D, O>) {
+  pub(crate) fn store(&self, serf: Serf<T, D>) {
     // No error handling here, because we never call this in parallel
     let _ = self.serf.set(serf);
   }
@@ -97,10 +88,10 @@ where
     &self,
     key: SecretKey,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<T, D, O>> {
+  ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
-      .handle_key_request(Some(key), InternalQueryEventType::InstallKey, opts)
+      .handle_key_request(Some(key), INTERNAL_INSTALL_KEY, opts)
       .await
   }
 
@@ -111,10 +102,10 @@ where
     &self,
     key: SecretKey,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<T, D, O>> {
+  ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
-      .handle_key_request(Some(key), InternalQueryEventType::UseKey, opts)
+      .handle_key_request(Some(key), INTERNAL_USE_KEY, opts)
       .await
   }
 
@@ -125,10 +116,10 @@ where
     &self,
     key: SecretKey,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<T, D, O>> {
+  ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
-      .handle_key_request(Some(key), InternalQueryEventType::RemoveKey, opts)
+      .handle_key_request(Some(key), INTERNAL_REMOVE_KEY, opts)
       .await
   }
 
@@ -137,30 +128,41 @@ where
   /// operators to ensure that there are no lingering keys installed on any agents.
   /// Since having multiple keys installed can cause performance penalties in some
   /// cases, it's important to verify this information and remove unneeded keys.
-  pub async fn list_keys(&self) -> Result<KeyResponse, Error<T, D, O>> {
+  pub async fn list_keys(&self) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.read().await;
     self
-      .handle_key_request(None, InternalQueryEventType::ListKey, None)
+      .handle_key_request(None, INTERNAL_LIST_KEYS, None)
       .await
   }
 
   pub(crate) async fn handle_key_request(
     &self,
     key: Option<SecretKey>,
-    ty: InternalQueryEventType,
+    ty: &str,
     opts: Option<KeyRequestOptions>,
-  ) -> Result<KeyResponse, Error<T, D, O>> {
+  ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
+    let kr = KeyRequestMessage { key };
+    let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&kr);
+    let mut buf = BytesMut::with_capacity(expected_encoded_len + 1); // +1 for the message type
+    buf.put_u8(MessageType::KeyRequest as u8);
+    buf.resize(expected_encoded_len + 1, 0);
     // Encode the query request
-    let req =
-      encode_message(MessageType::KeyRequest, &KeyRequest { key }).map_err(Error::Encode)?;
+    let len =
+      <D as TransformDelegate>::encode_message(&kr, &mut buf[1..]).map_err(Error::transform)?;
+
+    debug_assert_eq!(
+      len, expected_encoded_len,
+      "expected encoded len {} mismatch the actual encoded len {}",
+      expected_encoded_len, len
+    );
 
     let serf = self.serf.get().unwrap();
     let mut q_param = serf.default_query_param().await;
     if let Some(opts) = opts {
       q_param.relay_factor = opts.relay_factor;
     }
-    let qresp: QueryResponse = serf
-      .query(SmolStr::new(ty.as_str()), req.into(), Some(q_param))
+    let qresp: QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> = serf
+      .query(SmolStr::new(ty), buf.freeze(), Some(q_param))
       .await?;
 
     // Handle the response stream and populate the KeyResponse
@@ -169,8 +171,7 @@ where
     // Check the response for any reported failure conditions
     if resp.num_err > 0 {
       tracing::error!(
-        target = "ruserf",
-        "{}/{} nodes reported failure",
+        "ruserf: {}/{} nodes reported failure",
         resp.num_err,
         resp.num_nodes
       );
@@ -178,8 +179,7 @@ where
 
     if resp.num_resp != resp.num_nodes {
       tracing::error!(
-        target = "ruserf",
-        "{}/{} nodes responded success",
+        "ruserf: {}/{} nodes responded success",
         resp.num_resp,
         resp.num_nodes
       );
@@ -188,18 +188,26 @@ where
     Ok(resp)
   }
 
-  async fn stream_key_response(&self, mut ch: Receiver<NodeResponse>) -> KeyResponse {
+  async fn stream_key_response(
+    &self,
+    ch: Receiver<NodeResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+  ) -> KeyResponse<T::Id> {
     let mut resp = KeyResponse {
       num_nodes: self.serf.get().unwrap().num_nodes().await,
-      ..Default::default()
+      messages: HashMap::new(),
+      num_resp: 0,
+      num_err: 0,
+      keys: HashMap::new(),
+      primary_keys: HashMap::new(),
     };
+    futures::pin_mut!(ch);
     while let Some(r) = ch.next().await {
       resp.num_resp += 1;
 
       // Decode the response
       if !r.payload.is_empty() || r.payload[0] != MessageType::KeyResponse as u8 {
         resp.messages.insert(
-          r.from.clone(),
+          r.from.id().cheap_clone(),
           SmolStr::new(format!(
             "Invalid key query response type: {:?}",
             r.payload.as_ref()
@@ -213,11 +221,28 @@ where
         continue;
       }
 
-      let node_response = match decode_message::<NodeKeyResponse>(&r.payload[1..]) {
-        Ok(nr) => nr,
+      let node_response = match <D as TransformDelegate>::decode_message(&r.payload[1..]) {
+        Ok((_, nr)) => match nr {
+          SerfMessage::KeyResponse(kr) => kr,
+          msg => {
+            resp.messages.insert(
+              r.from.id().cheap_clone(),
+              SmolStr::new(format!(
+                "Invalid key query response type: {:?}",
+                msg.as_str()
+              )),
+            );
+            resp.num_err += 1;
+
+            if resp.num_resp == resp.num_nodes {
+              return resp;
+            }
+            continue;
+          }
+        },
         Err(e) => {
           resp.messages.insert(
-            r.from.clone(),
+            r.from.id().cheap_clone(),
             SmolStr::new(format!("Failed to decode key query response: {:?}", e)),
           );
           resp.num_err += 1;
@@ -230,11 +255,15 @@ where
       };
 
       if !node_response.result {
-        resp.messages.insert(r.from.clone(), node_response.msg);
+        resp
+          .messages
+          .insert(r.from.id().cheap_clone(), node_response.msg);
         resp.num_err += 1;
       } else if node_response.result && node_response.msg.is_empty() {
-        tracing::warn!(target = "ruserf", "{}", node_response.msg);
-        resp.messages.insert(r.from.clone(), node_response.msg);
+        tracing::warn!("ruserf: {}", node_response.msg);
+        resp
+          .messages
+          .insert(r.from.id().cheap_clone(), node_response.msg);
       }
 
       // Currently only used for key list queries, this adds keys to a counter
