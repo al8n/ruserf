@@ -20,7 +20,7 @@ pub trait TransformDelegate: Send + Sync + 'static {
 
   fn encode_filter(filter: &Filter<Self::Id, Self::Address>) -> Result<Bytes, Self::Error>;
 
-  fn decode_filter(bytes: &[u8]) -> Result<Filter<Self::Id, Self::Address>, Self::Error>;
+  fn decode_filter(bytes: &[u8]) -> Result<(usize, Filter<Self::Id, Self::Address>), Self::Error>;
 
   fn node_encoded_len(node: &Node<Self::Id, Self::Address>) -> usize;
 
@@ -50,13 +50,13 @@ pub trait TransformDelegate: Send + Sync + 'static {
 
   fn encode_coordinate(coordinate: &Coordinate, dst: &mut [u8]) -> Result<usize, Self::Error>;
 
-  fn decode_coordinate(bytes: &[u8]) -> Result<Coordinate, Self::Error>;
+  fn decode_coordinate(bytes: &[u8]) -> Result<(usize, Coordinate), Self::Error>;
 
   fn tags_encoded_len(tags: &Tags) -> usize;
 
   fn encode_tags(tags: &Tags, dst: &mut [u8]) -> Result<usize, Self::Error>;
 
-  fn decode_tags(bytes: &[u8]) -> Result<Tags, Self::Error>;
+  fn decode_tags(bytes: &[u8]) -> Result<(usize, Tags), Self::Error>;
 
   fn message_encoded_len(msg: impl AsMessageRef<Self::Id, Self::Address>) -> usize;
 
@@ -170,7 +170,7 @@ where
     todo!()
   }
 
-  fn decode_filter(bytes: &[u8]) -> Result<Filter<Self::Id, Self::Address>, Self::Error> {
+  fn decode_filter(bytes: &[u8]) -> Result<(usize, Filter<Self::Id, Self::Address>), Self::Error> {
     todo!()
   }
 
@@ -223,7 +223,7 @@ where
     todo!()
   }
 
-  fn decode_coordinate(bytes: &[u8]) -> Result<Coordinate, Self::Error> {
+  fn decode_coordinate(bytes: &[u8]) -> Result<(usize, Coordinate), Self::Error> {
     todo!()
   }
 
@@ -235,7 +235,7 @@ where
     todo!()
   }
 
-  fn decode_tags(bytes: &[u8]) -> Result<Tags, Self::Error> {
+  fn decode_tags(bytes: &[u8]) -> Result<(usize, Tags), Self::Error> {
     todo!()
   }
 

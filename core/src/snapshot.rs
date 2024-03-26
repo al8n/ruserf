@@ -258,7 +258,7 @@ pub(crate) fn open_and_replay_snapshot<
       SnapshotRecord::<I, A>::LEAVE => {
         // Ignore a leave if we plan on re-joining
         if rejoin_after_leave {
-          tracing::info!(target = "ruserf", "ignoring previous leave in snapshot");
+          tracing::info!("ruserf: ignoring previous leave in snapshot");
           continue;
         }
         alive_nodes.clear();
@@ -270,11 +270,7 @@ pub(crate) fn open_and_replay_snapshot<
         continue;
       }
       v => {
-        tracing::warn!(
-          target = "ruserf",
-          "unrecognized snapshot record {v}: {:?}",
-          buf
-        );
+        tracing::warn!("ruserf: unrecognized snapshot record {v}: {:?}", buf);
       }
     }
   }
@@ -475,7 +471,7 @@ where
               flush_event!(ev)
             },
             Err(e) => {
-              tracing::error!(target = "ruserf", err=%e, "tee stream: fail to receive from inbound channel");
+              tracing::error!(err=%e, "ruserf: tee stream: fail to receive from inbound channel");
               return;
             }
           }
@@ -496,7 +492,7 @@ where
               flush_event!(ev)
             },
             Err(e) => {
-              tracing::error!(target = "ruserf", err=%e, "tee stream: fail to receive from inbound channel");
+              tracing::error!(err=%e, "ruserf: tee stream: fail to receive from inbound channel");
               return;
             }
           }
@@ -674,20 +670,14 @@ where
     l: SnapshotRecord<'_, T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
   ) {
     if let Err(e) = self.append_line(l) {
-      tracing::error!(target = "ruserf", err = %e, "failed to update snapshot");
+      tracing::error!(err = %e, "ruserf: failed to update snapshot");
       if self.last_attempted_compaction.elapsed() > SNAPSHOT_ERROR_RECOVERY_INTERVAL {
         self.last_attempted_compaction = Instant::now();
-        tracing::info!(
-          target = "ruserf",
-          "attempting compaction to recover from error..."
-        );
+        tracing::info!("ruserf: attempting compaction to recover from error...");
         if let Err(e) = self.compact() {
-          tracing::error!(target = "ruserf", err = %e, "compaction failed, will reattempt after {}s", SNAPSHOT_ERROR_RECOVERY_INTERVAL.as_secs());
+          tracing::error!(err = %e, "ruserf: compaction failed, will reattempt after {}s", SNAPSHOT_ERROR_RECOVERY_INTERVAL.as_secs());
         } else {
-          tracing::info!(
-            target = "ruserf",
-            "finished compaction, successfully recovered from error state"
-          );
+          tracing::info!("ruserf: finished compaction, successfully recovered from error state");
         }
       }
     }
@@ -807,7 +797,6 @@ where
       .create(true)
       .append(true)
       .read(true)
-      .write(true)
       .mode(0o755)
       .open(&self.path)
       .map_err(SnapshotError::Open)?;
@@ -882,7 +871,7 @@ where
         SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::LEAVE => {
           // Ignore a leave if we plan on re-joining
           if self.rejoin_after_leave {
-            tracing::info!(target = "ruserf", "ignoring previous leave in snapshot");
+            tracing::info!("ruserf: ignoring previous leave in snapshot");
             continue;
           }
           self.alive_nodes.clear();
@@ -894,11 +883,7 @@ where
           continue;
         }
         v => {
-          tracing::warn!(
-            target = "ruserf",
-            "unrecognized snapshot record {v}: {:?}",
-            buf
-          );
+          tracing::warn!("ruserf: unrecognized snapshot record {v}: {:?}", buf);
         }
       }
     }

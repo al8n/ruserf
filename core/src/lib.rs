@@ -10,7 +10,7 @@ pub(crate) mod broadcast;
 
 mod coalesce;
 
-///
+/// Coordinate.
 pub mod coordinate;
 
 pub mod event;
@@ -41,6 +41,3 @@ pub use snapshot::*;
 fn invalid_data_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> std::io::Error {
   std::io::Error::new(std::io::ErrorKind::InvalidData, e)
 }
-
-#[test]
-fn test_() {}

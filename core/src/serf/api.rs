@@ -1,35 +1,24 @@
-use std::{
-  sync::atomic::{AtomicUsize, Ordering},
-  time::Duration,
-};
+use std::sync::atomic::Ordering;
 
-use api::internal_query::SerfQueries;
 use futures::FutureExt;
 use memberlist_core::{
   agnostic_lite::RuntimeLite,
   bytes::{BufMut, Bytes, BytesMut},
-  delegate::EventDelegate,
   tracing,
   transport::{MaybeResolvedAddress, Node},
-  types::{Meta, SmallVec, TinyVec},
+  types::{Meta, SmallVec},
   CheapClone,
 };
 use smol_str::SmolStr;
 
 use crate::{
-  coalesce::{coalesced_event, MemberEventCoalescer, UserEventCoalescer},
-  coordinate::{Coordinate, CoordinateOptions},
   delegate::TransformDelegate,
   error::{Error, JoinError},
   event::InternalQueryEvent,
-  open_and_replay_snapshot,
   types::{
     LeaveMessage, Member, MessageType, QueryFlag, QueryMessage, SerfMessage, Tags, UserEventMessage,
   },
-  Snapshot,
 };
-
-use self::base::{QueueChecker, Reaper, Reconnector};
 
 use super::*;
 
@@ -39,258 +28,12 @@ where
   T: Transport,
 {
   pub async fn with_event_sender_and_delegate(
+    transport: T,
     ev: async_channel::Sender<Event<T, D>>,
     delegate: D,
     opts: Options,
   ) -> Result<Self, Error<T, D>> {
-    Self::new_in(Some(ev), Some(delegate), opts).await
-  }
-
-  async fn new_in(
-    ev: Option<async_channel::Sender<Event<T, D>>>,
-    delegate: Option<D>,
-    opts: Options,
-  ) -> Result<Self, Error<T, D>> {
-    if opts.max_user_event_size > USER_EVENT_SIZE_LIMIT {
-      return Err(Error::UserEventLimitTooLarge(USER_EVENT_SIZE_LIMIT));
-    }
-
-    // Check that the meta data length is okay
-    if let Some(tags) = opts.tags.load().as_ref() {
-      let len = <D as TransformDelegate>::tags_encoded_len(tags);
-      if len > Meta::MAX_SIZE {
-        return Err(Error::TagsTooLarge(len));
-      }
-    }
-
-    let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
-
-    let event_tx = ev.map(|mut event_tx| {
-      // Check if serf member event coalescing is enabled
-      if opts.coalesce_period > Duration::ZERO && opts.quiescent_period > Duration::ZERO {
-        let c = MemberEventCoalescer::new();
-
-        event_tx = coalesced_event(
-          event_tx,
-          shutdown_rx.clone(),
-          opts.coalesce_period,
-          opts.quiescent_period,
-          c,
-        );
-      }
-
-      // Check if user event coalescing is enabled
-      if opts.user_coalesce_period > Duration::ZERO && opts.user_quiescent_period > Duration::ZERO {
-        let c = UserEventCoalescer::new();
-        event_tx = coalesced_event(
-          event_tx,
-          shutdown_rx.clone(),
-          opts.user_coalesce_period,
-          opts.user_quiescent_period,
-          c,
-        );
-      }
-
-      // Listen for internal Serf queries. This is setup before the snapshotter, since
-      // we want to capture the query-time, but the internal listener does not passthrough
-      // the queries
-      SerfQueries::new(event_tx, shutdown_rx.clone())
-    });
-
-    let clock = LamportClock::new();
-    let event_clock = LamportClock::new();
-    let query_clock = LamportClock::new();
-    let mut event_min_time = LamportTime::ZERO;
-    let mut query_min_time = LamportTime::ZERO;
-
-    // Try access the snapshot
-    let (old_clock, old_event_clock, old_query_clock, event_tx, alive_nodes, handle) =
-      if let Some(sp) = opts.snapshot_path.as_ref() {
-        let rs = open_and_replay_snapshot(sp, opts.rejoin_after_leave)?;
-        let old_clock = rs.last_clock;
-        let old_event_clock = rs.last_event_clock;
-        let old_query_clock = rs.last_query_clock;
-        let (event_tx, alive_nodes, handle) = Snapshot::from_replay_result(
-          rs,
-          SNAPSHOT_SIZE_LIMIT,
-          opts.rejoin_after_leave,
-          clock.clone(),
-          event_tx,
-          shutdown_rx.clone(),
-          #[cfg(feature = "metrics")]
-          opts.memberlist_options.metric_labels().clone(),
-        )?;
-        event_min_time = old_event_clock + LamportTime::new(1);
-        query_min_time = old_query_clock + LamportTime::new(1);
-        (
-          old_clock,
-          old_event_clock,
-          old_query_clock,
-          Some(event_tx),
-          alive_nodes,
-          Some(handle),
-        )
-      } else {
-        (
-          LamportTime::new(0),
-          LamportTime::new(0),
-          LamportTime::new(0),
-          event_tx,
-          TinyVec::new(),
-          None,
-        )
-      };
-
-    // Set up network coordinate client.
-    let coord = (!opts.disable_coordinates).then_some({
-      CoordinateClient::with_options(CoordinateOptions {
-        #[cfg(feature = "metrics")]
-        metric_labels: opts.memberlist_options.metric_labels().clone(),
-        ..Default::default()
-      })
-    });
-    let members = Arc::new(RwLock::new(Members::default()));
-    let num_members = NumMembers::from(members.clone());
-    // Setup the various broadcast queues, which we use to send our own
-    // custom broadcasts along the gossip channel.
-    let broadcasts = Arc::new(TransmitLimitedQueue::<SerfBroadcast, _>::new(
-      opts.memberlist_options.retransmit_mult(),
-      num_members.clone(),
-    ));
-    let event_broadcasts = Arc::new(TransmitLimitedQueue::<SerfBroadcast, _>::new(
-      opts.memberlist_options.retransmit_mult(),
-      num_members.clone(),
-    ));
-    let query_broadcasts = Arc::new(TransmitLimitedQueue::<SerfBroadcast, _>::new(
-      opts.memberlist_options.retransmit_mult(),
-      num_members.clone(),
-    ));
-
-    // Create a buffer for events and queries
-    let event_buffer = Vec::with_capacity(opts.event_buffer_size);
-    let query_buffer = Vec::with_capacity(opts.query_buffer_size);
-
-    // Ensure our lamport clock is at least 1, so that the default
-    // join LTime of 0 does not cause issues
-    clock.increment();
-    event_clock.increment();
-    query_clock.increment();
-
-    // Restore the clock from snap if we have one
-    clock.witness(old_clock);
-    event_clock.witness(old_event_clock);
-    query_clock.witness(old_query_clock);
-
-    // Create the underlying memberlist that will manage membership
-    // and failure detection for the Serf instance.
-    let memberlist = Memberlist::with_delegate(
-      t,
-      SerfDelegate::new(delegate),
-      opts.memberlist_options.clone(),
-    )
-    .await?;
-
-    let c = SerfCore {
-      clock,
-      event_clock,
-      query_clock,
-      broadcasts,
-      memberlist,
-      members,
-      event_broadcasts,
-      event_join_ignore: AtomicBool::new(false),
-      event_core: RwLock::new(EventCore {
-        min_time: event_min_time,
-        buffer: event_buffer,
-      }),
-      query_broadcasts,
-      query_core: Arc::new(RwLock::new(QueryCore {
-        min_time: query_min_time,
-        responses: HashMap::new(),
-        buffer: query_buffer,
-      })),
-      opts,
-      state: parking_lot::Mutex::new(SerfState::Alive),
-      join_lock: Mutex::new(()),
-      snapshot: handle,
-      #[cfg(feature = "encryption")]
-      key_manager: crate::key_manager::KeyManager::new(),
-      shutdown_tx,
-      shutdown_rx: shutdown_rx.clone(),
-      coord_core: coord.map(|cc| {
-        Arc::new(CoordCore {
-          client: cc,
-          cache: parking_lot::RwLock::new(HashMap::new()),
-        })
-      }),
-      event_tx,
-    };
-    let this = Serf { inner: Arc::new(c) };
-    // update delegate
-    let that = this.clone();
-    let memberlist_delegate = this.inner.memberlist.delegate().unwrap();
-    memberlist_delegate.store(that);
-    let local_node = this.inner.memberlist.local_state().await;
-    memberlist_delegate.notify_join(local_node).await;
-
-    // update key manager
-    let that = this.clone();
-    this.inner.key_manager.store(that);
-
-    // Start the background tasks. See the documentation above each method
-    // for more information on their role.
-    Reaper {
-      coord_core: this.inner.coord_core.clone(),
-      memberlist: this.inner.memberlist.clone(),
-      members: this.inner.members.clone(),
-      event_tx: this.inner.event_tx.clone(),
-      shutdown_rx: shutdown_rx.clone(),
-      reap_interval: this.inner.opts.reap_interval,
-      reconnect_timeout: this.inner.opts.reconnect_timeout,
-    }
-    .spawn();
-
-    Reconnector {
-      members: this.inner.members.clone(),
-      memberlist: this.inner.memberlist.clone(),
-      shutdown_rx: shutdown_rx.clone(),
-      reconnect_interval: this.inner.opts.reconnect_interval,
-    }
-    .spawn();
-
-    QueueChecker {
-      name: "Intent",
-      queue: this.inner.broadcasts.clone(),
-      members: this.inner.members.clone(),
-      opts: this.inner.opts.queue_opts(),
-      shutdown_rx: shutdown_rx.clone(),
-    }
-    .spawn::<T::Runtime>();
-
-    QueueChecker {
-      name: "Event",
-      queue: this.inner.event_broadcasts.clone(),
-      members: this.inner.members.clone(),
-      opts: this.inner.opts.queue_opts(),
-      shutdown_rx: shutdown_rx.clone(),
-    }
-    .spawn::<T::Runtime>();
-
-    QueueChecker {
-      name: "Query",
-      queue: this.inner.query_broadcasts.clone(),
-      members: this.inner.members.clone(),
-      opts: this.inner.opts.queue_opts(),
-      shutdown_rx: shutdown_rx.clone(),
-    }
-    .spawn::<T::Runtime>();
-
-    // Attempt to re-join the cluster if we have known nodes
-    if !alive_nodes.is_empty() {
-      let showbiz = this.inner.memberlist.clone();
-      Self::handle_rejoin(showbiz, alive_nodes);
-    }
-    Ok(this)
+    Self::new_in(transport, Some(ev), Some(delegate), opts).await
   }
 
   /// A predicate that determines whether or not encryption
@@ -689,7 +432,7 @@ where
           // We got a response, so we are done
         }
         _ = <T::Runtime as RuntimeLite>::sleep(self.inner.opts.broadcast_timeout).fuse() => {
-          tracing::warn!(target = "ruserf", "timeout while waiting for graceful leave");
+          tracing::warn!("ruserf: timeout while waiting for graceful leave");
         }
       }
     }
@@ -701,11 +444,7 @@ where
       .leave(self.inner.opts.broadcast_timeout)
       .await
     {
-      tracing::warn!(
-        target = "ruserf",
-        "timeout waiting for leave broadcast: {}",
-        e
-      );
+      tracing::warn!("ruserf: timeout waiting for leave broadcast: {}", e);
     }
 
     // Wait for the leave to propagate through the cluster. The broadcast

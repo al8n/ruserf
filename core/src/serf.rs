@@ -1,9 +1,6 @@
 use std::{
   collections::HashMap,
-  sync::{
-    atomic::{AtomicBool, AtomicUsize},
-    Arc,
-  },
+  sync::{atomic::AtomicBool, Arc},
 };
 
 use async_lock::{Mutex, RwLock};
@@ -134,19 +131,19 @@ where
   pub(crate) event_clock: LamportClock,
   pub(crate) query_clock: LamportClock,
 
-  pub(crate) broadcasts: Arc<
+  broadcasts: Arc<
     TransmitLimitedQueue<
       SerfBroadcast,
       NumMembers<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     >,
   >,
-  pub(crate) event_broadcasts: Arc<
+  event_broadcasts: Arc<
     TransmitLimitedQueue<
       SerfBroadcast,
       NumMembers<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     >,
   >,
-  pub(crate) query_broadcasts: Arc<
+  query_broadcasts: Arc<
     TransmitLimitedQueue<
       SerfBroadcast,
       NumMembers<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,

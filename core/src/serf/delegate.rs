@@ -106,7 +106,7 @@ where
             role_bytes.try_into().unwrap()
           }
           Err(e) => {
-            tracing::error!(target = "ruserf", err=%e, "failed to encode tags");
+            tracing::error!(err=%e, "ruserf: failed to encode tags");
             Meta::empty()
           }
         }
@@ -132,114 +132,90 @@ where
         MessageType::Leave => match <D as TransformDelegate>::decode_message(&msg[1..]) {
           Ok((_, l)) => {
             if let SerfMessage::Leave(l) = &l {
-              tracing::debug!(target = "ruserf", "leave message",);
+              tracing::debug!("ruserf: leave message",);
               rebroadcast = this.handle_node_leave_intent(l).await.then(|| msg.clone());
             } else {
-              tracing::warn!(
-                target = "ruserf",
-                "receive unexpected message: {}",
-                l.as_str()
-              );
+              tracing::warn!("ruserf: receive unexpected message: {}", l.as_str());
             }
           }
           Err(e) => {
-            tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
+            tracing::warn!(err=%e, "ruserf: failed to decode message");
           }
         },
         MessageType::Join => match <D as TransformDelegate>::decode_message(&msg[1..]) {
           Ok((_, j)) => {
             if let SerfMessage::Join(j) = &j {
-              tracing::debug!(target = "ruserf", "join message",);
+              tracing::debug!("ruserf: join message",);
               rebroadcast = this.handle_node_join_intent(j).await.then(|| msg.clone());
             } else {
-              tracing::warn!(
-                target = "ruserf",
-                "receive unexpected message: {}",
-                j.as_str()
-              );
+              tracing::warn!("ruserf: receive unexpected message: {}", j.as_str());
             }
           }
           Err(e) => {
-            tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
+            tracing::warn!(err=%e, "ruserf: failed to decode message");
           }
         },
         MessageType::UserEvent => match <D as TransformDelegate>::decode_message(&msg[1..]) {
           Ok((_, ue)) => {
             if let SerfMessage::UserEvent(ue) = ue {
-              tracing::debug!(target = "ruserf", "user event message",);
+              tracing::debug!("ruserf: user event message",);
               rebroadcast = this.handle_user_event(ue).await.then(|| msg.clone());
               rebroadcast_queue = &this.inner.event_broadcasts;
             } else {
-              tracing::warn!(
-                target = "ruserf",
-                "receive unexpected message: {}",
-                ue.as_str()
-              );
+              tracing::warn!("ruserf: receive unexpected message: {}", ue.as_str());
             }
           }
           Err(e) => {
-            tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
+            tracing::warn!(err=%e, "ruserf: failed to decode message");
           }
         },
         MessageType::Query => match <D as TransformDelegate>::decode_message(&msg[1..]) {
           Ok((_, q)) => {
             if let SerfMessage::Query(q) = q {
-              tracing::debug!(target = "ruserf", "query message",);
+              tracing::debug!("ruserf: query message",);
               rebroadcast = this.handle_query(q, None).await.then(|| msg.clone());
               rebroadcast_queue = &this.inner.query_broadcasts;
             } else {
-              tracing::warn!(
-                target = "ruserf",
-                "receive unexpected message: {}",
-                q.as_str()
-              );
+              tracing::warn!("ruserf: receive unexpected message: {}", q.as_str());
             }
           }
           Err(e) => {
-            tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
+            tracing::warn!(err=%e, "ruserf: failed to decode message");
           }
         },
         MessageType::QueryResponse => match <D as TransformDelegate>::decode_message(&msg[1..]) {
           Ok((_, qr)) => {
             if let SerfMessage::QueryResponse(qr) = qr {
-              tracing::debug!(target = "ruserf", "query response message",);
+              tracing::debug!("ruserf: query response message",);
               this.handle_query_response(qr).await;
             } else {
-              tracing::warn!(
-                target = "ruserf",
-                "receive unexpected message: {}",
-                qr.as_str()
-              );
+              tracing::warn!("ruserf: receive unexpected message: {}", qr.as_str());
             }
           }
           Err(e) => {
-            tracing::warn!(target = "ruserf", err=%e, "failed to decode message");
+            tracing::warn!(err=%e, "ruserf: failed to decode message");
           }
         },
         MessageType::Relay => match <D as TransformDelegate>::decode_node(&msg[1..]) {
           Ok((consumed, n)) => {
-            tracing::debug!(target = "ruserf", "relay message",);
-            tracing::debug!(target = "ruserf", "relaying response to node: {}", n);
+            tracing::debug!("ruserf: relay message",);
+            tracing::debug!("ruserf: relaying response to node: {}", n);
             // + 1 for the message type byte
             msg.advance(consumed + 1);
             if let Err(e) = this.inner.memberlist.send(n.address(), msg.clone()).await {
-              tracing::error!(target = "ruserf", err=%e, "failed to forwarding message to {}", n);
+              tracing::error!(err=%e, "ruserf: failed to forwarding message to {}", n);
             }
           }
           Err(e) => {
-            tracing::warn!(target = "ruserf", err=%e, "failed to decode relay destination");
+            tracing::warn!(err=%e, "ruserf: failed to decode relay destination");
           }
         },
         ty => {
-          tracing::warn!(
-            target = "ruserf",
-            "receive unexpected message: {}",
-            ty.as_str()
-          );
+          tracing::warn!("ruserf: receive unexpected message: {}", ty.as_str());
         }
       },
       Err(e) => {
-        tracing::warn!(target = "ruserf", err=%e, "receive unknown message type");
+        tracing::warn!(err=%e, "ruserf: receive unknown message type");
       }
     }
 
@@ -342,7 +318,7 @@ where
         buf.freeze()
       }
       Err(e) => {
-        tracing::error!(target = "ruserf", err=%e, "failed to encode local state");
+        tracing::error!(err=%e, "ruserf: failed to encode local state");
         Bytes::new()
       }
     }
@@ -350,17 +326,13 @@ where
 
   async fn merge_remote_state(&self, buf: Bytes, is_join: bool) {
     if buf.is_empty() {
-      tracing::error!(target = "ruserf", "remote state is zero bytes");
+      tracing::error!("ruserf: remote state is zero bytes");
       return;
     }
 
     // Check the message type
     let Ok(ty) = MessageType::try_from(buf[0]) else {
-      tracing::error!(
-        target = "ruserf",
-        "remote state has bad type prefix {}",
-        buf[0]
-      );
+      tracing::error!("ruserf: remote state has bad type prefix {}", buf[0]);
       return;
     };
 
@@ -369,7 +341,7 @@ where
       MessageType::PushPull => {
         match <D as TransformDelegate>::decode_message(&buf[1..]) {
           Err(e) => {
-            tracing::error!(target = "ruserf", err=%e, "failed to decode remote state");
+            tracing::error!(err=%e, "ruserf: failed to decode remote state");
           }
           Ok((_, msg)) => {
             match msg {
@@ -409,8 +381,7 @@ where
                       .await;
                   } else {
                     tracing::error!(
-                      target = "ruserf",
-                      "{} is in left members, but cannot find the lamport time for it in status",
+                      "ruserf: {} is in left members, but cannot find the lamport time for it in status",
                       node
                     );
                   }
@@ -460,23 +431,14 @@ where
                 }
               }
               msg => {
-                tracing::error!(
-                  target = "ruserf",
-                  "remote state has bad type {}",
-                  msg.as_str()
-                );
-                return;
+                tracing::error!("ruserf: remote state has bad type {}", msg.as_str());
               }
             }
           }
         }
       }
       ty => {
-        tracing::error!(
-          target = "ruserf",
-          "remote state has bad type {}",
-          ty.as_str()
-        );
+        tracing::error!("ruserf: remote state has bad type {}", ty.as_str());
       }
     }
   }
@@ -592,7 +554,7 @@ where
       if let Err(e) =
         <D as TransformDelegate>::encode_coordinate(&c.client.get_coordinate(), &mut buf[1..])
       {
-        tracing::error!(target = "ruserf", err=%e, "failed to encode coordinate");
+        tracing::error!(err=%e, "ruserf: failed to encode coordinate");
       }
       buf.into()
     } else {
@@ -612,60 +574,54 @@ where
 
     let this = self.this();
 
-    match this.inner.coord_core {
-      Some(ref c) => {
-        // Verify ping version in the header.
-        if payload[0] != PING_VERSION {
-          tracing::error!(
-            target = "ruserf",
-            "unsupported ping version: {}",
-            payload[0]
-          );
+    if let Some(ref c) = this.inner.coord_core {
+      // Verify ping version in the header.
+      if payload[0] != PING_VERSION {
+        tracing::error!("ruserf: unsupported ping version: {}", payload[0]);
+        return;
+      }
+
+      // Process the remainder of the message as a coordinate.
+      let coord = match <D as TransformDelegate>::decode_coordinate(&payload[1..]) {
+        Ok((readed, c)) => {
+          tracing::trace!(read=%readed, coordinate=?c, "ruserf: decode coordinate successfully");
+          c
+        }
+        Err(e) => {
+          tracing::error!(err=%e, "ruserf: failed to decode coordinate from ping");
           return;
         }
+      };
 
-        // Process the remainder of the message as a coordinate.
-        let coord = match <D as TransformDelegate>::decode_coordinate(&payload[1..]) {
-          Ok(c) => c,
-          Err(e) => {
-            tracing::error!(target = "ruserf", err=%e, "failed to decode coordinate from ping");
-            return;
+      // Apply the update.
+      let before = c.client.get_coordinate();
+      match c.client.update(node.id(), &before, rtt) {
+        Ok(after) => {
+          // TODO: metrics
+          {
+            // Publish some metrics to give us an idea of how much we are
+            // adjusting each time we update.
+            let _d = before.distance_to(&after).as_secs_f64() * 1.0e3;
           }
-        };
 
-        // Apply the update.
-        let before = c.client.get_coordinate();
-        match c.client.update(node.id(), &before, rtt) {
-          Ok(after) => {
-            // TODO: metrics
-            {
-              // Publish some metrics to give us an idea of how much we are
-              // adjusting each time we update.
-              let _d = before.distance_to(&after).as_secs_f64() * 1.0e3;
-            }
-
-            // Cache the coordinate for the other node, and add our own
-            // to the cache as well since it just got updated. This lets
-            // users call GetCachedCoordinate with our node name, which is
-            // more friendly.
-            let mut cache = c.cache.write();
-            cache.insert(node.id().cheap_clone(), coord);
-            cache
-              .entry(this.inner.memberlist.local_id().cheap_clone())
-              .and_modify(|x| {
-                *x = c.client.get_coordinate();
-              })
-              .or_insert_with(|| c.client.get_coordinate());
-            return;
-          }
-          Err(e) => {
-            // TODO: metrics
-            tracing::error!(target = "ruserf", err=%e, "rejected coordinate from {}", node.id());
-            return;
-          }
+          // Cache the coordinate for the other node, and add our own
+          // to the cache as well since it just got updated. This lets
+          // users call GetCachedCoordinate with our node name, which is
+          // more friendly.
+          let mut cache = c.cache.write();
+          cache.insert(node.id().cheap_clone(), coord);
+          cache
+            .entry(this.inner.memberlist.local_id().cheap_clone())
+            .and_modify(|x| {
+              *x = c.client.get_coordinate();
+            })
+            .or_insert_with(|| c.client.get_coordinate());
+        }
+        Err(e) => {
+          // TODO: metrics
+          tracing::error!(err=%e, "ruserf: rejected coordinate from {}", node.id());
         }
       }
-      None => {}
     }
   }
 
@@ -705,7 +661,12 @@ where
 
   Ok(Member {
     node: node.node(),
-    tags: <D as TransformDelegate>::decode_tags(node.meta()).map_err(Error::transform)?,
+    tags: <D as TransformDelegate>::decode_tags(node.meta())
+      .map_err(Error::transform)
+      .map(|(read, tags)| {
+        tracing::trace!(read=%read, tags=?tags, "ruserf: decode tags successfully");
+        tags
+      })?,
     status: Atomic::new(status),
     protocol_version: ProtocolVersion::V0,
     delegate_version: DelegateVersion::V0,

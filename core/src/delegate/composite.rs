@@ -143,7 +143,7 @@ where
     T::encode_filter(filter)
   }
 
-  fn decode_filter(bytes: &[u8]) -> Result<Filter<Self::Id, Self::Address>, Self::Error> {
+  fn decode_filter(bytes: &[u8]) -> Result<(usize, Filter<Self::Id, Self::Address>), Self::Error> {
     T::decode_filter(bytes)
   }
 
@@ -196,7 +196,7 @@ where
     T::encode_coordinate(coordinate, dst)
   }
 
-  fn decode_coordinate(bytes: &[u8]) -> Result<Coordinate, Self::Error> {
+  fn decode_coordinate(bytes: &[u8]) -> Result<(usize, Coordinate), Self::Error> {
     T::decode_coordinate(bytes)
   }
 
@@ -208,7 +208,7 @@ where
     T::encode_tags(tags, dst)
   }
 
-  fn decode_tags(bytes: &[u8]) -> Result<Tags, Self::Error> {
+  fn decode_tags(bytes: &[u8]) -> Result<(usize, Tags), Self::Error> {
     T::decode_tags(bytes)
   }
 

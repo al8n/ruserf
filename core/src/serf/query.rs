@@ -213,7 +213,7 @@ impl<I, A> QueryResponse<I, A> {
     // Process each type of response
     if resp.ack() {
       if let Some(Err(e)) = self.send_ack::<T, D>(&mut *c, &resp).await {
-        tracing::warn!(target = "ruserf", "{}", e);
+        tracing::warn!("ruserf: {}", e);
       }
     } else if let Some(Err(e)) = self
       .send_response::<T, D>(
@@ -225,7 +225,7 @@ impl<I, A> QueryResponse<I, A> {
       )
       .await
     {
-      tracing::warn!(target = "ruserf", "{}", e);
+      tracing::warn!("ruserf: {}", e);
     }
   }
 
@@ -377,17 +377,19 @@ where
   pub(crate) fn should_process_query(&self, filters: &[Bytes]) -> bool {
     for filter in filters.iter() {
       if filter.is_empty() {
-        tracing::warn!(target = "ruserf", "empty filter");
+        tracing::warn!("ruserf: empty filter");
         return false;
       }
 
-      let filter = match <D as TransformDelegate>::decode_filter(&filter) {
-        Ok(filter) => filter,
+      let filter = match <D as TransformDelegate>::decode_filter(filter) {
+        Ok((read, filter)) => {
+          tracing::trace!(read=%read, filter=?filter, "ruserf: decoded filter successully");
+          filter
+        }
         Err(err) => {
           tracing::warn!(
-            target = "ruserf",
             err = %err,
-            "failed to decode filter"
+            "ruserf: failed to decode filter"
           );
           return false;
         }
@@ -414,7 +416,7 @@ where
                   }
                 }
                 Err(err) => {
-                  tracing::warn!(target = "ruserf", err=%err, "failed to compile filter regex ({})", tag.expr);
+                  tracing::warn!(err=%err, "ruserf: failed to compile filter regex ({})", tag.expr);
                   return false;
                 }
               }

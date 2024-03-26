@@ -171,8 +171,7 @@ where
     // Check the response for any reported failure conditions
     if resp.num_err > 0 {
       tracing::error!(
-        target = "ruserf",
-        "{}/{} nodes reported failure",
+        "ruserf: {}/{} nodes reported failure",
         resp.num_err,
         resp.num_nodes
       );
@@ -180,8 +179,7 @@ where
 
     if resp.num_resp != resp.num_nodes {
       tracing::error!(
-        target = "ruserf",
-        "{}/{} nodes responded success",
+        "ruserf: {}/{} nodes responded success",
         resp.num_resp,
         resp.num_nodes
       );
@@ -262,7 +260,7 @@ where
           .insert(r.from.id().cheap_clone(), node_response.msg);
         resp.num_err += 1;
       } else if node_response.result && node_response.msg.is_empty() {
-        tracing::warn!(target = "ruserf", "{}", node_response.msg);
+        tracing::warn!("ruserf: {}", node_response.msg);
         resp
           .messages
           .insert(r.from.id().cheap_clone(), node_response.msg);

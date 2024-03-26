@@ -4,7 +4,7 @@ use std::collections::HashMap;
 #[viewit::viewit]
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub(crate) struct Tag {
+pub struct Tag {
   tag: SmolStr,
   expr: SmolStr,
 }
