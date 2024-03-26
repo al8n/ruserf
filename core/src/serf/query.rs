@@ -78,7 +78,9 @@ where
   A: CheapClone + Send + 'static,
 {
   /// Used to convert the filters into the wire format
-  pub(crate) fn encode_filters<W: TransformDelegate<Id = I, Address = A>>(&self) -> Result<TinyVec<Bytes>, W::Error> {
+  pub(crate) fn encode_filters<W: TransformDelegate<Id = I, Address = A>>(
+    &self,
+  ) -> Result<TinyVec<Bytes>, W::Error> {
     let mut filters = TinyVec::with_capacity(self.filters.len());
     for filter in self.filters.iter() {
       filters.push(W::encode_filter(filter)?);
@@ -523,10 +525,7 @@ where
     });
     futures::pin_mut!(stream);
 
-    while let Some(err) = stream
-      .next()
-      .await
-    {
+    while let Some(err) = stream.next().await {
       errs.push(err);
     }
 

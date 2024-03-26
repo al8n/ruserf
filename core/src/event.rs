@@ -316,8 +316,7 @@ impl core::fmt::Display for UserEvent {
   }
 }
 
-pub enum InternalQueryEvent<I>
-{
+pub enum InternalQueryEvent<I> {
   Ping,
   Conflict(I),
   #[cfg(feature = "encryption")]
@@ -330,8 +329,7 @@ pub enum InternalQueryEvent<I>
   ListKey,
 }
 
-impl<I: Clone> Clone for InternalQueryEvent<I>
-{
+impl<I: Clone> Clone for InternalQueryEvent<I> {
   fn clone(&self) -> Self {
     match self {
       Self::Ping => Self::Ping,
@@ -348,8 +346,7 @@ impl<I: Clone> Clone for InternalQueryEvent<I>
   }
 }
 
-impl<I> InternalQueryEvent<I>
-{
+impl<I> InternalQueryEvent<I> {
   #[inline]
   pub(crate) const fn as_str(&self) -> &'static str {
     match self {

@@ -1,5 +1,5 @@
 use std::{
-  sync::atomic::Ordering,
+  sync::atomic::{AtomicUsize, Ordering},
   time::{Duration, Instant},
 };
 
@@ -222,19 +222,19 @@ pub struct Stats {
   encrypted: bool,
 }
 
-struct Reaper<T, D>
+pub(crate) struct Reaper<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  coord_core: Option<Arc<CoordCore<T::Id>>>,
-  memberlist: Memberlist<T, SerfDelegate<T, D>>,
-  delegate: Arc<D>,
-  members: Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
-  event_tx: Option<async_channel::Sender<Event<T, D>>>,
-  shutdown_rx: async_channel::Receiver<()>,
-  reap_interval: Duration,
-  reconnect_timeout: Duration,
+  pub(crate) coord_core: Option<Arc<CoordCore<T::Id>>>,
+  pub(crate) memberlist: Memberlist<T, SerfDelegate<T, D>>,
+  pub(crate) members:
+    Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
+  pub(crate) event_tx: Option<async_channel::Sender<Event<T, D>>>,
+  pub(crate) shutdown_rx: async_channel::Receiver<()>,
+  pub(crate) reap_interval: Duration,
+  pub(crate) reconnect_timeout: Duration,
 }
 
 macro_rules! erase_node {
@@ -298,7 +298,7 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  fn spawn(self) {
+  pub(crate) fn spawn(self) {
     <T::Runtime as RuntimeLite>::spawn_detach(async move {
       loop {
         futures::select! {
@@ -336,15 +336,16 @@ where
   }
 }
 
-struct Reconnector<T, D>
+pub(crate) struct Reconnector<T, D>
 where
   T: Transport,
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
 {
-  members: Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
-  memberlist: Memberlist<T, SerfDelegate<T, D>>,
-  shutdown_rx: async_channel::Receiver<()>,
-  reconnect_interval: Duration,
+  pub(crate) members:
+    Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
+  pub(crate) memberlist: Memberlist<T, SerfDelegate<T, D>>,
+  pub(crate) shutdown_rx: async_channel::Receiver<()>,
+  pub(crate) reconnect_interval: Duration,
 }
 
 impl<T, D> Reconnector<T, D>
@@ -352,7 +353,7 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  fn spawn(self) {
+  pub(crate) fn spawn(self) {
     let mut rng = rand::rngs::StdRng::from_rng(rand::thread_rng()).unwrap();
 
     <T::Runtime as RuntimeLite>::spawn_detach(async move {
@@ -403,12 +404,12 @@ where
   }
 }
 
-struct QueueChecker<I, A> {
-  name: &'static str,
-  queue: Arc<TransmitLimitedQueue<SerfBroadcast>>,
-  members: Arc<RwLock<Members<I, A>>>,
-  opts: QueueOptions,
-  shutdown_rx: async_channel::Receiver<()>,
+pub(crate) struct QueueChecker<I, A> {
+  pub(crate) name: &'static str,
+  pub(crate) queue: Arc<TransmitLimitedQueue<SerfBroadcast, NumMembers<I, A>>>,
+  pub(crate) members: Arc<RwLock<Members<I, A>>>,
+  pub(crate) opts: QueueOptions,
+  pub(crate) shutdown_rx: async_channel::Receiver<()>,
 }
 
 impl<I, A> QueueChecker<I, A>
@@ -416,7 +417,7 @@ where
   I: Send + Sync + 'static,
   A: Send + Sync + 'static,
 {
-  fn spawn<R: RuntimeLite>(self) {
+  pub(crate) fn spawn<R: RuntimeLite>(self) {
     R::spawn_detach(async move {
       loop {
         futures::select! {
@@ -1357,7 +1358,7 @@ where
     }
   }
 
-  fn handle_rejoin(
+  pub(crate) fn handle_rejoin(
     memberlist: Memberlist<T, SerfDelegate<T, D>>,
     alive_nodes: TinyVec<Node<T::Id, MaybeResolvedAddress<T>>>,
   ) {

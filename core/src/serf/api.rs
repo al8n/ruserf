@@ -1,13 +1,17 @@
-use std::{sync::atomic::Ordering, time::Duration};
+use std::{
+  sync::atomic::{AtomicUsize, Ordering},
+  time::Duration,
+};
 
 use api::internal_query::SerfQueries;
 use futures::FutureExt;
 use memberlist_core::{
   agnostic_lite::RuntimeLite,
   bytes::{BufMut, Bytes, BytesMut},
+  delegate::EventDelegate,
   tracing,
   transport::{MaybeResolvedAddress, Node},
-  types::{Meta, SmallVec},
+  types::{Meta, SmallVec, TinyVec},
   CheapClone,
 };
 use smol_str::SmolStr;
@@ -18,10 +22,14 @@ use crate::{
   delegate::TransformDelegate,
   error::{Error, JoinError},
   event::InternalQueryEvent,
+  open_and_replay_snapshot,
   types::{
     LeaveMessage, Member, MessageType, QueryFlag, QueryMessage, SerfMessage, Tags, UserEventMessage,
   },
+  Snapshot,
 };
+
+use self::base::{QueueChecker, Reaper, Reconnector};
 
 use super::*;
 
@@ -89,200 +97,200 @@ where
       SerfQueries::new(event_tx, shutdown_rx.clone())
     });
 
-    // let clock = LamportClock::new();
-    // let event_clock = LamportClock::new();
-    // let query_clock = LamportClock::new();
-    // let mut event_min_time = LamportTime::ZERO;
-    // let mut query_min_time = LamportTime::ZERO;
+    let clock = LamportClock::new();
+    let event_clock = LamportClock::new();
+    let query_clock = LamportClock::new();
+    let mut event_min_time = LamportTime::ZERO;
+    let mut query_min_time = LamportTime::ZERO;
 
-    // // Try access the snapshot
-    // let (old_clock, old_event_clock, old_query_clock, event_tx, alive_nodes, handle) =
-    //   if let Some(sp) = opts.snapshot_path.as_ref() {
-    //     let rs = open_and_replay_snapshot(sp, opts.rejoin_after_leave)?;
-    //     let old_clock = rs.last_clock;
-    //     let old_event_clock = rs.last_event_clock;
-    //     let old_query_clock = rs.last_query_clock;
-    //     let (event_tx, alive_nodes, handle) = Snapshot::from_replay_result(
-    //       rs,
-    //       SNAPSHOT_SIZE_LIMIT,
-    //       opts.rejoin_after_leave,
-    //       clock.clone(),
-    //       event_tx,
-    //       shutdown_rx.clone(),
-    //       #[cfg(feature = "metrics")]
-    //       opts.memberlist_options.metric_labels().clone(),
-    //     )?;
-    //     event_min_time = old_event_clock + LamportTime::new(1);
-    //     query_min_time = old_query_clock + LamportTime::new(1);
-    //     (
-    //       old_clock,
-    //       old_event_clock,
-    //       old_query_clock,
-    //       Some(event_tx),
-    //       alive_nodes,
-    //       Some(handle),
-    //     )
-    //   } else {
-    //     (
-    //       LamportTime::new(0),
-    //       LamportTime::new(0),
-    //       LamportTime::new(0),
-    //       event_tx,
-    //       vec![],
-    //       None,
-    //     )
-    //   };
+    // Try access the snapshot
+    let (old_clock, old_event_clock, old_query_clock, event_tx, alive_nodes, handle) =
+      if let Some(sp) = opts.snapshot_path.as_ref() {
+        let rs = open_and_replay_snapshot(sp, opts.rejoin_after_leave)?;
+        let old_clock = rs.last_clock;
+        let old_event_clock = rs.last_event_clock;
+        let old_query_clock = rs.last_query_clock;
+        let (event_tx, alive_nodes, handle) = Snapshot::from_replay_result(
+          rs,
+          SNAPSHOT_SIZE_LIMIT,
+          opts.rejoin_after_leave,
+          clock.clone(),
+          event_tx,
+          shutdown_rx.clone(),
+          #[cfg(feature = "metrics")]
+          opts.memberlist_options.metric_labels().clone(),
+        )?;
+        event_min_time = old_event_clock + LamportTime::new(1);
+        query_min_time = old_query_clock + LamportTime::new(1);
+        (
+          old_clock,
+          old_event_clock,
+          old_query_clock,
+          Some(event_tx),
+          alive_nodes,
+          Some(handle),
+        )
+      } else {
+        (
+          LamportTime::new(0),
+          LamportTime::new(0),
+          LamportTime::new(0),
+          event_tx,
+          TinyVec::new(),
+          None,
+        )
+      };
 
-    // // Set up network coordinate client.
-    // let coord = (!opts.disable_coordinates).then_some({
-    //   CoordinateClient::with_options(CoordinateOptions {
-    //     #[cfg(feature = "metrics")]
-    //     metric_labels: opts.memberlist_options.metric_labels().clone(),
-    //     ..Default::default()
-    //   })
-    // });
-    // let members = Arc::new(RwLock::new(Members::default()));
+    // Set up network coordinate client.
+    let coord = (!opts.disable_coordinates).then_some({
+      CoordinateClient::with_options(CoordinateOptions {
+        #[cfg(feature = "metrics")]
+        metric_labels: opts.memberlist_options.metric_labels().clone(),
+        ..Default::default()
+      })
+    });
+    let members = Arc::new(RwLock::new(Members::default()));
+    let num_members = NumMembers::from(members.clone());
+    // Setup the various broadcast queues, which we use to send our own
+    // custom broadcasts along the gossip channel.
+    let broadcasts = Arc::new(TransmitLimitedQueue::<SerfBroadcast, _>::new(
+      opts.memberlist_options.retransmit_mult(),
+      num_members.clone(),
+    ));
+    let event_broadcasts = Arc::new(TransmitLimitedQueue::<SerfBroadcast, _>::new(
+      opts.memberlist_options.retransmit_mult(),
+      num_members.clone(),
+    ));
+    let query_broadcasts = Arc::new(TransmitLimitedQueue::<SerfBroadcast, _>::new(
+      opts.memberlist_options.retransmit_mult(),
+      num_members.clone(),
+    ));
 
-    // // Setup the various broadcast queues, which we use to send our own
-    // // custom broadcasts along the gossip channel.
-    // let nc = SerfNodeCalculator::new(members.clone());
-    // let broadcasts = Arc::new(TransmitLimitedQueue::<SerfBroadcast>::new(
-    //   nc.clone(),
-    //   opts.memberlist_options.retransmit_mult(),
-    // ));
-    // let event_broadcasts = Arc::new(TransmitLimitedQueue::<SerfBroadcast>::new(
-    //   nc.clone(),
-    //   opts.memberlist_options.retransmit_mult(),
-    // ));
-    // let query_broadcasts = Arc::new(TransmitLimitedQueue::<SerfBroadcast>::new(
-    //   nc,
-    //   opts.memberlist_options.retransmit_mult(),
-    // ));
+    // Create a buffer for events and queries
+    let event_buffer = Vec::with_capacity(opts.event_buffer_size);
+    let query_buffer = Vec::with_capacity(opts.query_buffer_size);
 
-    // // Create a buffer for events and queries
-    // let event_buffer = Vec::with_capacity(opts.event_buffer_size);
-    // let query_buffer = Vec::with_capacity(opts.query_buffer_size);
+    // Ensure our lamport clock is at least 1, so that the default
+    // join LTime of 0 does not cause issues
+    clock.increment();
+    event_clock.increment();
+    query_clock.increment();
 
-    // // Ensure our lamport clock is at least 1, so that the default
-    // // join LTime of 0 does not cause issues
-    // clock.increment();
-    // event_clock.increment();
-    // query_clock.increment();
+    // Restore the clock from snap if we have one
+    clock.witness(old_clock);
+    event_clock.witness(old_event_clock);
+    query_clock.witness(old_query_clock);
 
-    // // Restore the clock from snap if we have one
-    // clock.witness(old_clock);
-    // event_clock.witness(old_event_clock);
-    // query_clock.witness(old_query_clock);
+    // Create the underlying memberlist that will manage membership
+    // and failure detection for the Serf instance.
+    let memberlist = Memberlist::with_delegate(
+      t,
+      SerfDelegate::new(delegate),
+      opts.memberlist_options.clone(),
+    )
+    .await?;
 
-    // // Create the underlying memberlist that will manage membership
-    // // and failure detection for the Serf instance.
-    // let memberlist =
-    //   Memberlist::with_delegate(SerfDelegate::new(delegate), SerfDelegate::new(), opts.memberlist_options.clone()).await?;
+    let c = SerfCore {
+      clock,
+      event_clock,
+      query_clock,
+      broadcasts,
+      memberlist,
+      members,
+      event_broadcasts,
+      event_join_ignore: AtomicBool::new(false),
+      event_core: RwLock::new(EventCore {
+        min_time: event_min_time,
+        buffer: event_buffer,
+      }),
+      query_broadcasts,
+      query_core: Arc::new(RwLock::new(QueryCore {
+        min_time: query_min_time,
+        responses: HashMap::new(),
+        buffer: query_buffer,
+      })),
+      opts,
+      state: parking_lot::Mutex::new(SerfState::Alive),
+      join_lock: Mutex::new(()),
+      snapshot: handle,
+      #[cfg(feature = "encryption")]
+      key_manager: crate::key_manager::KeyManager::new(),
+      shutdown_tx,
+      shutdown_rx: shutdown_rx.clone(),
+      coord_core: coord.map(|cc| {
+        Arc::new(CoordCore {
+          client: cc,
+          cache: parking_lot::RwLock::new(HashMap::new()),
+        })
+      }),
+      event_tx,
+    };
+    let this = Serf { inner: Arc::new(c) };
+    // update delegate
+    let that = this.clone();
+    let memberlist_delegate = this.inner.memberlist.delegate().unwrap();
+    memberlist_delegate.store(that);
+    let local_node = this.inner.memberlist.local_state().await;
+    memberlist_delegate.notify_join(local_node).await;
 
-    // let c = SerfCore {
-    //   clock,
-    //   event_clock,
-    //   query_clock,
-    //   broadcasts,
-    //   memberlist,
-    //   members,
-    //   event_broadcasts,
-    //   event_join_ignore: AtomicBool::new(false),
-    //   event_core: RwLock::new(EventCore {
-    //     min_time: event_min_time,
-    //     buffer: event_buffer,
-    //   }),
-    //   query_broadcasts,
-    //   query_core: Arc::new(RwLock::new(QueryCore {
-    //     min_time: query_min_time,
-    //     responses: HashMap::new(),
-    //     buffer: query_buffer,
-    //   })),
-    //   opts,
-    //   state: parking_lot::Mutex::new(SerfState::Alive),
-    //   join_lock: Mutex::new(()),
-    //   snapshot: handle,
-    //   key_manager: KeyManager::new(),
-    //   shutdown_tx,
-    //   shutdown_rx: shutdown_rx.clone(),
-    //   coord_core: coord.map(|cc| {
-    //     Arc::new(CoordCore {
-    //       client: cc,
-    //       cache: parking_lot::RwLock::new(HashMap::new()),
-    //     })
-    //   }),
-    //   event_tx,
-    // };
-    // let this = Serf { inner: Arc::new(c) };
-    // // update delegate
-    // let that = this.clone();
-    // let delegate = this.inner.memberlist.delegate().unwrap();
-    // delegate.store(that);
-    // let local_node = this.inner.memberlist.local_node().await;
-    // delegate
-    //   .notify_join(local_node)
-    //   .await
-    //   .map_err(|e| memberlist_core::error::Error::delegate(e))?;
+    // update key manager
+    let that = this.clone();
+    this.inner.key_manager.store(that);
 
-    // // update key manager
-    // let that = this.clone();
-    // this.inner.key_manager.store(that);
+    // Start the background tasks. See the documentation above each method
+    // for more information on their role.
+    Reaper {
+      coord_core: this.inner.coord_core.clone(),
+      memberlist: this.inner.memberlist.clone(),
+      members: this.inner.members.clone(),
+      event_tx: this.inner.event_tx.clone(),
+      shutdown_rx: shutdown_rx.clone(),
+      reap_interval: this.inner.opts.reap_interval,
+      reconnect_timeout: this.inner.opts.reconnect_timeout,
+    }
+    .spawn();
 
-    // // Start the background tasks. See the documentation above each method
-    // // for more information on their role.
-    // Reaper {
-    //   coord_core: this.inner.coord_core.clone(),
-    //   memberlist: this.inner.memberlist.clone(),
-    //   members: this.inner.members.clone(),
-    //   event_tx: this.inner.event_tx.clone(),
-    //   shutdown_rx: shutdown_rx.clone(),
-    //   reap_interval: this.inner.opts.reap_interval,
-    //   reconnect_timeout: this.inner.opts.reconnect_timeout,
-    // }
-    // .spawn();
+    Reconnector {
+      members: this.inner.members.clone(),
+      memberlist: this.inner.memberlist.clone(),
+      shutdown_rx: shutdown_rx.clone(),
+      reconnect_interval: this.inner.opts.reconnect_interval,
+    }
+    .spawn();
 
-    // Reconnector {
-    //   members: this.inner.members.clone(),
-    //   memberlist: this.inner.memberlist.clone(),
-    //   shutdown_rx: shutdown_rx.clone(),
-    //   reconnect_interval: this.inner.opts.reconnect_interval,
-    // }
-    // .spawn();
+    QueueChecker {
+      name: "Intent",
+      queue: this.inner.broadcasts.clone(),
+      members: this.inner.members.clone(),
+      opts: this.inner.opts.queue_opts(),
+      shutdown_rx: shutdown_rx.clone(),
+    }
+    .spawn::<T::Runtime>();
 
-    // QueueChecker {
-    //   name: "Intent",
-    //   queue: this.inner.broadcasts.clone(),
-    //   members: this.inner.members.clone(),
-    //   opts: this.inner.opts.queue_opts(),
-    //   shutdown_rx: shutdown_rx.clone(),
-    // }
-    // .spawn::<T::Runtime>();
+    QueueChecker {
+      name: "Event",
+      queue: this.inner.event_broadcasts.clone(),
+      members: this.inner.members.clone(),
+      opts: this.inner.opts.queue_opts(),
+      shutdown_rx: shutdown_rx.clone(),
+    }
+    .spawn::<T::Runtime>();
 
-    // QueueChecker {
-    //   name: "Event",
-    //   queue: this.inner.event_broadcasts.clone(),
-    //   members: this.inner.members.clone(),
-    //   opts: this.inner.opts.queue_opts(),
-    //   shutdown_rx: shutdown_rx.clone(),
-    // }
-    // .spawn::<T::Runtime>();
+    QueueChecker {
+      name: "Query",
+      queue: this.inner.query_broadcasts.clone(),
+      members: this.inner.members.clone(),
+      opts: this.inner.opts.queue_opts(),
+      shutdown_rx: shutdown_rx.clone(),
+    }
+    .spawn::<T::Runtime>();
 
-    // QueueChecker {
-    //   name: "Query",
-    //   queue: this.inner.query_broadcasts.clone(),
-    //   members: this.inner.members.clone(),
-    //   opts: this.inner.opts.queue_opts(),
-    //   shutdown_rx: shutdown_rx.clone(),
-    // }
-    // .spawn::<T::Runtime>();
-
-    // // Attempt to re-join the cluster if we have known nodes
-    // if !alive_nodes.is_empty() {
-    //   let showbiz = this.inner.memberlist.clone();
-    //   Self::handle_rejoin(showbiz, alive_nodes);
-    // }
-    // Ok(this)
-    todo!()
+    // Attempt to re-join the cluster if we have known nodes
+    if !alive_nodes.is_empty() {
+      let showbiz = this.inner.memberlist.clone();
+      Self::handle_rejoin(showbiz, alive_nodes);
+    }
+    Ok(this)
   }
 
   /// A predicate that determines whether or not encryption
@@ -293,8 +301,7 @@ where
   #[cfg(feature = "encryption")]
   #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
   pub fn encryption_enabled(&self) -> bool {
-    // self.inner.memberlist.encryption_enabled()
-    todo!()
+    self.inner.memberlist.keyring().is_some()
   }
 
   /// Returns a receiver that can be used to wait for

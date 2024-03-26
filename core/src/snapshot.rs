@@ -19,7 +19,7 @@ use memberlist_core::{
   agnostic_lite::RuntimeLite,
   bytes::{BufMut, BytesMut},
   tracing,
-  transport::{AddressResolver, Id, Node, Transport},
+  transport::{AddressResolver, Id, MaybeResolvedAddress, Node, Transport},
   types::TinyVec,
   CheapClone,
 };
@@ -366,7 +366,7 @@ where
   ) -> Result<
     (
       Sender<Event<T, D>>,
-      TinyVec<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+      TinyVec<Node<T::Id, MaybeResolvedAddress<T>>>,
       SnapshotHandle,
     ),
     SnapshotError,
@@ -409,7 +409,15 @@ where
       metric_labels,
     };
 
-    let mut alive_nodes = this.alive_nodes.iter().cloned().collect::<TinyVec<_>>();
+    let mut alive_nodes = this
+      .alive_nodes
+      .iter()
+      .map(|n| {
+        let id = n.id().cheap_clone();
+        let addr = n.address().cheap_clone();
+        Node::new(id, MaybeResolvedAddress::resolved(addr))
+      })
+      .collect::<TinyVec<_>>();
     alive_nodes.shuffle(&mut rand::thread_rng());
 
     // Start handling new commands

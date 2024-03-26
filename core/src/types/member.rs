@@ -112,12 +112,22 @@ pub(crate) struct NodeIntent {
   pub(crate) ltime: LamportTime,
 }
 
-#[derive(Default)]
 pub(crate) struct Members<I, A> {
   pub(crate) states: HashMap<I, MemberState<I, A>>,
   pub(crate) recent_intents: HashMap<I, NodeIntent>,
   pub(crate) left_members: OneOrMore<MemberState<I, A>>,
   pub(crate) failed_members: OneOrMore<MemberState<I, A>>,
+}
+
+impl<I, A> Default for Members<I, A> {
+  fn default() -> Self {
+    Self {
+      states: Default::default(),
+      recent_intents: Default::default(),
+      left_members: Default::default(),
+      failed_members: Default::default(),
+    }
+  }
 }
 
 impl<I: Eq + core::hash::Hash, A: Eq + core::hash::Hash> Members<I, A> {

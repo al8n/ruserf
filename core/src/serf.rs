@@ -1,6 +1,9 @@
 use std::{
   collections::HashMap,
-  sync::{atomic::AtomicBool, Arc},
+  sync::{
+    atomic::{AtomicBool, AtomicUsize},
+    Arc,
+  },
 };
 
 use async_lock::{Mutex, RwLock};
@@ -98,6 +101,30 @@ impl core::fmt::Display for SerfState {
   }
 }
 
+struct NumMembers<I, A>(Arc<RwLock<Members<I, A>>>);
+
+impl<I, A> Clone for NumMembers<I, A> {
+  fn clone(&self) -> Self {
+    Self(self.0.clone())
+  }
+}
+
+impl<I, A> From<Arc<RwLock<Members<I, A>>>> for NumMembers<I, A> {
+  fn from(value: Arc<RwLock<Members<I, A>>>) -> Self {
+    Self(value)
+  }
+}
+
+impl<I, A> memberlist_core::queue::NodeCalculator for NumMembers<I, A>
+where
+  I: Send + Sync + 'static,
+  A: Send + Sync + 'static,
+{
+  async fn num_nodes(&self) -> usize {
+    self.0.read().await.states.len()
+  }
+}
+
 pub(crate) struct SerfCore<T, D = DefaultDelegate<T>>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
@@ -107,9 +134,24 @@ where
   pub(crate) event_clock: LamportClock,
   pub(crate) query_clock: LamportClock,
 
-  pub(crate) broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast>>,
-  pub(crate) event_broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast>>,
-  pub(crate) query_broadcasts: Arc<TransmitLimitedQueue<SerfBroadcast>>,
+  pub(crate) broadcasts: Arc<
+    TransmitLimitedQueue<
+      SerfBroadcast,
+      NumMembers<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+    >,
+  >,
+  pub(crate) event_broadcasts: Arc<
+    TransmitLimitedQueue<
+      SerfBroadcast,
+      NumMembers<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+    >,
+  >,
+  pub(crate) query_broadcasts: Arc<
+    TransmitLimitedQueue<
+      SerfBroadcast,
+      NumMembers<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+    >,
+  >,
 
   pub(crate) memberlist: Memberlist<T, SerfDelegate<T, D>>,
   pub(crate) members:
@@ -160,3 +202,6 @@ where
     }
   }
 }
+
+#[test]
+fn test_() {}
