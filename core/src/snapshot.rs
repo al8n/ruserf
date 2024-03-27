@@ -687,7 +687,17 @@ where
     &mut self,
     l: SnapshotRecord<'_, T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
   ) -> Result<(), SnapshotError> {
-    // TODO: metrics
+    #[cfg(feature = "metrics")]
+    let start = std::time::Instant::now();
+
+    #[cfg(feature = "metrics")]
+    let metric_labels = self.metric_labels.clone();
+    #[cfg(feature = "metrics")]
+    scopeguard::defer!(
+      metrics::histogram!("ruserf.snapshot.append_line", metric_labels.iter())
+        .record(start.elapsed().as_millis() as f64)
+    );
+
     let f = self.fh.as_mut().unwrap();
     let n = l.encode::<D, _>(f).map_err(SnapshotError::Write)?;
 
@@ -720,7 +730,16 @@ where
 
   /// Used to compact the snapshot once it is too large
   fn compact(&mut self) -> Result<(), SnapshotError> {
-    // TODO:
+    #[cfg(feature = "metrics")]
+    let start = std::time::Instant::now();
+
+    #[cfg(feature = "metrics")]
+    let metric_labels = self.metric_labels.clone();
+    #[cfg(feature = "metrics")]
+    scopeguard::defer!(
+      metrics::histogram!("ruserf.snapshot.compact", metric_labels.iter())
+        .record(start.elapsed().as_millis() as f64)
+    );
 
     // Try to open the file to new file
     let new_path = self.path.with_extension(TMP_EXT);

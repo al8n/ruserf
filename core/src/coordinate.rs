@@ -377,8 +377,9 @@ where
       return Err(CoordinateError::InvalidRTT(rtt));
     }
 
+    #[cfg(feature = "metrics")]
     if rtt.is_zero() {
-      // TODO: metrics
+      metrics::counter!("ruserf.coordinate.zero-rtt", l.opts.metric_labels.iter()).increment(1);
     }
 
     let rtt_seconds = l.latency_filter(node, rtt.as_secs_f64());
