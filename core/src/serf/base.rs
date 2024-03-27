@@ -461,22 +461,6 @@ where
   }
 }
 
-#[viewit::viewit(vis_all = "", getters(prefix = "get"))]
-#[cfg_attr(feature = "async-graphql", derive(async_graphql::SimpleObject))]
-pub struct Stats {
-  members: usize,
-  failed: usize,
-  left: usize,
-  health_score: usize,
-  member_time: u64,
-  event_time: u64,
-  query_time: u64,
-  intent_time: u64,
-  event_queue: usize,
-  query_queue: usize,
-  encrypted: bool,
-}
-
 struct Reaper<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
