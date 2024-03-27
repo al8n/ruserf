@@ -42,9 +42,9 @@ where
   T: Transport,
 {
   pub(crate) async fn new_in(
-    transport: T,
     ev: Option<async_channel::Sender<Event<T, D>>>,
     delegate: Option<D>,
+    transport: T::Options,
     opts: Options,
   ) -> Result<Self, Error<T, D>> {
     if opts.max_user_event_size > USER_EVENT_SIZE_LIMIT {
@@ -180,8 +180,8 @@ where
     // Create the underlying memberlist that will manage membership
     // and failure detection for the Serf instance.
     let memberlist = Memberlist::with_delegate(
-      transport,
       SerfDelegate::new(delegate),
+      transport,
       opts.memberlist_options.clone(),
     )
     .await?;

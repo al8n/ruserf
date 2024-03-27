@@ -28,12 +28,12 @@ where
   T: Transport,
 {
   pub async fn with_event_sender_and_delegate(
-    transport: T,
+    transport: T::Options,
+    opts: Options,
     ev: async_channel::Sender<Event<T, D>>,
     delegate: D,
-    opts: Options,
   ) -> Result<Self, Error<T, D>> {
-    Self::new_in(transport, Some(ev), Some(delegate), opts).await
+    Self::new_in(Some(ev), Some(delegate), transport, opts).await
   }
 
   /// A predicate that determines whether or not encryption
