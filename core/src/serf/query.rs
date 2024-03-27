@@ -197,8 +197,11 @@ impl<I, A> QueryResponse<I, A> {
   }
 
   #[inline]
-  pub(crate) async fn handle_query_response<T, D>(&self, resp: QueryResponseMessage<I, A>)
-  where
+  pub(crate) async fn handle_query_response<T, D>(
+    &self,
+    resp: QueryResponseMessage<I, A>,
+    #[cfg(feature = "metrics")] metrics_labels: &memberlist_core::types::MetricLabels,
+  ) where
     I: Eq + std::hash::Hash + CheapClone,
     A: Eq + std::hash::Hash + CheapClone,
     D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
@@ -212,20 +215,50 @@ impl<I, A> QueryResponse<I, A> {
 
     // Process each type of response
     if resp.ack() {
+      // Exit early if this is a duplicate ack
+      if c.acks.contains(&resp.from) {
+        #[cfg(feature = "metrics")]
+        {
+          metrics::counter!("ruserf.query.duplicate_acks", metrics_labels.iter()).increment(1);
+        }
+        return;
+      }
+
+      #[cfg(feature = "metrics")]
+      {
+        metrics::counter!("ruserf.query.acks", metrics_labels.iter()).increment(1);
+      }
+
       if let Some(Err(e)) = self.send_ack::<T, D>(&mut *c, &resp).await {
         tracing::warn!("ruserf: {}", e);
       }
-    } else if let Some(Err(e)) = self
-      .send_response::<T, D>(
-        &mut *c,
-        NodeResponse {
-          from: resp.from,
-          payload: resp.payload,
-        },
-      )
-      .await
-    {
-      tracing::warn!("ruserf: {}", e);
+    } else {
+      // Exit early if this is a duplicate response
+      if c.responses.contains(&resp.from) {
+        #[cfg(feature = "metrics")]
+        {
+          metrics::counter!("ruserf.query.duplicate_responses", metrics_labels.iter()).increment(1);
+        }
+        return;
+      }
+
+      #[cfg(feature = "metrics")]
+      {
+        metrics::counter!("ruserf.query.responses", metrics_labels.iter()).increment(1);
+      }
+
+      if let Some(Err(e)) = self
+        .send_response::<T, D>(
+          &mut *c,
+          NodeResponse {
+            from: resp.from,
+            payload: resp.payload,
+          },
+        )
+        .await
+      {
+        tracing::warn!("ruserf: {}", e);
+      }
     }
   }
 

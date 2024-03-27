@@ -121,7 +121,20 @@ where
       return;
     }
 
-    // TODO: metrics
+    #[cfg(feature = "metrics")]
+    {
+      metrics::histogram!(
+        "ruserf.messages.received",
+        self
+          .this()
+          .inner
+          .opts
+          .memberlist_options
+          .metric_labels
+          .iter()
+      )
+      .record(msg.len() as f64);
+    }
 
     let this = self.this();
     let mut rebroadcast = None;
@@ -246,7 +259,14 @@ where
     for msg in msgs.iter() {
       let (encoded_len, _) = encoded_len(msg.clone());
       bytes_used += encoded_len;
-      // TODO: metrics
+      #[cfg(feature = "metrics")]
+      {
+        metrics::histogram!(
+          "ruserf.messages.sent",
+          this.inner.opts.memberlist_options.metric_labels.iter()
+        )
+        .record(encoded_len as f64);
+      }
     }
 
     // Get any additional query broadcasts
@@ -258,7 +278,14 @@ where
     for msg in query_msgs.iter() {
       let (encoded_len, _) = encoded_len(msg.clone());
       bytes_used += encoded_len;
-      // TODO: metrics
+      #[cfg(feature = "metrics")]
+      {
+        metrics::histogram!(
+          "ruserf.messages.sent",
+          this.inner.opts.memberlist_options.metric_labels.iter()
+        )
+        .record(encoded_len as f64);
+      }
     }
 
     // Get any additional event broadcasts
@@ -270,7 +297,14 @@ where
     for msg in query_msgs.iter() {
       let (encoded_len, _) = encoded_len(msg.clone());
       bytes_used += encoded_len;
-      // TODO: metrics
+      #[cfg(feature = "metrics")]
+      {
+        metrics::histogram!(
+          "ruserf.messages.sent",
+          this.inner.opts.memberlist_options.metric_labels.iter()
+        )
+        .record(encoded_len as f64);
+      }
     }
 
     msgs.extend(query_msgs);
@@ -597,11 +631,16 @@ where
       let before = c.client.get_coordinate();
       match c.client.update(node.id(), &before, rtt) {
         Ok(after) => {
-          // TODO: metrics
+          #[cfg(feature = "metrics")]
           {
             // Publish some metrics to give us an idea of how much we are
             // adjusting each time we update.
-            let _d = before.distance_to(&after).as_secs_f64() * 1.0e3;
+            let d = before.distance_to(&after).as_secs_f64() * 1.0e3;
+            metrics::histogram!(
+              "ruserf.coordinate.adjustment-ms",
+              this.inner.opts.memberlist_options.metric_labels.iter()
+            )
+            .record(d);
           }
 
           // Cache the coordinate for the other node, and add our own
@@ -618,7 +657,15 @@ where
             .or_insert_with(|| c.client.get_coordinate());
         }
         Err(e) => {
-          // TODO: metrics
+          #[cfg(feature = "metrics")]
+          {
+            metrics::counter!(
+              "ruserf.coordinate.rejected",
+              this.inner.opts.memberlist_options.metric_labels.iter()
+            )
+            .increment(1);
+          }
+
           tracing::error!(err=%e, "ruserf: rejected coordinate from {}", node.id());
         }
       }

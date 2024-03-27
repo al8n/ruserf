@@ -255,7 +255,7 @@ where
     .spawn();
 
     QueueChecker {
-      name: "Intent",
+      name: "ruserf.queue.intent",
       queue: this.inner.broadcasts.clone(),
       members: this.inner.members.clone(),
       opts: this.inner.opts.queue_opts(),
@@ -264,7 +264,7 @@ where
     .spawn::<T::Runtime>();
 
     QueueChecker {
-      name: "Event",
+      name: "ruserf.queue.event",
       queue: this.inner.event_broadcasts.clone(),
       members: this.inner.members.clone(),
       opts: this.inner.opts.queue_opts(),
@@ -273,7 +273,7 @@ where
     .spawn::<T::Runtime>();
 
     QueueChecker {
-      name: "Query",
+      name: "ruserf.queue.query",
       queue: this.inner.query_broadcasts.clone(),
       members: this.inner.members.clone(),
       opts: this.inner.opts.queue_opts(),
@@ -677,6 +677,10 @@ where
           _ = R::sleep(self.opts.check_interval).fuse() => {
             let numq = self.queue.num_queued().await;
             // TODO: metrics
+            #[cfg(feature = "metrics")]
+            {
+              metrics::gauge!(self.name, self.opts.metric_labels.iter()).set(numq as f64);
+            }
             if numq >= self.opts.depth_warning {
               tracing::warn!("ruserf: queue {} depth: {}", self.name, numq);
             }
@@ -762,7 +766,22 @@ where
       });
     }
 
-    // TODO: metrics
+    #[cfg(feature = "metrics")]
+    {
+      metrics::counter!(
+        "ruserf.events",
+        self.inner.opts.memberlist_options.metric_labels().iter()
+      )
+      .increment(1);
+
+      // TODO: how to avoid allocating here?
+      let named = format!("ruserf.events.{}", msg.name);
+      metrics::counter!(
+        named,
+        self.inner.opts.memberlist_options.metric_labels().iter()
+      )
+      .increment(1);
+    }
 
     if let Some(ref tx) = self.inner.event_tx {
       if let Err(e) = tx
@@ -831,7 +850,23 @@ where
       });
     }
 
-    // TODO: metrics
+    // update some metrics
+    #[cfg(feature = "metrics")]
+    {
+      metrics::counter!(
+        "ruserf.queries",
+        self.inner.opts.memberlist_options.metric_labels().iter()
+      )
+      .increment(1);
+
+      // TODO: how to avoid allocating here?
+      let named = format!("ruserf.queries.{}", q.name);
+      metrics::counter!(
+        named,
+        self.inner.opts.memberlist_options.metric_labels().iter()
+      )
+      .increment(1);
+    }
 
     // Check if we should rebroadcast, this may be disabled by a flag
     let mut rebroadcast = true;
@@ -943,7 +978,13 @@ where
         return;
       }
 
-      query.handle_query_response::<T, D>(resp).await;
+      query
+        .handle_query_response::<T, D>(
+          resp,
+          #[cfg(feature = "metrics")]
+          self.inner.opts.memberlist_options.metric_labels(),
+        )
+        .await;
     } else {
       tracing::warn!(
         "ruserf: reply for non-running query (LTime: {}, ID: {}) From: {}",
@@ -979,8 +1020,13 @@ where
     let (old_status, fut) = if let Some(member) = members.states.get_mut(node.id()) {
       let old_status = member.member.status.load(Ordering::Acquire);
       let dead_time = member.leave_time.elapsed();
+      #[cfg(feature = "metrics")]
       if old_status == MemberStatus::Failed && dead_time < self.inner.opts.flap_timeout {
-        // TODO: metrics
+        metrics::counter!(
+          "ruserf.member.flap",
+          self.inner.opts.memberlist_options.metric_labels().iter()
+        )
+        .increment(1);
       }
 
       *member = MemberState {
@@ -1057,7 +1103,13 @@ where
       remove_old_member(&mut members.left_members, node.id());
     }
 
-    // TODO: update metrics
+    // update some metrics
+    #[cfg(feature = "metrics")]
+    metrics::counter!(
+      "ruserf.member.join",
+      self.inner.opts.memberlist_options.metric_labels().iter()
+    )
+    .increment(1);
 
     tracing::info!("ruserf: member join: {}", node);
     if let Some(fut) = fut {
@@ -1161,7 +1213,12 @@ where
     };
 
     // Update some metrics
-    // TODO: metrics
+    #[cfg(feature = "metrics")]
+    metrics::counter!(
+      "ruserf.member.leave",
+      self.inner.opts.memberlist_options.metric_labels().iter()
+    )
+    .increment(1);
 
     tracing::info!("ruserf: {}: {}", ty.as_str(), member.node());
 
@@ -1434,7 +1491,12 @@ where
         delegate_version: DelegateVersion::V0,
       });
 
-      // TODO: metrics
+      #[cfg(feature = "metrics")]
+      metrics::counter!(
+        "ruserf.member.update",
+        self.inner.opts.memberlist_options.metric_labels().iter()
+      )
+      .increment(1);
 
       tracing::info!("ruserf: member update: {}", id);
       if let Some(ref tx) = self.inner.event_tx {
