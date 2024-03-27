@@ -68,9 +68,39 @@ where
 
   /// Used to provide operator debugging information
   #[inline]
-  pub async fn stats(&self) -> base::Stats {
-    let _members = self.inner.members.read().await;
-    todo!()
+  pub async fn stats(&self) -> Stats {
+    let (num_members, num_failed, num_left, health_score) = {
+      let members = self.inner.members.read().await;
+      let num_members = members.states.len();
+      let num_failed = members.failed_members.len();
+      let num_left = members.left_members.len();
+      let health_score = self.inner.memberlist.health_score();
+      (num_members, num_failed, num_left, health_score)
+    };
+
+    #[cfg(not(feature = "encryption"))]
+    let encrypted = false;
+    #[cfg(feature = "encryption")]
+    let encrypted = self.inner.memberlist.encryption_enabled();
+
+    Stats {
+      members: num_members,
+      failed: num_failed,
+      left: num_left,
+      health_score,
+      member_time: self.inner.clock.time().into(),
+      event_time: self.inner.event_clock.time().into(),
+      query_time: self.inner.query_clock.time().into(),
+      intent_queue: self.inner.broadcasts.num_queued().await,
+      event_queue: self.inner.event_broadcasts.num_queued().await,
+      query_queue: self.inner.query_broadcasts.num_queued().await,
+      encrypted,
+      coordinate_resets: self
+        .inner
+        .coord_core
+        .as_ref()
+        .map(|coord| coord.client.stats().resets),
+    }
   }
 
   /// Returns the number of nodes in the serf cluster, regardless of
@@ -543,4 +573,23 @@ where
 
     Err(Error::CoordinatesDisabled)
   }
+}
+
+#[viewit::viewit(vis_all = "", getters(vis_all = "pub", prefix = "get"), setters(skip))]
+#[cfg_attr(feature = "async-graphql", derive(async_graphql::SimpleObject))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Stats {
+  members: usize,
+  failed: usize,
+  left: usize,
+  health_score: usize,
+  member_time: u64,
+  event_time: u64,
+  query_time: u64,
+  intent_queue: usize,
+  event_queue: usize,
+  query_queue: usize,
+  encrypted: bool,
+  #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+  coordinate_resets: Option<usize>,
 }
