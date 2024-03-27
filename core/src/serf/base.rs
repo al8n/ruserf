@@ -230,8 +230,11 @@ where
     memberlist_delegate.notify_join(local_node).await;
 
     // update key manager
-    let that = this.clone();
-    this.inner.key_manager.store(that);
+    #[cfg(feature = "encryption")]
+    {
+      let that = this.clone();
+      this.inner.key_manager.store(that);
+    }
 
     // Start the background tasks. See the documentation above each method
     // for more information on their role.

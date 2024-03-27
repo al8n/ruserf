@@ -10,6 +10,19 @@ use super::{
 #[cfg(feature = "encryption")]
 use super::{KeyRequestMessage, KeyResponseMessage};
 
+const LEAVE_MESSAGE_TAG: u8 = 0;
+const JOIN_MESSAGE_TAG: u8 = 1;
+const PUSH_PULL_MESSAGE_TAG: u8 = 2;
+const USER_EVENT_MESSAGE_TAG: u8 = 3;
+const QUERY_MESSAGE_TAG: u8 = 4;
+const QUERY_RESPONSE_MESSAGE_TAG: u8 = 5;
+const CONFLICT_RESPONSE_MESSAGE_TAG: u8 = 6;
+const RELAY_MESSAGE_TAG: u8 = 7;
+#[cfg(feature = "encryption")]
+const KEY_REQUEST_MESSAGE_TAG: u8 = 253;
+#[cfg(feature = "encryption")]
+const KEY_RESPONSE_MESSAGE_TAG: u8 = 254;
+
 #[derive(Debug, thiserror::Error)]
 #[error("unknown message type byte: {0}")]
 pub struct UnknownMessageType(u8);
@@ -19,16 +32,18 @@ impl TryFrom<u8> for MessageType {
 
   fn try_from(value: u8) -> Result<Self, Self::Error> {
     Ok(match value {
-      0 => Self::Leave,
-      1 => Self::Join,
-      2 => Self::PushPull,
-      3 => Self::UserEvent,
-      4 => Self::Query,
-      5 => Self::QueryResponse,
-      6 => Self::ConflictResponse,
-      7 => Self::KeyRequest,
-      8 => Self::KeyResponse,
-      9 => Self::Relay,
+      LEAVE_MESSAGE_TAG => Self::Leave,
+      JOIN_MESSAGE_TAG => Self::Join,
+      PUSH_PULL_MESSAGE_TAG => Self::PushPull,
+      USER_EVENT_MESSAGE_TAG => Self::UserEvent,
+      QUERY_MESSAGE_TAG => Self::Query,
+      QUERY_RESPONSE_MESSAGE_TAG => Self::QueryResponse,
+      CONFLICT_RESPONSE_MESSAGE_TAG => Self::ConflictResponse,
+      RELAY_MESSAGE_TAG => Self::Relay,
+      #[cfg(feature = "encryption")]
+      KEY_REQUEST_MESSAGE_TAG => Self::KeyRequest,
+      #[cfg(feature = "encryption")]
+      KEY_RESPONSE_MESSAGE_TAG => Self::KeyResponse,
       _ => return Err(UnknownMessageType(value)),
     })
   }
@@ -36,18 +51,7 @@ impl TryFrom<u8> for MessageType {
 
 impl From<MessageType> for u8 {
   fn from(value: MessageType) -> Self {
-    match value {
-      MessageType::Leave => 0,
-      MessageType::Join => 1,
-      MessageType::PushPull => 2,
-      MessageType::UserEvent => 3,
-      MessageType::Query => 4,
-      MessageType::QueryResponse => 5,
-      MessageType::ConflictResponse => 6,
-      MessageType::KeyRequest => 7,
-      MessageType::KeyResponse => 8,
-      MessageType::Relay => 9,
-    }
+    value as u8
   }
 }
 
@@ -57,18 +61,18 @@ impl From<MessageType> for u8 {
 #[repr(u8)]
 #[non_exhaustive]
 pub enum MessageType {
-  Leave = 0,
-  Join = 1,
-  PushPull = 2,
-  UserEvent = 3,
-  Query = 4,
-  QueryResponse = 5,
-  ConflictResponse = 6,
-  Relay = 7,
+  Leave = LEAVE_MESSAGE_TAG,
+  Join = JOIN_MESSAGE_TAG,
+  PushPull = PUSH_PULL_MESSAGE_TAG,
+  UserEvent = USER_EVENT_MESSAGE_TAG,
+  Query = QUERY_MESSAGE_TAG,
+  QueryResponse = QUERY_RESPONSE_MESSAGE_TAG,
+  ConflictResponse = CONFLICT_RESPONSE_MESSAGE_TAG,
+  Relay = RELAY_MESSAGE_TAG,
   #[cfg(feature = "encryption")]
-  KeyRequest = 253,
+  KeyRequest = KEY_REQUEST_MESSAGE_TAG,
   #[cfg(feature = "encryption")]
-  KeyResponse = 254,
+  KeyResponse = KEY_RESPONSE_MESSAGE_TAG,
 }
 
 impl MessageType {

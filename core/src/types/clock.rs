@@ -4,20 +4,10 @@ use std::sync::{
 };
 
 /// A lamport time is a simple u64 that represents a point in time.
-#[derive(
-  Debug,
-  Default,
-  Clone,
-  Copy,
-  PartialEq,
-  Eq,
-  Hash,
-  PartialOrd,
-  Ord,
-  serde::Serialize,
-  serde::Deserialize,
-)]
-#[serde(transparent)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+#[repr(transparent)]
 pub struct LamportTime(pub(crate) u64);
 
 impl core::fmt::Display for LamportTime {
