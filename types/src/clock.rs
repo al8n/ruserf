@@ -3,6 +3,11 @@ use std::sync::{
   Arc,
 };
 
+use transformable::{
+  utils::{decode_varint, encode_varint, encoded_len_varint, DecodeVarintError, EncodeVarintError},
+  Transformable,
+};
+
 /// A lamport time is a simple u64 that represents a point in time.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -90,6 +95,38 @@ impl core::ops::Rem<Self> for LamportTime {
   }
 }
 
+/// Error that can occur when transforming a lamport time
+#[derive(thiserror::Error, Debug)]
+pub enum LamportTimeTransformError {
+  /// Encode varint error
+  #[error(transparent)]
+  Encode(#[from] EncodeVarintError),
+  /// Decode varint error
+  #[error(transparent)]
+  Decode(#[from] DecodeVarintError),
+}
+
+impl Transformable for LamportTime {
+  type Error = LamportTimeTransformError;
+
+  fn encode(&self, dst: &mut [u8]) -> Result<usize, Self::Error> {
+    encode_varint(self.0, dst).map_err(Into::into)
+  }
+
+  fn encoded_len(&self) -> usize {
+    encoded_len_varint(self.0)
+  }
+
+  fn decode(src: &[u8]) -> Result<(usize, Self), Self::Error>
+  where
+    Self: Sized,
+  {
+    decode_varint(src)
+      .map(|(n, time)| (n, Self(time)))
+      .map_err(Into::into)
+  }
+}
+
 /// A thread safe implementation of a lamport clock. It
 /// uses efficient atomic operations for all of its functions, falling back
 /// to a heavy lock only if there are enough CAS failures.
@@ -146,6 +183,14 @@ impl LamportClock {
         return;
       }
     }
+  }
+}
+
+#[cfg(test)]
+impl LamportTime {
+  pub(crate) fn random() -> Self {
+    use rand::Rng;
+    Self(rand::thread_rng().gen_range(0..u64::MAX))
   }
 }
 
