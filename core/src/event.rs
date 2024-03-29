@@ -13,6 +13,7 @@ use memberlist_core::{
   types::TinyVec,
   CheapClone,
 };
+use ruserf_types::QueryFlag;
 use smol_str::SmolStr;
 
 use super::{
@@ -441,7 +442,7 @@ where
       ltime,
       id,
       from,
-      flags: 0,
+      flags: QueryFlag::empty(),
       payload: msg,
     };
     let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&resp);
@@ -529,7 +530,7 @@ where
       ltime: self.ltime,
       id: self.id,
       from: self.ctx.this.inner.memberlist.advertise_node(),
-      flags: 0,
+      flags: QueryFlag::empty(),
       payload: buf,
     }
   }

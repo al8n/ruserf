@@ -24,3 +24,5 @@ thiserror = "1"
 viewit = "0.1.5"
 smol_str = "0.2"
 smallvec = "1"
+
+ruserf-types = { path = "types", version = "0.0.0" }

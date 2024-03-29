@@ -281,7 +281,7 @@ where
       id: rand::random(),
       from: local.cheap_clone(),
       filters,
-      flags: flags.bits(),
+      flags,
       relay_factor: params.relay_factor,
       timeout: params.timeout,
       name: name.clone(),
@@ -309,7 +309,7 @@ where
     );
 
     // Register QueryResponse to track acks and responses
-    let resp = q.response(self.inner.memberlist.num_online_members().await);
+    let resp = QueryResponse::from_query(&q, self.inner.memberlist.num_online_members().await);
     self
       .register_query_response(params.timeout, resp.clone())
       .await;

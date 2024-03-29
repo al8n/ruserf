@@ -332,33 +332,40 @@ impl<'b, I, A> AsMessageRef<I, A> for &'b SerfMessage<I, A> {
 
 impl<I, A> core::fmt::Display for SerfMessage<I, A> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    write!(f, "{}", self.as_str())
+    write!(f, "{}", self.ty().as_str())
   }
 }
 
 impl<I, A> SerfMessage<I, A> {
-  pub(crate) const fn as_str(&self) -> &'static str {
+  /// Returns the message type of this message
+  pub const fn ty(&self) -> MessageType {
     match self {
-      Self::Leave(_) => "leave",
-      Self::Join(_) => "join",
-      Self::PushPull(_) => "push pull",
-      Self::UserEvent(_) => "user event",
-      Self::Query(_) => "query",
-      Self::QueryResponse(_) => "query response",
-      Self::ConflictResponse(_) => "conflict response",
+      Self::Leave(_) => MessageType::Leave,
+      Self::Join(_) => MessageType::Join,
+      Self::PushPull(_) => MessageType::PushPull,
+      Self::UserEvent(_) => MessageType::UserEvent,
+      Self::Query(_) => MessageType::Query,
+      Self::QueryResponse(_) => MessageType::QueryResponse,
+      Self::ConflictResponse(_) => MessageType::ConflictResponse,
       #[cfg(feature = "encryption")]
-      Self::KeyRequest(_) => "key request",
+      Self::KeyRequest(_) => MessageType::KeyRequest,
       #[cfg(feature = "encryption")]
-      Self::KeyResponse(_) => "key response",
+      Self::KeyResponse(_) => MessageType::KeyResponse,
     }
   }
 }
 
 /// Used to store the end destination of a relayed message
+#[viewit::viewit(getters(style = "ref"), setters(prefix = "with"))]
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 #[repr(transparent)]
-pub(crate) struct RelayHeader<I, A> {
-  pub(crate) dest: Node<I, A>,
+pub struct RelayHeader<I, A> {
+  /// The distination node
+  #[viewit(
+    getter(style = "ref", attrs(doc = "Returns the destination node")),
+    setter(attrs(doc = "Sets the destination node (Builder pattern)"))
+  )]
+  dest: Node<I, A>,
 }

@@ -733,7 +733,7 @@ where
     }
 
     // Check if we've already seen this
-    let idx = (msg.ltime % bltime).0 as usize;
+    let idx = u64::from(msg.ltime % bltime) as usize;
     let seen: Option<&mut UserEvents> = el.buffer[idx].as_mut();
     let user_event = UserEvent {
       name: msg.name.clone(),
@@ -820,7 +820,7 @@ where
     }
 
     // Check if we've already seen this
-    let idx = (q.ltime % q_time).0 as usize;
+    let idx = u64::from(q.ltime % q_time) as usize;
     let seen = query.buffer[idx].as_mut();
     if let Some(seen) = seen {
       for &prev in seen.query_ids.iter() {
@@ -872,7 +872,7 @@ where
         ltime: q.ltime,
         id: q.id,
         from: self.inner.memberlist.advertise_node(),
-        flags: QueryFlag::ACK.bits(),
+        flags: QueryFlag::ACK,
         payload: Bytes::new(),
       };
 
@@ -1614,7 +1614,7 @@ where
                 msg => {
                   tracing::warn!(
                     "ruserf: invalid conflict query response type: {}",
-                    msg.as_str()
+                    msg.ty().as_str()
                   );
                   continue;
                 }

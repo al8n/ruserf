@@ -229,7 +229,7 @@ where
               r.from.id().cheap_clone(),
               SmolStr::new(format!(
                 "Invalid key query response type: {:?}",
-                msg.as_str()
+                msg.ty().as_str()
               )),
             );
             resp.num_err += 1;

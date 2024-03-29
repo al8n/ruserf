@@ -51,7 +51,7 @@ pub struct QueryMessage<I, A> {
   filters: TinyVec<Bytes>,
   /// Used to provide various flags
   #[viewit(
-    getter(const, style = "ref", attrs(doc = "Returns the flags")),
+    getter(const, style = "move", attrs(doc = "Returns the flags")),
     setter(attrs(doc = "Sets the flags (Builder pattern)"))
   )]
   flags: QueryFlag,
@@ -59,7 +59,7 @@ pub struct QueryMessage<I, A> {
   #[viewit(
     getter(
       const,
-      style = "ref",
+      style = "move",
       attrs(doc = "Returns the number of duplicate relayed responses")
     ),
     setter(attrs(doc = "Sets the number of duplicate relayed responses (Builder pattern)"))
@@ -69,7 +69,7 @@ pub struct QueryMessage<I, A> {
   #[viewit(
     getter(
       const,
-      style = "ref",
+      style = "move",
       attrs(doc = "Returns the maximum time between delivery and response")
     ),
     setter(attrs(doc = "Sets the maximum time between delivery and response (Builder pattern)"))

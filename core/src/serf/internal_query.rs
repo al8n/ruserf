@@ -189,7 +189,11 @@ where
       Ok((_, msg)) => match msg {
         SerfMessage::KeyRequest(req) => req,
         msg => {
-          tracing::error!(err = "unexpected message type", "ruserf: {}", msg.as_str());
+          tracing::error!(
+            err = "unexpected message type",
+            "ruserf: {}",
+            msg.ty().as_str()
+          );
           Self::send_key_response(q, &mut response).await;
           return;
         }
@@ -244,7 +248,11 @@ where
       Ok((_, msg)) => match msg {
         SerfMessage::KeyRequest(req) => req,
         msg => {
-          tracing::error!(err = "unexpected message type", "ruserf: {}", msg.as_str());
+          tracing::error!(
+            err = "unexpected message type",
+            "ruserf: {}",
+            msg.ty().as_str()
+          );
           Self::send_key_response(q, &mut response).await;
           return;
         }
@@ -305,7 +313,11 @@ where
       Ok((_, msg)) => match msg {
         SerfMessage::KeyRequest(req) => req,
         msg => {
-          tracing::error!(err = "unexpected message type", "ruserf: {}", msg.as_str());
+          tracing::error!(
+            err = "unexpected message type",
+            "ruserf: {}",
+            msg.ty().as_str()
+          );
           Self::send_key_response(q, &mut response).await;
           return;
         }

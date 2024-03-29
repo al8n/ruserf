@@ -37,6 +37,30 @@ impl LamportTime {
   pub const fn new(time: u64) -> Self {
     Self(time)
   }
+
+  /// Returns the lamport time as a big endian byte array
+  #[inline]
+  pub const fn to_be_bytes(self) -> [u8; 8] {
+    self.0.to_be_bytes()
+  }
+
+  /// Returns the lamport time as a little endian byte array
+  #[inline]
+  pub const fn to_le_bytes(self) -> [u8; 8] {
+    self.0.to_le_bytes()
+  }
+
+  /// Creates a new lamport time from a big endian byte array
+  #[inline]
+  pub const fn from_be_bytes(bytes: [u8; 8]) -> Self {
+    Self(u64::from_be_bytes(bytes))
+  }
+
+  /// Creates a new lamport time from a little endian byte array
+  #[inline]
+  pub const fn from_le_bytes(bytes: [u8; 8]) -> Self {
+    Self(u64::from_le_bytes(bytes))
+  }
 }
 
 impl core::ops::Add<Self> for LamportTime {

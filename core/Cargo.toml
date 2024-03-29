@@ -8,11 +8,19 @@ description = "A placeholder"
 [features]
 default = ["metrics", "async-graphql"]
 metrics = ["memberlist-core/metrics", "dep:metrics"]
-encryption = ["memberlist-core/encryption", "base64"]
+encryption = ["memberlist-core/encryption", "ruserf-types/encryption", "base64"]
 
 async-graphql = ["dep:async-graphql"]
 
-serde = ["dep:serde", "dep:humantime-serde", "memberlist-core/serde", "smol_str/serde", "smallvec/serde", "indexmap/serde"]
+serde = [
+  "dep:serde",
+  "dep:humantime-serde",
+  "memberlist-core/serde",
+  "ruserf-types/serde",
+  "smol_str/serde",
+  "smallvec/serde",
+  "indexmap/serde",
+]
 
 [dependencies]
 atomic = "0.6"
@@ -38,6 +46,8 @@ thiserror.workspace = true
 viewit.workspace = true
 
 memberlist-core = { path = "../../memberlist/core", default-features = false }
+
+ruserf-types.workspace = true
 
 metrics = { version = "0.22", optional = true }
 

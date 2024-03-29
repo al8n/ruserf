@@ -148,7 +148,7 @@ where
               tracing::debug!("ruserf: leave message",);
               rebroadcast = this.handle_node_leave_intent(l).await.then(|| msg.clone());
             } else {
-              tracing::warn!("ruserf: receive unexpected message: {}", l.as_str());
+              tracing::warn!("ruserf: receive unexpected message: {}", l.ty().as_str());
             }
           }
           Err(e) => {
@@ -161,7 +161,7 @@ where
               tracing::debug!("ruserf: join message",);
               rebroadcast = this.handle_node_join_intent(j).await.then(|| msg.clone());
             } else {
-              tracing::warn!("ruserf: receive unexpected message: {}", j.as_str());
+              tracing::warn!("ruserf: receive unexpected message: {}", j.ty().as_str());
             }
           }
           Err(e) => {
@@ -175,7 +175,7 @@ where
               rebroadcast = this.handle_user_event(ue).await.then(|| msg.clone());
               rebroadcast_queue = &this.inner.event_broadcasts;
             } else {
-              tracing::warn!("ruserf: receive unexpected message: {}", ue.as_str());
+              tracing::warn!("ruserf: receive unexpected message: {}", ue.ty().as_str());
             }
           }
           Err(e) => {
@@ -189,7 +189,7 @@ where
               rebroadcast = this.handle_query(q, None).await.then(|| msg.clone());
               rebroadcast_queue = &this.inner.query_broadcasts;
             } else {
-              tracing::warn!("ruserf: receive unexpected message: {}", q.as_str());
+              tracing::warn!("ruserf: receive unexpected message: {}", q.ty().as_str());
             }
           }
           Err(e) => {
@@ -202,7 +202,7 @@ where
               tracing::debug!("ruserf: query response message",);
               this.handle_query_response(qr).await;
             } else {
-              tracing::warn!("ruserf: receive unexpected message: {}", qr.as_str());
+              tracing::warn!("ruserf: receive unexpected message: {}", qr.ty().as_str());
             }
           }
           Err(e) => {
@@ -384,19 +384,19 @@ where
                 // Witness the Lamport clocks first.
                 // We subtract 1 since no message with that clock has been sent yet
                 if pp.ltime > LamportTime::ZERO {
-                  this.inner.clock.witness(pp.ltime - LamportTime(1));
+                  this.inner.clock.witness(pp.ltime - LamportTime::new(1));
                 }
                 if pp.event_ltime > LamportTime::ZERO {
                   this
                     .inner
                     .event_clock
-                    .witness(pp.event_ltime - LamportTime(1));
+                    .witness(pp.event_ltime - LamportTime::new(1));
                 }
                 if pp.query_ltime > LamportTime::ZERO {
                   this
                     .inner
                     .query_clock
-                    .witness(pp.query_ltime - LamportTime(1));
+                    .witness(pp.query_ltime - LamportTime::new(1));
                 }
 
                 // Process the left nodes first to avoid the LTimes from incrementing
@@ -465,7 +465,7 @@ where
                 }
               }
               msg => {
-                tracing::error!("ruserf: remote state has bad type {}", msg.as_str());
+                tracing::error!("ruserf: remote state has bad type {}", msg.ty().as_str());
               }
             }
           }

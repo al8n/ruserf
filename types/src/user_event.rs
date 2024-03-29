@@ -21,9 +21,7 @@ pub struct UserEvents {
   /// The user events
   #[viewit(
     getter(const, style = "ref", attrs(doc = "Returns the user events")),
-    setter(
-      attrs(doc = "Sets the user events (Builder pattern)")
-    )
+    setter(attrs(doc = "Sets the user events (Builder pattern)"))
   )]
   events: OneOrMore<UserEvent>,
 }
@@ -36,17 +34,13 @@ pub struct UserEvent {
   /// The name of the event
   #[viewit(
     getter(const, attrs(doc = "Returns the name of the event")),
-    setter(
-      attrs(doc = "Sets the name of the event (Builder pattern)")
-    )
+    setter(attrs(doc = "Sets the name of the event (Builder pattern)"))
   )]
   name: SmolStr,
   /// The payload of the event
   #[viewit(
     getter(const, attrs(doc = "Returns the payload of the event")),
-    setter(
-      attrs(doc = "Sets the payload of the event (Builder pattern)")
-    )
+    setter(attrs(doc = "Sets the payload of the event (Builder pattern)"))
   )]
   payload: Bytes,
 }
@@ -68,17 +62,13 @@ pub struct UserEventMessage {
   /// The name of the event
   #[viewit(
     getter(const, attrs(doc = "Returns the name of the event")),
-    setter(
-      attrs(doc = "Sets the name of the event (Builder pattern)")
-    )
+    setter(attrs(doc = "Sets the name of the event (Builder pattern)"))
   )]
   name: SmolStr,
   /// The payload of the event
   #[viewit(
     getter(const, attrs(doc = "Returns the payload of the event")),
-    setter(
-      attrs(doc = "Sets the payload of the event (Builder pattern)")
-    )
+    setter(attrs(doc = "Sets the payload of the event (Builder pattern)"))
   )]
   payload: Bytes,
   /// "Can Coalesce".

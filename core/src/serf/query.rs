@@ -28,19 +28,6 @@ use crate::{
 
 use super::Serf;
 
-impl<I, A> QueryMessage<I, A> {
-  #[inline]
-  pub(crate) fn response(&self, num_nodes: usize) -> QueryResponse<I, A> {
-    QueryResponse::new(
-      self.id,
-      self.ltime,
-      num_nodes,
-      Instant::now() + self.timeout,
-      self.ack(),
-    )
-  }
-}
-
 /// Provided to [`Serf::query`] to configure the parameters of the
 /// query. If not provided, sane defaults will be used.
 #[viewit::viewit]
@@ -124,6 +111,18 @@ pub struct QueryResponse<I, A> {
 
   #[viewit(getter(vis = "pub(crate)", const, style = "ref"))]
   inner: Arc<QueryResponseInner<I, A>>,
+}
+
+impl<I, A> QueryResponse<I, A> {
+  pub(crate) fn from_query(q: &QueryMessage<I, A>, num_nodes: usize) -> Self {
+    QueryResponse::new(
+      q.id(),
+      q.ltime(),
+      num_nodes,
+      Instant::now() + q.timeout(),
+      q.ack(),
+    )
+  }
 }
 
 impl<I, A> QueryResponse<I, A> {
@@ -438,18 +437,18 @@ where
             return false;
           }
         }
-        Filter::Tag(tag) => {
+        Filter::Tag { tag, expr: fexpr } => {
           // Check if we match this regex
           if let Some(tags) = &*self.inner.opts.tags.load() {
-            if let Some(expr) = tags.get(&tag.tag) {
-              match regex::Regex::new(&tag.expr) {
+            if let Some(expr) = tags.get(&tag) {
+              match regex::Regex::new(&fexpr) {
                 Ok(re) => {
                   if !re.is_match(expr) {
                     return false;
                   }
                 }
                 Err(err) => {
-                  tracing::warn!(err=%err, "ruserf: failed to compile filter regex ({})", tag.expr);
+                  tracing::warn!(err=%err, "ruserf: failed to compile filter regex ({})", fexpr);
                   return false;
                 }
               }
