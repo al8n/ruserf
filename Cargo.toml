@@ -1,7 +1,8 @@
 [workspace]
 members = [
-  "ruserf",
   "core",
+  "ruserf",
+  "types"
 ]
 resolver = "2"
 
@@ -13,8 +14,13 @@ homepage = "https://github.com/al8n/ruserf"
 license = "MPL-2.0"
 
 [workspace.dependencies]
+atomic = "0.6"
 derive_more = "0.99"
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 humantime-serde = "1"
-
+indexmap = "2"
+thiserror = "1"
+viewit = "0.1.5"
+smol_str = "0.2"
+smallvec = "1"

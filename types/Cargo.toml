@@ -1,0 +1,29 @@
+[package]
+name = "ruserf-types"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+
+[features]
+encryption = ["memberlist-types/encryption"]
+serde = ["dep:serde", "indexmap/serde", "memberlist-types/serde", "smol_str/serde", "bitflags/serde"]
+
+[dependencies]
+atomic.workspace = true
+bitflags = "2"
+bytemuck = { version = "1", features = ["derive"] }
+derive_more.workspace = true
+indexmap.workspace = true
+memberlist-types = { path = "../../memberlist/types" }
+smol_str.workspace = true
+transformable = { version = "0.1", features = ["async"] }
+thiserror.workspace = true
+viewit.workspace = true
+
+serde = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

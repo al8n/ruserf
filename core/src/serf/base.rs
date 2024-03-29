@@ -286,8 +286,8 @@ where
 
     // Attempt to re-join the cluster if we have known nodes
     if !alive_nodes.is_empty() {
-      let showbiz = this.inner.memberlist.clone();
-      Self::handle_rejoin(showbiz, alive_nodes);
+      let memberlist = this.inner.memberlist.clone();
+      Self::handle_rejoin(memberlist, alive_nodes);
     }
     Ok(this)
   }

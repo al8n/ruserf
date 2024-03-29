@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
-use memberlist_core::transport::Node;
-
 use super::{
-  JoinMessage, LeaveMessage, Member, PushPull, PushPullRef, QueryMessage, QueryResponseMessage,
-  UserEventMessage,
+  JoinMessage, LeaveMessage, Member, Node, PushPull, PushPullRef, QueryMessage,
+  QueryResponseMessage, UserEventMessage,
 };
 
 #[cfg(feature = "encryption")]
@@ -23,6 +21,7 @@ const KEY_REQUEST_MESSAGE_TAG: u8 = 253;
 #[cfg(feature = "encryption")]
 const KEY_RESPONSE_MESSAGE_TAG: u8 = 254;
 
+/// Unknown message type error
 #[derive(Debug, thiserror::Error)]
 #[error("unknown message type byte: {0}")]
 pub struct UnknownMessageType(u8);
@@ -61,21 +60,33 @@ impl From<MessageType> for u8 {
 #[repr(u8)]
 #[non_exhaustive]
 pub enum MessageType {
+  /// Leave message
   Leave = LEAVE_MESSAGE_TAG,
+  /// Join message
   Join = JOIN_MESSAGE_TAG,
+  /// PushPull message
   PushPull = PUSH_PULL_MESSAGE_TAG,
+  /// UserEvent message
   UserEvent = USER_EVENT_MESSAGE_TAG,
+  /// Query message
   Query = QUERY_MESSAGE_TAG,
+  /// QueryResponse message
   QueryResponse = QUERY_RESPONSE_MESSAGE_TAG,
+  /// ConflictResponse message
   ConflictResponse = CONFLICT_RESPONSE_MESSAGE_TAG,
+  /// Relay message
   Relay = RELAY_MESSAGE_TAG,
+  /// KeyRequest message
   #[cfg(feature = "encryption")]
   KeyRequest = KEY_REQUEST_MESSAGE_TAG,
+  /// KeyResponse message
   #[cfg(feature = "encryption")]
   KeyResponse = KEY_RESPONSE_MESSAGE_TAG,
 }
 
 impl MessageType {
+  /// Get the string representation of the message type
+  #[inline]
   pub const fn as_str(&self) -> &'static str {
     match self {
       Self::Leave => "leave",
@@ -85,11 +96,11 @@ impl MessageType {
       Self::Query => "query",
       Self::QueryResponse => "query response",
       Self::ConflictResponse => "conflict response",
+      Self::Relay => "relay",
       #[cfg(feature = "encryption")]
       Self::KeyRequest => "key request",
       #[cfg(feature = "encryption")]
       Self::KeyResponse => "key response",
-      Self::Relay => "relay",
     }
   }
 }
@@ -103,15 +114,24 @@ pub trait AsMessageRef<I, A> {
 /// The reference type of [`SerfMessage`].
 #[derive(Debug)]
 pub enum SerfMessageRef<'a, I, A> {
+  /// Leave message reference
   Leave(&'a LeaveMessage<I, A>),
+  /// Join message reference
   Join(&'a JoinMessage<I, A>),
+  /// PushPull message reference
   PushPull(PushPullRef<'a, I, A>),
+  /// UserEvent message reference
   UserEvent(&'a UserEventMessage),
+  /// Query message reference
   Query(&'a QueryMessage<I, A>),
+  /// QueryResponse message reference
   QueryResponse(&'a QueryResponseMessage<I, A>),
+  /// ConflictResponse message reference
   ConflictResponse(&'a Member<I, A>),
+  /// KeyRequest message reference
   #[cfg(feature = "encryption")]
   KeyRequest(&'a KeyRequestMessage),
+  /// KeyResponse message reference
   #[cfg(feature = "encryption")]
   KeyResponse(&'a KeyResponseMessage),
 }
@@ -134,15 +154,24 @@ impl<'a, I, A> AsMessageRef<I, A> for SerfMessageRef<'a, I, A> {
 /// memberlist.
 #[derive(Debug, Clone)]
 pub enum SerfMessage<I, A> {
+  /// Leave message
   Leave(LeaveMessage<I, A>),
+  /// Join message
   Join(JoinMessage<I, A>),
+  /// PushPull message
   PushPull(PushPull<I, A>),
+  /// UserEvent message
   UserEvent(UserEventMessage),
+  /// Query message
   Query(QueryMessage<I, A>),
+  /// QueryResponse message
   QueryResponse(QueryResponseMessage<I, A>),
+  /// ConflictResponse message
   ConflictResponse(Arc<Member<I, A>>),
+  /// Relay message
   #[cfg(feature = "encryption")]
   KeyRequest(KeyRequestMessage),
+  /// KeyResponse message
   #[cfg(feature = "encryption")]
   KeyResponse(KeyResponseMessage),
 }
