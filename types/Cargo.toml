@@ -13,6 +13,7 @@ serde = ["dep:serde", "indexmap/serde", "memberlist-types/serde", "smol_str/serd
 [dependencies]
 atomic.workspace = true
 bitflags = "2"
+byteorder = "1"
 bytemuck = { version = "1", features = ["derive"] }
 derive_more.workspace = true
 indexmap.workspace = true
@@ -23,6 +24,10 @@ thiserror.workspace = true
 viewit.workspace = true
 
 serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+rand = "0.8"
+futures = { version = "=0.3.29", features = ["executor"] }
 
 [package.metadata.docs.rs]
 all-features = true
