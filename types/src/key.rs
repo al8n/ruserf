@@ -19,7 +19,7 @@ pub struct KeyRequestMessage {
   key: Option<SecretKey>,
 }
 
-/// Key
+/// Key response message
 #[viewit::viewit(setters(prefix = "with"))]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 #[cfg(feature = "encryption")]

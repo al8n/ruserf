@@ -3,9 +3,10 @@ use memberlist_core::{
   transport::{Id, Node, Transformable},
   CheapClone,
 };
+use ruserf_types::{FilterTransformError, NodeTransformError};
 
 use crate::{
-  coordinate::Coordinate,
+  coordinate::{Coordinate, CoordinateTransformError},
   types::{AsMessageRef, Filter, SerfMessage, Tags, UnknownMessageType},
 };
 
@@ -79,19 +80,30 @@ pub trait TransformDelegate: Send + Sync + 'static {
 }
 
 /// The error type for the LPE transformation.
+#[derive(thiserror::Error)]
 pub enum LpeTransformError<I, A>
 where
   I: Transformable,
   A: Transformable,
 {
   /// Id transformation error.
+  #[error(transparent)]
   Id(<I as Transformable>::Error),
   /// Address transformation error.
+  #[error(transparent)]
   Address(<A as Transformable>::Error),
+  /// Coordinate transformation error.
+  #[error(transparent)]
+  Coordinate(#[from] CoordinateTransformError),
   /// Node transformation error.
-  Node(<Node<I, A> as Transformable>::Error),
+  #[error(transparent)]
+  Node(#[from] NodeTransformError<I, A>),
+  /// Filter transformation error.
+  #[error(transparent)]
+  Filter(#[from] FilterTransformError<I, A>),
   /// Unknown message type error.
-  UnknownMessage(UnknownMessageType),
+  #[error(transparent)]
+  UnknownMessage(#[from] UnknownMessageType),
 }
 
 impl<I, A> core::fmt::Debug for LpeTransformError<I, A>
@@ -100,44 +112,7 @@ where
   A: Transformable,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    match self {
-      Self::Id(err) => write!(f, "{err:?}"),
-      Self::Address(err) => write!(f, "{err:?}"),
-      Self::Node(err) => write!(f, "{err:?}"),
-      Self::UnknownMessage(err) => write!(f, "{err:?}"),
-    }
-  }
-}
-
-impl<I, A> core::fmt::Display for LpeTransformError<I, A>
-where
-  I: Transformable,
-  A: Transformable,
-{
-  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    match self {
-      Self::Id(err) => write!(f, "{err}"),
-      Self::Address(err) => write!(f, "{err}"),
-      Self::Node(err) => write!(f, "{err}"),
-      Self::UnknownMessage(err) => write!(f, "{err}"),
-    }
-  }
-}
-
-impl<I, A> std::error::Error for LpeTransformError<I, A>
-where
-  I: Transformable,
-  A: Transformable,
-{
-}
-
-impl<I, A> From<UnknownMessageType> for LpeTransformError<I, A>
-where
-  I: Transformable,
-  A: Transformable,
-{
-  fn from(err: UnknownMessageType) -> Self {
-    Self::UnknownMessage(err)
+    write!(f, "{}", self)
   }
 }
 
@@ -167,11 +142,14 @@ where
   type Address = A;
 
   fn encode_filter(filter: &Filter<Self::Id, Self::Address>) -> Result<Bytes, Self::Error> {
-    todo!()
+    filter
+      .encode_to_vec()
+      .map(Bytes::from)
+      .map_err(Self::Error::Filter)
   }
 
   fn decode_filter(bytes: &[u8]) -> Result<(usize, Filter<Self::Id, Self::Address>), Self::Error> {
-    todo!()
+    Filter::decode(bytes).map_err(Self::Error::Filter)
   }
 
   fn node_encoded_len(node: &Node<Self::Id, Self::Address>) -> usize {
@@ -216,15 +194,15 @@ where
   }
 
   fn cooradinate_encoded_len(coordinate: &Coordinate) -> usize {
-    todo!()
+    Transformable::encoded_len(coordinate)
   }
 
   fn encode_coordinate(coordinate: &Coordinate, dst: &mut [u8]) -> Result<usize, Self::Error> {
-    todo!()
+    Transformable::encode(coordinate, dst).map_err(Self::Error::Coordinate)
   }
 
   fn decode_coordinate(bytes: &[u8]) -> Result<(usize, Coordinate), Self::Error> {
-    todo!()
+    Transformable::decode(bytes).map_err(Self::Error::Coordinate)
   }
 
   fn tags_encoded_len(tags: &Tags) -> usize {
