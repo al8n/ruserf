@@ -266,7 +266,6 @@ impl Transformable for KeyResponseMessage {
       return Err(Self::Error::BufferTooSmall);
     }
 
-
     let mut offset = 0;
     NetworkEndian::write_u32(&mut dst[offset..offset + 4], encoded_len as u32);
     offset += 4;
@@ -274,7 +273,10 @@ impl Transformable for KeyResponseMessage {
     offset += 1;
     offset += self.message.encode(&mut dst[offset..])?;
     offset += self.keys.encode(&mut dst[offset..])?;
-    offset += KeyRequestMessage {key: self.primary_key}.encode(&mut dst[offset..])?;
+    offset += KeyRequestMessage {
+      key: self.primary_key,
+    }
+    .encode(&mut dst[offset..])?;
 
     debug_assert_eq!(
       offset, encoded_len,
@@ -286,7 +288,13 @@ impl Transformable for KeyResponseMessage {
   }
 
   fn encoded_len(&self) -> usize {
-    4 + 1 + self.message.encoded_len() + self.keys.encoded_len() + KeyRequestMessage {key: self.primary_key}.encoded_len()
+    4 + 1
+      + self.message.encoded_len()
+      + self.keys.encoded_len()
+      + KeyRequestMessage {
+        key: self.primary_key,
+      }
+      .encoded_len()
   }
 
   fn decode(src: &[u8]) -> Result<(usize, Self), Self::Error>
@@ -307,11 +315,11 @@ impl Transformable for KeyResponseMessage {
 
     let result = src[offset] != 0;
     offset += 1;
-    let (n, message) = SmolStr::decode(&src[offset..]).map_err(Self::Error::Message)?;
+    let (n, message) = SmolStr::decode(&src[offset..])?;
     offset += n;
-    let (n, keys) = SecretKeys::decode(&src[offset..]).map_err(Self::Error::Keys)?;
+    let (n, keys) = SecretKeys::decode(&src[offset..])?;
     offset += n;
-    let (n, primary_key) = KeyRequestMessage::decode(&src[offset..]).map_err(Self::Error::PrimaryKey)?;
+    let (n, primary_key) = KeyRequestMessage::decode(&src[offset..])?;
     offset += n;
 
     debug_assert_eq!(
@@ -320,7 +328,15 @@ impl Transformable for KeyResponseMessage {
       encoded_len, offset
     );
 
-    Ok((offset, Self { result, message, keys, primary_key: primary_key.key }))
+    Ok((
+      offset,
+      Self {
+        result,
+        message,
+        keys,
+        primary_key: primary_key.key,
+      },
+    ))
   }
 }
 
@@ -409,7 +425,7 @@ pub struct KeyRequestOptions {
 
 #[cfg(test)]
 mod tests {
-  use rand::Rng;
+  use rand::{distributions::Alphanumeric, thread_rng, Rng};
 
   use super::*;
 
@@ -443,12 +459,34 @@ mod tests {
   }
 
   impl KeyResponseMessage {
-    pub(crate) fn random() -> Self {
-      let mut keys = SecretKeys::default();
-      for _ in 0..rand::thread_rng().gen_range(0..10) {
-        let mut buf = [0u8; 32];
-        rand::thread_rng().fill(&mut buf);
-        keys.insert(SecretKey::from(buf));
+    pub(crate) fn random(num_keys: usize, size: usize) -> Self {
+      let mut keys = SecretKeys::new();
+      for i in 0..num_keys {
+        let kind = match i % 3 {
+          0 => 16,
+          1 => 24,
+          2 => 32,
+          _ => unreachable!(),
+        };
+        let key = match kind {
+          16 => {
+            let mut buf = [0u8; 16];
+            rand::thread_rng().fill(&mut buf);
+            SecretKey::from(buf)
+          }
+          24 => {
+            let mut buf = [0u8; 24];
+            rand::thread_rng().fill(&mut buf);
+            SecretKey::from(buf)
+          }
+          32 => {
+            let mut buf = [0u8; 32];
+            rand::thread_rng().fill(&mut buf);
+            SecretKey::from(buf)
+          }
+          _ => unreachable!(),
+        };
+        keys.push(key);
       }
 
       let primary_key = if rand::random() {
@@ -459,9 +497,15 @@ mod tests {
         None
       };
 
+      let message = thread_rng()
+        .sample_iter(Alphanumeric)
+        .take(size)
+        .collect::<Vec<u8>>();
+      let message = String::from_utf8(message).unwrap().into();
+
       Self {
         result: rand::random(),
-        message: SmolStr::random(rand::thread_rng().gen_range(0..100)),
+        message,
         keys,
         primary_key,
       }
@@ -530,6 +574,34 @@ mod tests {
             .unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, key);
+      }
+    });
+  }
+
+  #[test]
+  fn test_key_response_message_transform() {
+    futures::executor::block_on(async {
+      for i in 0..100 {
+        let message = KeyResponseMessage::random(i % 10, i);
+        let mut buf = vec![0; message.encoded_len()];
+        let encoded_len = message.encode(&mut buf).unwrap();
+        assert_eq!(encoded_len, message.encoded_len());
+
+        let (decoded_len, decoded) = KeyResponseMessage::decode(&buf).unwrap();
+        assert_eq!(decoded_len, encoded_len);
+        assert_eq!(decoded, message);
+
+        let (decoded_len, decoded) =
+          KeyResponseMessage::decode_from_reader(&mut std::io::Cursor::new(&buf)).unwrap();
+        assert_eq!(decoded_len, encoded_len);
+        assert_eq!(decoded, message);
+
+        let (decoded_len, decoded) =
+          KeyResponseMessage::decode_from_async_reader(&mut futures::io::Cursor::new(&buf))
+            .await
+            .unwrap();
+        assert_eq!(decoded_len, encoded_len);
+        assert_eq!(decoded, message);
       }
     });
   }
