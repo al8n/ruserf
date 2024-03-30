@@ -34,13 +34,7 @@ use super::Serf;
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct QueryParam<I, A> {
-  // /// If provided, we restrict the nodes that should respond to those
-  // /// with names in this list
-  // filter_nodes: Vec<Node<I, A>>,
-
-  // /// Maps a tag name to a regular expression that is applied
-  // /// to restrict the nodes that should respond
-  // filter_tags: HashMap<SmolStr, SmolStr>,
+  /// The filters to apply to the query.
   filters: OneOrMore<Filter<I, A>>,
 
   /// If true, we are requesting an delivery acknowledgement from

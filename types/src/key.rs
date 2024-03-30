@@ -1,7 +1,6 @@
+use indexmap::IndexMap;
 use memberlist_types::{SecretKey, SecretKeys};
 use smol_str::SmolStr;
-
-use std::collections::HashMap;
 
 /// KeyRequest is used to contain input parameters which get broadcasted to all
 /// nodes as part of a key query operation.
@@ -71,7 +70,7 @@ pub struct KeyResponse<I> {
     ),
     setter(attrs(doc = "Sets the map of node id to response message (Builder pattern)"))
   )]
-  messages: HashMap<I, SmolStr>,
+  messages: IndexMap<I, SmolStr>,
   /// Total nodes memberlist knows of
   #[viewit(
     getter(const, attrs(doc = "Returns the total nodes memberlist knows of")),
@@ -114,7 +113,7 @@ pub struct KeyResponse<I> {
       doc = "Sets a mapping of the base64-encoded value of the key bytes to the number of nodes that have the key installed (Builder pattern)"
     ))
   )]
-  keys: HashMap<SecretKey, usize>,
+  keys: IndexMap<SecretKey, usize>,
 
   /// A mapping of the base64-encoded value of the primary
   /// key bytes to the number of nodes that have the key installed.
@@ -130,7 +129,7 @@ pub struct KeyResponse<I> {
       doc = "Sets a mapping of the base64-encoded value of the primary key bytes to the number of nodes that have the key installed. (Builder pattern)"
     ))
   )]
-  primary_keys: HashMap<SecretKey, usize>,
+  primary_keys: IndexMap<SecretKey, usize>,
 }
 
 /// KeyRequestOptions is used to contain optional parameters for a keyring operation

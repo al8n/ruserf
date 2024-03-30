@@ -1,6 +1,6 @@
 use byteorder::{ByteOrder, NetworkEndian};
+use indexmap::IndexMap;
 use smol_str::SmolStr;
-use std::collections::HashMap;
 use transformable::Transformable;
 
 /// Tags of a node
@@ -15,11 +15,11 @@ use transformable::Transformable;
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
-pub struct Tags(HashMap<SmolStr, SmolStr>);
+pub struct Tags(IndexMap<SmolStr, SmolStr>);
 
 impl IntoIterator for Tags {
   type Item = (SmolStr, SmolStr);
-  type IntoIter = std::collections::hash_map::IntoIter<SmolStr, SmolStr>;
+  type IntoIter = indexmap::map::IntoIter<SmolStr, SmolStr>;
 
   fn into_iter(self) -> Self::IntoIter {
     self.0.into_iter()
@@ -36,12 +36,12 @@ impl Tags {
   /// Create a new Tags
   #[inline]
   pub fn new() -> Self {
-    Self(HashMap::new())
+    Self(IndexMap::new())
   }
 
   /// Create a new Tags with a capacity
   pub fn with_capacity(cap: usize) -> Self {
-    Self(HashMap::with_capacity(cap))
+    Self(IndexMap::with_capacity(cap))
   }
 }
 
@@ -113,7 +113,7 @@ impl Transformable for Tags {
 
     let total_tags = NetworkEndian::read_u32(&src[4..8]) as usize;
     let mut offset = 8;
-    let mut tags = HashMap::with_capacity(total_tags);
+    let mut tags = IndexMap::with_capacity(total_tags);
     for _ in 0..total_tags {
       let (n, key) = SmolStr::decode(&src[offset..])?;
       offset += n;
@@ -139,7 +139,7 @@ mod tests {
 
   impl Tags {
     pub(crate) fn random(num_tags: usize, size: usize) -> Self {
-      let mut tags = HashMap::with_capacity(num_tags);
+      let mut tags = IndexMap::with_capacity(num_tags);
       for _ in 0..num_tags {
         let rng = rand::thread_rng();
         let name = rng

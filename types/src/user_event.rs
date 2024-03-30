@@ -383,7 +383,7 @@ mod tests {
   }
 
   impl UserEvents {
-    fn random(size: usize, num_events: usize) -> Self {
+    pub(crate) fn random(size: usize, num_events: usize) -> Self {
       let mut events = OneOrMore::with_capacity(num_events);
       for _ in 0..num_events {
         events.push(UserEvent::random(size));
