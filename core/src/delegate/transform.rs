@@ -3,7 +3,7 @@ use memberlist_core::{
   transport::{Id, Node, Transformable},
   CheapClone,
 };
-use ruserf_types::{FilterTransformError, NodeTransformError};
+use ruserf_types::{FilterTransformError, NodeTransformError, TagsTransformError};
 
 use crate::{
   coordinate::{Coordinate, CoordinateTransformError},
@@ -101,6 +101,9 @@ where
   /// Filter transformation error.
   #[error(transparent)]
   Filter(#[from] FilterTransformError<I, A>),
+  /// Tags transformation error.
+  #[error(transparent)]
+  Tags(#[from] TagsTransformError),
   /// Unknown message type error.
   #[error(transparent)]
   UnknownMessage(#[from] UnknownMessageType),
@@ -206,15 +209,15 @@ where
   }
 
   fn tags_encoded_len(tags: &Tags) -> usize {
-    todo!()
+    Transformable::encoded_len(tags)
   }
 
   fn encode_tags(tags: &Tags, dst: &mut [u8]) -> Result<usize, Self::Error> {
-    todo!()
+    Transformable::encode(tags, dst).map_err(Self::Error::Tags)
   }
 
   fn decode_tags(bytes: &[u8]) -> Result<(usize, Tags), Self::Error> {
-    todo!()
+    Transformable::decode(bytes).map_err(Self::Error::Tags)
   }
 
   fn message_encoded_len(msg: impl AsMessageRef<Self::Id, Self::Address>) -> usize {

@@ -1,13 +1,10 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use arc_swap::ArcSwapOption;
-pub use memberlist_core::{
-  types::{DelegateVersion, ProtocolVersion},
-  Options as MemberlistOptions,
-};
+pub use memberlist_core::Options as MemberlistOptions;
 use smol_str::SmolStr;
 
-use super::types::Tags;
+use super::types::{DelegateVersion, ProtocolVersion, Tags};
 
 fn tags(tags: &Arc<ArcSwapOption<Tags>>) -> Option<Arc<Tags>> {
   tags.load().as_ref().map(Arc::clone)
@@ -36,6 +33,9 @@ pub struct Options {
 
   /// The protocol version to speak
   protocol_version: ProtocolVersion,
+
+  /// The delegate version to speak
+  delegate_version: DelegateVersion,
 
   /// The amount of time to wait for a broadcast
   /// message to be sent to the cluster. Broadcast messages are used for
@@ -240,9 +240,6 @@ pub struct Options {
   /// Maximum byte size limit of user event `name` + `payload` in bytes.
   /// It's optimal to be relatively small, since it's going to be gossiped through the cluster.
   max_user_event_size: usize,
-  // /// An optional interface which when present allows
-  // /// the application to cause reaping of a node to happen when it otherwise wouldn't
-  // reconnect_timeout_override: ,
 }
 
 impl Default for Options {
@@ -270,7 +267,8 @@ impl Options {
   pub fn new() -> Self {
     Self {
       tags: Arc::new(ArcSwapOption::from_pointee(None)),
-      protocol_version: ProtocolVersion::V0,
+      protocol_version: ProtocolVersion::V1,
+      delegate_version: DelegateVersion::V1,
       broadcast_timeout: Duration::from_secs(5),
       leave_propagate_delay: Duration::from_secs(1),
       coalesce_period: Duration::ZERO,

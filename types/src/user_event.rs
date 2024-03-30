@@ -77,7 +77,13 @@ impl Transformable for UserEvents {
   }
 
   fn encoded_len(&self) -> usize {
-    4 + self.ltime.encoded_len() + 4 + self.events.iter().map(UserEvent::encoded_len).sum::<usize>()
+    4 + self.ltime.encoded_len()
+      + 4
+      + self
+        .events
+        .iter()
+        .map(UserEvent::encoded_len)
+        .sum::<usize>()
   }
 
   fn decode(src: &[u8]) -> Result<(usize, Self), Self::Error>
@@ -292,7 +298,6 @@ impl Transformable for UserEventMessage {
     offset += self.ltime.encode(&mut dst[offset..])?;
     offset += self.name.encode(&mut dst[offset..])?;
     offset += self.payload.encode(&mut dst[offset..])?;
-    
 
     debug_assert_eq!(
       offset, encoded_len,
@@ -337,7 +342,15 @@ impl Transformable for UserEventMessage {
       len, offset
     );
 
-    Ok((len, Self { ltime, name, payload, cc }))
+    Ok((
+      len,
+      Self {
+        ltime,
+        name,
+        payload,
+        cc,
+      },
+    ))
   }
 }
 

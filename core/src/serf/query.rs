@@ -1,6 +1,6 @@
 use std::{
   collections::HashSet,
-  sync::{atomic::Ordering, Arc},
+  sync::Arc,
   time::{Duration, Instant},
 };
 
@@ -350,10 +350,7 @@ pub struct NodeResponse<I, A> {
 }
 
 #[inline]
-fn random_members<I, A>(
-  k: usize,
-  mut members: SmallVec<Arc<Member<I, A>>>,
-) -> SmallVec<Arc<Member<I, A>>> {
+fn random_members<I, A>(k: usize, mut members: SmallVec<Member<I, A>>) -> SmallVec<Member<I, A>> {
   let n = members.len();
   if n == 0 {
     return SmallVec::new();
@@ -486,9 +483,7 @@ where
         .states
         .iter()
         .filter_map(|(id, m)| {
-          if m.member.status.load(Ordering::SeqCst) != MemberStatus::Alive
-            || id == self.inner.memberlist.local_id()
-          {
+          if m.member.status != MemberStatus::Alive || id == self.inner.memberlist.local_id() {
             None
           } else {
             Some(m.member.clone())

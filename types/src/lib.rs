@@ -7,7 +7,10 @@
 #![cfg_attr(docsrs, allow(unused_attributes))]
 
 pub use memberlist_types::{
-  Node, NodeAddress, NodeAddressError, NodeId, NodeIdTransformError, NodeTransformError,
+  DelegateVersion as MemberlistDelegateVersion, Node, NodeAddress, NodeAddressError, NodeId,
+  NodeIdTransformError, NodeTransformError, ProtocolVersion as MemberlistProtocolVersion,
+  UnknownDelegateVersion as UnknownMemberlistDelegateVersion,
+  UnknownProtocolVersion as UnknownMemberlistProtocolVersion,
 };
 pub use transformable::Transformable;
 
@@ -40,6 +43,9 @@ pub use user_event::*;
 
 mod query;
 pub use query::*;
+
+mod version;
+pub use version::*;
 
 #[cfg(feature = "encryption")]
 mod key;

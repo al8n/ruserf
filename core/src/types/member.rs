@@ -1,7 +1,7 @@
 use memberlist_core::types::OneOrMore;
 use ruserf_types::Member;
 
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::HashMap, time::Instant};
 
 use super::{LamportTime, MessageType};
 
@@ -11,7 +11,7 @@ use super::{LamportTime, MessageType};
 #[viewit::viewit]
 #[derive(Clone)]
 pub(crate) struct MemberState<I, A> {
-  member: Arc<Member<I, A>>,
+  member: Member<I, A>,
   /// lamport clock time of last received message
   status_time: LamportTime,
   /// wall clock time of leave

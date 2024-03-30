@@ -114,7 +114,7 @@ where
   #[inline]
   pub async fn local_member(
     &self,
-  ) -> Arc<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>> {
+  ) -> Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> {
     self
       .inner
       .members
@@ -124,7 +124,7 @@ where
       .get(self.inner.memberlist.local_id())
       .unwrap()
       .member
-      .clone()
+      .cheap_clone()
   }
 
   /// Used to dynamically update the tags associated with

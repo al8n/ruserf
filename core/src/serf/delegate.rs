@@ -3,18 +3,18 @@ use crate::{
   delegate::{Delegate, TransformDelegate},
   error::{DelegateError, Error},
   types::{
-    JoinMessage, LamportTime, LeaveMessage, Member, MemberStatus, MessageType, PushPullRef,
-    SerfMessage, UserEventMessage,
+    DelegateVersion, JoinMessage, LamportTime, LeaveMessage, Member, MemberStatus,
+    MemberlistDelegateVersion, MemberlistProtocolVersion, MessageType, ProtocolVersion,
+    PushPullRef, SerfMessage, UserEventMessage,
   },
   Serf,
 };
 
 use std::{
   future::Future,
-  sync::{Arc, OnceLock},
+  sync::{atomic::Ordering, Arc, OnceLock},
 };
 
-use atomic::{Atomic, Ordering};
 use futures::Stream;
 use indexmap::IndexSet;
 use memberlist_core::{
@@ -26,7 +26,7 @@ use memberlist_core::{
   },
   tracing,
   transport::{AddressResolver, Node, Transport},
-  types::{DelegateVersion, Meta, NodeState, ProtocolVersion, SmallVec, State, TinyVec},
+  types::{Meta, NodeState, SmallVec, State, TinyVec},
   CheapClone, META_MAX_SIZE,
 };
 
@@ -713,9 +713,12 @@ where
       .map(|(read, tags)| {
         tracing::trace!(read=%read, tags=?tags, "ruserf: decode tags successfully");
         tags
-      })?,
-    status: Atomic::new(status),
-    protocol_version: ProtocolVersion::V0,
-    delegate_version: DelegateVersion::V0,
+      })
+      .map(Arc::new)?,
+    status,
+    protocol_version: ProtocolVersion::V1,
+    delegate_version: DelegateVersion::V1,
+    memberlist_delegate_version: MemberlistDelegateVersion::V0,
+    memberlist_protocol_version: MemberlistProtocolVersion::V0,
   })
 }

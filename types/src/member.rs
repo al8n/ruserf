@@ -1,11 +1,13 @@
-use atomic::Atomic;
-use memberlist_types::{DelegateVersion, Node, ProtocolVersion};
+use std::sync::Arc;
 
-use super::Tags;
+use memberlist_types::CheapClone;
+
+use super::*;
 
 /// The member status.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, bytemuck::NoUninit)]
 #[repr(u8)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MemberStatus {
   /// None status
   None = 0,
@@ -39,40 +41,6 @@ impl MemberStatus {
   }
 }
 
-#[cfg(feature = "serde")]
-mod serde_member_status {
-  use super::*;
-
-  pub fn serialize<S>(status: &Atomic<MemberStatus>, serializer: S) -> Result<S::Ok, S::Error>
-  where
-    S: serde::ser::Serializer,
-  {
-    let status = status.load(atomic::Ordering::Relaxed);
-    serializer.serialize_u8(status as u8)
-  }
-
-  pub fn deserialize<'de, D>(deserializer: D) -> Result<Atomic<MemberStatus>, D::Error>
-  where
-    D: serde::de::Deserializer<'de>,
-  {
-    let status = <u8 as serde::Deserialize>::deserialize(deserializer)?;
-    let status = match status {
-      0 => MemberStatus::None,
-      1 => MemberStatus::Alive,
-      2 => MemberStatus::Leaving,
-      3 => MemberStatus::Left,
-      4 => MemberStatus::Failed,
-      _ => {
-        return Err(serde::de::Error::custom(format!(
-          "invalid member status: {}",
-          status
-        )));
-      }
-    };
-    Ok(Atomic::new(status))
-  }
-}
-
 /// A single member of the Serf cluster.
 #[viewit::viewit(setters(prefix = "with"))]
 #[derive(Debug)]
@@ -89,24 +57,77 @@ pub struct Member<I, A> {
     getter(const, style = "ref", attrs(doc = "Returns the tags")),
     setter(attrs(doc = "Sets the tags (Builder pattern)"))
   )]
-  tags: Tags,
-  #[cfg_attr(feature = "serde", serde(with = "serde_member_status"))]
+  tags: Arc<Tags>,
+  // #[cfg_attr(feature = "serde", serde(with = "serde_member_status"))]
   /// The status
   #[viewit(
     getter(const, style = "ref", attrs(doc = "Returns the status")),
     setter(attrs(doc = "Sets the status (Builder pattern)"))
   )]
-  status: Atomic<MemberStatus>,
-  /// The protocol version
+  status: MemberStatus,
+  /// The memberlist protocol version
   #[viewit(
-    getter(const, attrs(doc = "Returns the protocol version")),
-    setter(const, attrs(doc = "Sets the protocol version (Builder pattern)"))
+    getter(const, attrs(doc = "Returns the memberlist protocol version")),
+    setter(
+      const,
+      attrs(doc = "Sets the memberlist protocol version (Builder pattern)")
+    )
+  )]
+  memberlist_protocol_version: MemberlistProtocolVersion,
+  /// The memberlist delegate version
+  #[viewit(
+    getter(const, attrs(doc = "Returns the memberlist delegate version")),
+    setter(
+      const,
+      attrs(doc = "Sets the memberlist delegate version (Builder pattern)")
+    )
+  )]
+  memberlist_delegate_version: MemberlistDelegateVersion,
+
+  /// The ruserf protocol version
+  #[viewit(
+    getter(const, attrs(doc = "Returns the ruserf protocol version")),
+    setter(
+      const,
+      attrs(doc = "Sets the ruserf protocol version (Builder pattern)")
+    )
   )]
   protocol_version: ProtocolVersion,
-  /// The delegate version
+  /// The ruserf delegate version
   #[viewit(
-    getter(const, attrs(doc = "Returns the delegate version")),
-    setter(const, attrs(doc = "Sets the delegate version (Builder pattern)"))
+    getter(const, attrs(doc = "Returns the ruserf delegate version")),
+    setter(
+      const,
+      attrs(doc = "Sets the ruserf delegate version (Builder pattern)")
+    )
   )]
   delegate_version: DelegateVersion,
+}
+
+impl<I: Clone, A: Clone> Clone for Member<I, A> {
+  fn clone(&self) -> Self {
+    Self {
+      node: self.node.clone(),
+      tags: self.tags.clone(),
+      status: self.status,
+      memberlist_protocol_version: self.memberlist_protocol_version,
+      memberlist_delegate_version: self.memberlist_delegate_version,
+      protocol_version: self.protocol_version,
+      delegate_version: self.delegate_version,
+    }
+  }
+}
+
+impl<I: CheapClone, A: CheapClone> CheapClone for Member<I, A> {
+  fn cheap_clone(&self) -> Self {
+    Self {
+      node: self.node.cheap_clone(),
+      tags: self.tags.cheap_clone(),
+      status: self.status,
+      memberlist_protocol_version: self.memberlist_protocol_version,
+      memberlist_delegate_version: self.memberlist_delegate_version,
+      protocol_version: self.protocol_version,
+      delegate_version: self.delegate_version,
+    }
+  }
 }

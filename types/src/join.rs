@@ -137,7 +137,7 @@ where
 
 #[cfg(test)]
 mod tests {
-  use rand::{distributions::Alphanumeric, thread_rng, Rng};
+  use rand::{distributions::Alphanumeric, random, thread_rng, Rng};
   use smol_str::SmolStr;
   use std::net::SocketAddr;
 
@@ -150,7 +150,7 @@ mod tests {
         .take(size)
         .collect::<Vec<u8>>();
       let id = String::from_utf8(id).unwrap().into();
-      let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+      let addr = SocketAddr::from(([127, 0, 0, 1], random::<u16>()));
 
       Self {
         ltime: LamportTime::random(),

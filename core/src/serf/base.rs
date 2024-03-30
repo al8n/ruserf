@@ -11,7 +11,7 @@ use memberlist_core::{
   delegate::EventDelegate,
   tracing,
   transport::{MaybeResolvedAddress, Node},
-  types::{DelegateVersion, Meta, NodeState, OneOrMore, ProtocolVersion, TinyVec},
+  types::{Meta, NodeState, OneOrMore, TinyVec},
   CheapClone,
 };
 use rand::{Rng, SeedableRng};
@@ -25,7 +25,8 @@ use crate::{
   event::{InternalQueryEvent, MemberEvent, MemberEventType, QueryContext, QueryEvent},
   snapshot::{open_and_replay_snapshot, Snapshot},
   types::{
-    JoinMessage, LeaveMessage, Member, MemberState, MemberStatus, MessageType, NodeIntent,
+    DelegateVersion, JoinMessage, LeaveMessage, Member, MemberState, MemberStatus,
+    MemberlistDelegateVersion, MemberlistProtocolVersion, MessageType, NodeIntent, ProtocolVersion,
     QueryFlag, QueryMessage, QueryResponseMessage, SerfMessage, SerfMessageRef, Tags, UserEvent,
     UserEventMessage,
   },
@@ -299,7 +300,7 @@ where
         continue;
       }
 
-      if member.member.status.load(Ordering::Relaxed) == MemberStatus::Alive {
+      if member.member.status == MemberStatus::Alive {
         return true;
       }
     }
@@ -1005,7 +1006,7 @@ where
     };
 
     let (old_status, fut) = if let Some(member) = members.states.get_mut(node.id()) {
-      let old_status = member.member.status.load(Ordering::Acquire);
+      let old_status = member.member.status;
       let dead_time = member.leave_time.elapsed();
       #[cfg(feature = "metrics")]
       if old_status == MemberStatus::Failed && dead_time < self.inner.opts.flap_timeout {
@@ -1017,13 +1018,15 @@ where
       }
 
       *member = MemberState {
-        member: Arc::new(Member {
+        member: Member {
           node: node.cheap_clone(),
-          tags,
-          status: Atomic::new(MemberStatus::Alive),
-          protocol_version: ProtocolVersion::V0,
-          delegate_version: DelegateVersion::V0,
-        }),
+          tags: Arc::new(tags),
+          status: MemberStatus::Alive,
+          protocol_version: ProtocolVersion::V1,
+          delegate_version: DelegateVersion::V1,
+          memberlist_delegate_version: MemberlistDelegateVersion::V0,
+          memberlist_protocol_version: MemberlistProtocolVersion::V0,
+        },
         status_time: member.status_time,
         leave_time:
           MemberState::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::zero_leave_time(),
@@ -1057,14 +1060,15 @@ where
       }
 
       let ms = MemberState {
-        member: Arc::new(Member {
+        member: Member {
           node: node.cheap_clone(),
-          tags,
-          status: Atomic::new(status),
-          // TODO:
-          protocol_version: ProtocolVersion::V0,
-          delegate_version: DelegateVersion::V0,
-        }),
+          tags: Arc::new(tags),
+          status,
+          protocol_version: ProtocolVersion::V1,
+          delegate_version: DelegateVersion::V1,
+          memberlist_delegate_version: MemberlistDelegateVersion::V0,
+          memberlist_protocol_version: MemberlistProtocolVersion::V0,
+        },
         status_time: status_ltime,
         leave_time:
           MemberState::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::zero_leave_time(),
@@ -1128,12 +1132,10 @@ where
 
         // If we are in the leaving state, we should go back to alive,
         // since the leaving message must have been for an older time
-        let _ = member.member.status.compare_exchange(
-          MemberStatus::Leaving,
-          MemberStatus::Alive,
-          Ordering::SeqCst,
-          Ordering::SeqCst,
-        );
+
+        if member.member.status == MemberStatus::Leaving {
+          member.member.status = MemberStatus::Alive;
+        }
 
         true
       }
@@ -1160,13 +1162,11 @@ where
       return;
     };
 
-    let mut ms = member_state.member.status.load(Ordering::Acquire);
+    let mut ms = member_state.member.status;
     let member = match ms {
       MemberStatus::Leaving => {
-        member_state
-          .member
-          .status
-          .store(MemberStatus::Left, Ordering::Release);
+        member_state.member.status = MemberStatus::Left;
+
         ms = MemberStatus::Left;
         member_state.leave_time = Instant::now();
         let member_state = member_state.clone();
@@ -1175,10 +1175,7 @@ where
         member
       }
       MemberStatus::Alive => {
-        member_state
-          .member
-          .status
-          .store(MemberStatus::Failed, Ordering::Release);
+        member_state.member.status = MemberStatus::Failed;
         ms = MemberStatus::Failed;
         member_state.leave_time = Instant::now();
         let member_state = member_state.clone();
@@ -1275,13 +1272,10 @@ where
         // - https://github.com/hashicorp/consul/issues/7960
         member.status_time = msg.ltime;
         // State transition depends on current state
-        let ms = member.member.status.load(Ordering::Acquire);
+        let ms = member.member.status;
         match ms {
           MemberStatus::Alive => {
-            member
-              .member
-              .status
-              .store(MemberStatus::Leaving, Ordering::Release);
+            member.member.status = MemberStatus::Leaving;
             let node = member.member.node();
             let id = node.id();
             tracing::info!("ruserf: EventMemberReap (forced): {}", node);
@@ -1292,10 +1286,7 @@ where
             true
           }
           MemberStatus::Failed => {
-            member
-              .member
-              .status
-              .store(MemberStatus::Left, Ordering::Release);
+            member.member.status = MemberStatus::Left;
 
             // We must push a message indicating the node has now
             // left to allow higher-level applications to handle the
@@ -1396,19 +1387,13 @@ where
       // - https://github.com/hashicorp/consul/issues/7960
       member.status_time = msg.ltime;
       // State transition depends on current state
-      match member.member.status.load(Ordering::Acquire) {
+      match member.member.status {
         MemberStatus::Alive => {
-          member
-            .member
-            .status
-            .store(MemberStatus::Leaving, Ordering::Release);
+          member.member.status = MemberStatus::Leaving;
           true
         }
         MemberStatus::Failed => {
-          member
-            .member
-            .status
-            .store(MemberStatus::Left, Ordering::Release);
+          member.member.status = MemberStatus::Left;
 
           // Remove from the failed list and add to the left list. We add
           // to the left list so that when we do a sync, other nodes will
@@ -1470,13 +1455,15 @@ where
     let id = n.id();
     if let Some(ms) = members.states.get_mut(id) {
       // Update the member attributes
-      ms.member = Arc::new(Member {
+      ms.member = Member {
         node: n.node(),
-        tags,
-        status: Atomic::new(ms.member.status.load(Ordering::Relaxed)),
-        protocol_version: ProtocolVersion::V0,
-        delegate_version: DelegateVersion::V0,
-      });
+        tags: Arc::new(tags),
+        status: ms.member.status,
+        protocol_version: ProtocolVersion::V1,
+        delegate_version: DelegateVersion::V1,
+        memberlist_delegate_version: MemberlistDelegateVersion::V0,
+        memberlist_protocol_version: MemberlistProtocolVersion::V0,
+      };
 
       #[cfg(feature = "metrics")]
       metrics::counter!(
@@ -1510,7 +1497,7 @@ where
     member: &MemberState<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     members: &mut Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
   ) {
-    let ms = member.member.status.load(Ordering::Relaxed);
+    let ms = member.member.status;
     if ms == MemberStatus::Leaving {
       <T::Runtime as RuntimeLite>::sleep(
         self.inner.opts.broadcast_timeout + self.inner.opts.leave_propagate_delay,
