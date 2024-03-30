@@ -17,7 +17,7 @@ use super::{LamportTime, Node, UserEvents};
     deserialize = "I: core::cmp::Eq + core::hash::Hash + serde::Deserialize<'de>, A: core::cmp::Eq + core::hash::Hash + serde::Deserialize<'de>"
   ))
 )]
-pub struct PushPull<I, A> {
+pub struct PushPullMessage<I, A> {
   /// Current node lamport time
   #[viewit(
     getter(const, attrs(doc = "Returns the lamport time")),
@@ -71,7 +71,7 @@ pub struct PushPull<I, A> {
 #[viewit::viewit(getters(skip), setters(skip))]
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct PushPullRef<'a, I, A> {
+pub struct PushPullMessageRef<'a, I, A> {
   /// Current node lamport time
   ltime: LamportTime,
   /// Maps the node to its status time
@@ -86,10 +86,10 @@ pub struct PushPullRef<'a, I, A> {
   query_ltime: LamportTime,
 }
 
-impl<'a, I, A> Clone for PushPullRef<'a, I, A> {
+impl<'a, I, A> Clone for PushPullMessageRef<'a, I, A> {
   fn clone(&self) -> Self {
     *self
   }
 }
 
-impl<'a, I, A> Copy for PushPullRef<'a, I, A> {}
+impl<'a, I, A> Copy for PushPullMessageRef<'a, I, A> {}

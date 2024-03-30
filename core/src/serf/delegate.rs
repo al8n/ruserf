@@ -5,7 +5,7 @@ use crate::{
   types::{
     DelegateVersion, JoinMessage, LamportTime, LeaveMessage, Member, MemberStatus,
     MemberlistDelegateVersion, MemberlistProtocolVersion, MessageType, ProtocolVersion,
-    PushPullRef, SerfMessage, UserEventMessage,
+    PushPullMessageRef, SerfMessage, UserEventMessage,
   },
   Serf,
 };
@@ -328,7 +328,7 @@ where
       .iter()
       .map(|v| v.member.node().cheap_clone())
       .collect::<IndexSet<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>();
-    let pp = PushPullRef {
+    let pp = PushPullMessageRef {
       ltime: this.inner.clock.time(),
       status_ltimes: &status_ltimes,
       left_members: &left_members,

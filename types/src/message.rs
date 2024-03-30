@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::{
-  JoinMessage, LeaveMessage, Member, Node, PushPull, PushPullRef, QueryMessage,
+  JoinMessage, LeaveMessage, Member, Node, PushPullMessage, PushPullMessageRef, QueryMessage,
   QueryResponseMessage, UserEventMessage,
 };
 
@@ -119,7 +119,7 @@ pub enum SerfMessageRef<'a, I, A> {
   /// Join message reference
   Join(&'a JoinMessage<I, A>),
   /// PushPull message reference
-  PushPull(PushPullRef<'a, I, A>),
+  PushPull(PushPullMessageRef<'a, I, A>),
   /// UserEvent message reference
   UserEvent(&'a UserEventMessage),
   /// Query message reference
@@ -159,7 +159,7 @@ pub enum SerfMessage<I, A> {
   /// Join message
   Join(JoinMessage<I, A>),
   /// PushPull message
-  PushPull(PushPull<I, A>),
+  PushPull(PushPullMessage<I, A>),
   /// UserEvent message
   UserEvent(UserEventMessage),
   /// Query message
@@ -236,7 +236,7 @@ impl<'a, I, A> AsMessageRef<I, A> for &'a JoinMessage<I, A> {
   }
 }
 
-impl<'a, I, A> AsMessageRef<I, A> for PushPullRef<'a, I, A> {
+impl<'a, I, A> AsMessageRef<I, A> for PushPullMessageRef<'a, I, A> {
   fn as_message_ref(&self) -> SerfMessageRef<I, A> {
     SerfMessageRef::PushPull(*self)
   }
@@ -285,7 +285,7 @@ impl<I, A> AsMessageRef<I, A> for SerfMessage<I, A> {
     match self {
       Self::Leave(l) => SerfMessageRef::Leave(l),
       Self::Join(j) => SerfMessageRef::Join(j),
-      Self::PushPull(pp) => SerfMessageRef::PushPull(PushPullRef {
+      Self::PushPull(pp) => SerfMessageRef::PushPull(PushPullMessageRef {
         ltime: pp.ltime,
         status_ltimes: &pp.status_ltimes,
         left_members: &pp.left_members,
@@ -310,7 +310,7 @@ impl<'b, I, A> AsMessageRef<I, A> for &'b SerfMessage<I, A> {
     match self {
       SerfMessage::Leave(l) => SerfMessageRef::Leave(l),
       SerfMessage::Join(j) => SerfMessageRef::Join(j),
-      SerfMessage::PushPull(pp) => SerfMessageRef::PushPull(PushPullRef {
+      SerfMessage::PushPull(pp) => SerfMessageRef::PushPull(PushPullMessageRef {
         ltime: pp.ltime,
         status_ltimes: &pp.status_ltimes,
         left_members: &pp.left_members,

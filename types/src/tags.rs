@@ -138,7 +138,7 @@ mod tests {
   use rand::{distributions::Alphanumeric, Rng};
 
   impl Tags {
-    fn random(num_tags: usize, size: usize) -> Self {
+    pub(crate) fn random(num_tags: usize, size: usize) -> Self {
       let mut tags = HashMap::with_capacity(num_tags);
       for _ in 0..num_tags {
         let rng = rand::thread_rng();
