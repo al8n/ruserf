@@ -1588,7 +1588,10 @@ where
             continue;
           }
 
-          match <D as TransformDelegate>::decode_message(&r.payload[1..]) {
+          match <D as TransformDelegate>::decode_message(
+            MessageType::ConflictResponse,
+            &r.payload[1..],
+          ) {
             Ok((_, decoded)) => {
               match decoded {
                 SerfMessage::ConflictResponse(member) => {

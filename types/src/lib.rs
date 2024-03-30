@@ -12,7 +12,7 @@ pub use memberlist_types::{
   UnknownDelegateVersion as UnknownMemberlistDelegateVersion,
   UnknownProtocolVersion as UnknownMemberlistProtocolVersion,
 };
-pub use transformable::Transformable;
+pub use transformable::{Encodable, Transformable};
 
 mod clock;
 pub use clock::*;

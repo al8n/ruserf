@@ -185,25 +185,26 @@ where
   async fn handle_install_key(ev: impl AsRef<QueryEvent<T, D>> + Send) {
     let q = ev.as_ref();
     let mut response = KeyResponseMessage::default();
-    let req = match <D as TransformDelegate>::decode_message(&q.payload[1..]) {
-      Ok((_, msg)) => match msg {
-        SerfMessage::KeyRequest(req) => req,
-        msg => {
-          tracing::error!(
-            err = "unexpected message type",
-            "ruserf: {}",
-            msg.ty().as_str()
-          );
+    let req =
+      match <D as TransformDelegate>::decode_message(MessageType::KeyRequest, &q.payload[1..]) {
+        Ok((_, msg)) => match msg {
+          SerfMessage::KeyRequest(req) => req,
+          msg => {
+            tracing::error!(
+              err = "unexpected message type",
+              "ruserf: {}",
+              msg.ty().as_str()
+            );
+            Self::send_key_response(q, &mut response).await;
+            return;
+          }
+        },
+        Err(e) => {
+          tracing::error!(err=%e, "ruserf: failed to decode key request");
           Self::send_key_response(q, &mut response).await;
           return;
         }
-      },
-      Err(e) => {
-        tracing::error!(err=%e, "ruserf: failed to decode key request");
-        Self::send_key_response(q, &mut response).await;
-        return;
-      }
-    };
+      };
 
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
@@ -244,25 +245,26 @@ where
     let q = ev.as_ref();
     let mut response = KeyResponseMessage::default();
 
-    let req = match <D as TransformDelegate>::decode_message(&q.payload[1..]) {
-      Ok((_, msg)) => match msg {
-        SerfMessage::KeyRequest(req) => req,
-        msg => {
-          tracing::error!(
-            err = "unexpected message type",
-            "ruserf: {}",
-            msg.ty().as_str()
-          );
+    let req =
+      match <D as TransformDelegate>::decode_message(MessageType::KeyRequest, &q.payload[1..]) {
+        Ok((_, msg)) => match msg {
+          SerfMessage::KeyRequest(req) => req,
+          msg => {
+            tracing::error!(
+              err = "unexpected message type",
+              "ruserf: {}",
+              msg.ty().as_str()
+            );
+            Self::send_key_response(q, &mut response).await;
+            return;
+          }
+        },
+        Err(e) => {
+          tracing::error!(err=%e, "ruserf: failed to decode key request");
           Self::send_key_response(q, &mut response).await;
           return;
         }
-      },
-      Err(e) => {
-        tracing::error!(err=%e, "ruserf: failed to decode key request");
-        Self::send_key_response(q, &mut response).await;
-        return;
-      }
-    };
+      };
 
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
@@ -309,25 +311,26 @@ where
     let q = ev.as_ref();
     let mut response = KeyResponseMessage::default();
 
-    let req = match <D as TransformDelegate>::decode_message(&q.payload[1..]) {
-      Ok((_, msg)) => match msg {
-        SerfMessage::KeyRequest(req) => req,
-        msg => {
-          tracing::error!(
-            err = "unexpected message type",
-            "ruserf: {}",
-            msg.ty().as_str()
-          );
+    let req =
+      match <D as TransformDelegate>::decode_message(MessageType::KeyRequest, &q.payload[1..]) {
+        Ok((_, msg)) => match msg {
+          SerfMessage::KeyRequest(req) => req,
+          msg => {
+            tracing::error!(
+              err = "unexpected message type",
+              "ruserf: {}",
+              msg.ty().as_str()
+            );
+            Self::send_key_response(q, &mut response).await;
+            return;
+          }
+        },
+        Err(e) => {
+          tracing::error!(target="ruserf", err=%e, "failed to decode key request");
           Self::send_key_response(q, &mut response).await;
           return;
         }
-      },
-      Err(e) => {
-        tracing::error!(target="ruserf", err=%e, "failed to decode key request");
-        Self::send_key_response(q, &mut response).await;
-        return;
-      }
-    };
+      };
 
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(

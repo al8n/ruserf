@@ -137,41 +137,43 @@ impl<'a, I, A> From<&'a mut PushPullMessage<I, A>> for PushPullMessageRef<'a, I,
   }
 }
 
-impl<'a, I, A> PushPullMessageRef<'a, I, A>
+impl<'a, I, A> super::Encodable for PushPullMessageRef<'a, I, A>
 where
   I: Transformable,
   A: Transformable,
 {
+  type Error = PushPullMessageTransformError<I, A>;
+
   /// Returns the encoded length of the message
-  pub fn encoded_len(&self) -> usize {
-    4 + self.ltime.encoded_len()
+  fn encoded_len(&self) -> usize {
+    4 + Transformable::encoded_len(&self.ltime)
       + 4
       + self
         .status_ltimes
         .iter()
-        .map(|(k, v)| k.encoded_len() + v.encoded_len())
+        .map(|(k, v)| Transformable::encoded_len(k) + Transformable::encoded_len(v))
         .sum::<usize>()
       + 4
       + self
         .left_members
         .iter()
-        .map(|n| n.encoded_len())
+        .map(Transformable::encoded_len)
         .sum::<usize>()
-      + self.event_ltime.encoded_len()
+      + Transformable::encoded_len(&self.event_ltime)
       + 4
       + self
         .events
         .iter()
         .map(|e| match e {
-          Some(e) => 1 + e.encoded_len(),
+          Some(e) => 1 + Transformable::encoded_len(e),
           None => 1,
         })
         .sum::<usize>()
-      + self.query_ltime.encoded_len()
+      + Transformable::encoded_len(&self.query_ltime)
   }
 
   /// Encodes the message into the given buffer
-  pub fn encode(&self, dst: &mut [u8]) -> Result<usize, PushPullMessageTransformError<I, A>> {
+  fn encode(&self, dst: &mut [u8]) -> Result<usize, PushPullMessageTransformError<I, A>> {
     let encoded_len = self.encoded_len();
     if dst.len() < encoded_len {
       return Err(PushPullMessageTransformError::BufferTooSmall);
@@ -181,23 +183,23 @@ where
     NetworkEndian::write_u32(&mut dst[offset..offset + 4], encoded_len as u32);
     offset += 4;
 
-    offset += self.ltime.encode(&mut dst[offset..])?;
+    offset += Transformable::encode(&self.ltime, &mut dst[offset..])?;
     let len = self.status_ltimes.len() as u32;
     NetworkEndian::write_u32(&mut dst[offset..offset + 4], len);
     offset += 4;
     for (node, ltime) in self.status_ltimes.iter() {
-      offset += node.encode(&mut dst[offset..])?;
-      offset += ltime.encode(&mut dst[offset..])?;
+      offset += Transformable::encode(node, &mut dst[offset..])?;
+      offset += Transformable::encode(ltime, &mut dst[offset..])?;
     }
 
     let len = self.left_members.len() as u32;
     NetworkEndian::write_u32(&mut dst[offset..offset + 4], len);
     offset += 4;
     for node in self.left_members.iter() {
-      offset += node.encode(&mut dst[offset..])?;
+      offset += Transformable::encode(node, &mut dst[offset..])?;
     }
 
-    offset += self.event_ltime.encode(&mut dst[offset..])?;
+    offset += Transformable::encode(&self.event_ltime, &mut dst[offset..])?;
     let len = self.events.len() as u32;
     NetworkEndian::write_u32(&mut dst[offset..offset + 4], len);
     offset += 4;
@@ -206,7 +208,7 @@ where
         Some(e) => {
           dst[offset] = 1;
           offset += 1;
-          offset += e.encode(&mut dst[offset..])?;
+          offset += Transformable::encode(e, &mut dst[offset..])?;
         }
         None => {
           dst[offset] = 0;
@@ -215,7 +217,7 @@ where
       }
     }
 
-    offset += self.query_ltime.encode(&mut dst[offset..])?;
+    offset += Transformable::encode(&self.query_ltime, &mut dst[offset..])?;
 
     debug_assert_eq!(
       offset, encoded_len,
@@ -225,14 +227,84 @@ where
 
     Ok(offset)
   }
+}
 
-  /// Decode a message from the given buffer
-  pub fn decode(
-    src: &[u8],
-  ) -> Result<(usize, PushPullMessage<I, A>), PushPullMessageTransformError<I, A>>
+/// Error that can occur when transforming a [`PushPullMessage`] or [`PushPullMessageRef`].
+#[derive(thiserror::Error)]
+pub enum PushPullMessageTransformError<I, A>
+where
+  I: Transformable,
+  A: Transformable,
+{
+  /// Not enough bytes to decode [`PushPullMessage`]
+  #[error("not enough bytes to decode PushPullMessage")]
+  NotEnoughBytes,
+  /// Encode buffer too small
+  #[error("encode buffer too small")]
+  BufferTooSmall,
+  /// Error transforming [`Node`]
+  #[error(transparent)]
+  Node(#[from] NodeTransformError<I, A>),
+  /// Error when we do not have enough nodes
+  #[error("expect {expect} nodes, but actual decode {got} nodes")]
+  MissingLeftMember {
+    /// Expect
+    expect: usize,
+    /// Actual
+    got: usize,
+  },
+  /// Error when we do not have enough status time
+  #[error("expect {expect} status time, but actual decode {got} status time")]
+  MissingNodeStatusTime {
+    /// Expect
+    expect: usize,
+    /// Actual
+    got: usize,
+  },
+  /// Error transforming [`LamportTime`]
+  #[error(transparent)]
+  LamportTime(#[from] LamportTimeTransformError),
+  /// Error transforming [`UserEvents`]
+  #[error(transparent)]
+  UserEvents(#[from] UserEventsTransformError),
+  /// Error when we do not have enough events
+  #[error("expect {expect} events, but actual decode {got} events")]
+  MissingEvents {
+    /// Expect
+    expect: usize,
+    /// Actual
+    got: usize,
+  },
+}
+
+impl<I, A> core::fmt::Debug for PushPullMessageTransformError<I, A>
+where
+  I: Transformable,
+  A: Transformable,
+{
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    write!(f, "{}", self)
+  }
+}
+
+impl<I, A> Transformable for PushPullMessage<I, A>
+where
+  I: Transformable + core::hash::Hash + Eq,
+  A: Transformable + core::hash::Hash + Eq,
+{
+  type Error = PushPullMessageTransformError<I, A>;
+
+  fn encode(&self, dst: &mut [u8]) -> Result<usize, Self::Error> {
+    super::Encodable::encode(&PushPullMessageRef::from(self), dst)
+  }
+
+  fn encoded_len(&self) -> usize {
+    super::Encodable::encoded_len(&PushPullMessageRef::from(self))
+  }
+
+  fn decode(src: &[u8]) -> Result<(usize, Self), Self::Error>
   where
-    I: core::hash::Hash + Eq,
-    A: core::hash::Hash + Eq,
+    Self: Sized,
   {
     let src_len = src.len();
     if src_len < 4 {
@@ -309,87 +381,6 @@ where
         query_ltime,
       },
     ))
-  }
-}
-
-/// Error that can occur when transforming a [`PushPullMessage`] or [`PushPullMessageRef`].
-#[derive(thiserror::Error)]
-pub enum PushPullMessageTransformError<I, A>
-where
-  I: Transformable,
-  A: Transformable,
-{
-  /// Not enough bytes to decode [`PushPullMessage`]
-  #[error("not enough bytes to decode PushPullMessage")]
-  NotEnoughBytes,
-  /// Encode buffer too small
-  #[error("encode buffer too small")]
-  BufferTooSmall,
-  /// Error transforming [`Node`]
-  #[error(transparent)]
-  Node(#[from] NodeTransformError<I, A>),
-  /// Error when we do not have enough nodes
-  #[error("expect {expect} nodes, but actual decode {got} nodes")]
-  MissingLeftMember {
-    /// Expect
-    expect: usize,
-    /// Actual
-    got: usize,
-  },
-  /// Error when we do not have enough status time
-  #[error("expect {expect} status time, but actual decode {got} status time")]
-  MissingNodeStatusTime {
-    /// Expect
-    expect: usize,
-    /// Actual
-    got: usize,
-  },
-  /// Error transforming [`LamportTime`]
-  #[error(transparent)]
-  LamportTime(#[from] LamportTimeTransformError),
-  /// Error transforming [`UserEvents`]
-  #[error(transparent)]
-  UserEvents(#[from] UserEventsTransformError),
-  /// Error when we do not have enough events
-  #[error("expect {expect} events, but actual decode {got} events")]
-  MissingEvents {
-    /// Expect
-    expect: usize,
-    /// Actual
-    got: usize,
-  },
-}
-
-impl<I, A> core::fmt::Debug for PushPullMessageTransformError<I, A>
-where
-  I: Transformable,
-  A: Transformable,
-{
-  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    write!(f, "{}", self)
-  }
-}
-
-impl<I, A> Transformable for PushPullMessage<I, A>
-where
-  I: Transformable + core::hash::Hash + Eq,
-  A: Transformable + core::hash::Hash + Eq,
-{
-  type Error = PushPullMessageTransformError<I, A>;
-
-  fn encode(&self, dst: &mut [u8]) -> Result<usize, Self::Error> {
-    PushPullMessageRef::from(self).encode(dst)
-  }
-
-  fn encoded_len(&self) -> usize {
-    PushPullMessageRef::from(self).encoded_len()
-  }
-
-  fn decode(src: &[u8]) -> Result<(usize, Self), Self::Error>
-  where
-    Self: Sized,
-  {
-    PushPullMessageRef::<'static, I, A>::decode(src)
   }
 }
 

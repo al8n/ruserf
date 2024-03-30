@@ -142,7 +142,7 @@ where
 
     match MessageType::try_from(msg[0]) {
       Ok(ty) => match ty {
-        MessageType::Leave => match <D as TransformDelegate>::decode_message(&msg[1..]) {
+        MessageType::Leave => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
           Ok((_, l)) => {
             if let SerfMessage::Leave(l) = &l {
               tracing::debug!("ruserf: leave message",);
@@ -155,7 +155,7 @@ where
             tracing::warn!(err=%e, "ruserf: failed to decode message");
           }
         },
-        MessageType::Join => match <D as TransformDelegate>::decode_message(&msg[1..]) {
+        MessageType::Join => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
           Ok((_, j)) => {
             if let SerfMessage::Join(j) = &j {
               tracing::debug!("ruserf: join message",);
@@ -168,7 +168,7 @@ where
             tracing::warn!(err=%e, "ruserf: failed to decode message");
           }
         },
-        MessageType::UserEvent => match <D as TransformDelegate>::decode_message(&msg[1..]) {
+        MessageType::UserEvent => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
           Ok((_, ue)) => {
             if let SerfMessage::UserEvent(ue) = ue {
               tracing::debug!("ruserf: user event message",);
@@ -182,7 +182,7 @@ where
             tracing::warn!(err=%e, "ruserf: failed to decode message");
           }
         },
-        MessageType::Query => match <D as TransformDelegate>::decode_message(&msg[1..]) {
+        MessageType::Query => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
           Ok((_, q)) => {
             if let SerfMessage::Query(q) = q {
               tracing::debug!("ruserf: query message",);
@@ -196,7 +196,8 @@ where
             tracing::warn!(err=%e, "ruserf: failed to decode message");
           }
         },
-        MessageType::QueryResponse => match <D as TransformDelegate>::decode_message(&msg[1..]) {
+        MessageType::QueryResponse => match <D as TransformDelegate>::decode_message(ty, &msg[1..])
+        {
           Ok((_, qr)) => {
             if let SerfMessage::QueryResponse(qr) = qr {
               tracing::debug!("ruserf: query response message",);
@@ -373,7 +374,7 @@ where
     // TODO: messageDropper
     match ty {
       MessageType::PushPull => {
-        match <D as TransformDelegate>::decode_message(&buf[1..]) {
+        match <D as TransformDelegate>::decode_message(ty, &buf[1..]) {
           Err(e) => {
             tracing::error!(err=%e, "ruserf: failed to decode remote state");
           }

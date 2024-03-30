@@ -1,8 +1,14 @@
 use std::sync::Arc;
 
+use crate::{
+  JoinMessageTransformError, LeaveMessageTransformError, MemberTransformError,
+  PushPullMessageTransformError, QueryMessageTransformError, QueryResponseMessageTransformError,
+  UserEventMessageTransformError,
+};
+
 use super::{
-  JoinMessage, LeaveMessage, Member, Node, PushPullMessage, PushPullMessageRef, QueryMessage,
-  QueryResponseMessage, UserEventMessage,
+  Encodable, JoinMessage, LeaveMessage, Member, PushPullMessage, PushPullMessageRef, QueryMessage,
+  QueryResponseMessage, Transformable, UserEventMessage,
 };
 
 #[cfg(feature = "encryption")]
@@ -108,7 +114,7 @@ impl MessageType {
 /// Used to do a cheap reference to message reference conversion.
 pub trait AsMessageRef<I, A> {
   /// Converts this type into a shared reference of the (usually inferred) input type.
-  fn as_message_ref(&self) -> SerfMessageRef<I, A>;
+  fn as_message_ref(&self) -> SerfMessageRef<'_, I, A>;
 }
 
 /// The reference type of [`SerfMessage`].
@@ -338,6 +344,7 @@ impl<I, A> core::fmt::Display for SerfMessage<I, A> {
 
 impl<I, A> SerfMessage<I, A> {
   /// Returns the message type of this message
+  #[inline]
   pub const fn ty(&self) -> MessageType {
     match self {
       Self::Leave(_) => MessageType::Leave,
@@ -355,17 +362,107 @@ impl<I, A> SerfMessage<I, A> {
   }
 }
 
-/// Used to store the end destination of a relayed message
-#[viewit::viewit(getters(style = "ref"), setters(prefix = "with"))]
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-#[repr(transparent)]
-pub struct RelayHeader<I, A> {
-  /// The distination node
-  #[viewit(
-    getter(style = "ref", attrs(doc = "Returns the destination node")),
-    setter(attrs(doc = "Sets the destination node (Builder pattern)"))
-  )]
-  dest: Node<I, A>,
+/// Error that can occur when transforming a [`SerfMessage`] or [`SerfMessageRef`]
+#[derive(thiserror::Error)]
+pub enum SerfMessageTransformError<I, A>
+where
+  I: Transformable + core::hash::Hash + Eq,
+  A: Transformable + core::hash::Hash + Eq,
+{
+  /// [`LeaveMessage`] transformation error
+  #[error(transparent)]
+  Leave(#[from] LeaveMessageTransformError<I, A>),
+  /// [`JoinMessage`] transformation error
+  #[error(transparent)]
+  Join(#[from] JoinMessageTransformError<I, A>),
+  /// [`PushPullMessage`] transformation error
+  #[error(transparent)]
+  PushPull(#[from] PushPullMessageTransformError<I, A>),
+  /// [`UserEventMessage`] transformation error
+  #[error(transparent)]
+  UserEvent(#[from] UserEventMessageTransformError),
+  /// [`QueryMessage`] transformation error
+  #[error(transparent)]
+  Query(#[from] QueryMessageTransformError<I, A>),
+  /// [`QueryResponseMessage`] transformation error
+  #[error(transparent)]
+  QueryResponse(#[from] QueryResponseMessageTransformError<I, A>),
+  /// [`Member`] transformation error
+  #[error(transparent)]
+  ConflictResponse(#[from] MemberTransformError<I, A>),
+  /// [`KeyRequestMessage`] transformation error
+  #[cfg(feature = "encryption")]
+  #[error(transparent)]
+  KeyRequest(#[from] crate::key::OptionSecretKeyTransformError),
+  /// [`KeyResponseMessage`] transformation error
+  #[cfg(feature = "encryption")]
+  #[error(transparent)]
+  KeyResponse(#[from] crate::key::KeyResponseMessageTransformError),
 }
+
+impl<I, A> core::fmt::Debug for SerfMessageTransformError<I, A>
+where
+  I: Transformable + core::hash::Hash + Eq,
+  A: Transformable + core::hash::Hash + Eq,
+{
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    write!(f, "{}", self)
+  }
+}
+
+impl<'a, I, A> Encodable for SerfMessageRef<'a, I, A>
+where
+  I: Transformable + core::hash::Hash + Eq,
+  A: Transformable + core::hash::Hash + Eq,
+{
+  type Error = SerfMessageTransformError<I, A>;
+
+  /// Returns the encoded length of this message
+  #[inline]
+  fn encoded_len(&self) -> usize {
+    match *self {
+      Self::Leave(msg) => Transformable::encoded_len(msg),
+      Self::Join(msg) => Transformable::encoded_len(msg),
+      Self::PushPull(msg) => Encodable::encoded_len(&msg),
+      Self::UserEvent(msg) => Transformable::encoded_len(msg),
+      Self::Query(msg) => Transformable::encoded_len(msg),
+      Self::QueryResponse(msg) => Transformable::encoded_len(msg),
+      Self::ConflictResponse(msg) => Transformable::encoded_len(msg),
+      #[cfg(feature = "encryption")]
+      Self::KeyRequest(msg) => Transformable::encoded_len(msg),
+      #[cfg(feature = "encryption")]
+      Self::KeyResponse(msg) => Transformable::encoded_len(msg),
+    }
+  }
+
+  fn encode(&self, dst: &mut [u8]) -> Result<usize, Self::Error> {
+    match *self {
+      Self::Leave(msg) => Transformable::encode(msg, dst).map_err(Into::into),
+      Self::Join(msg) => Transformable::encode(msg, dst).map_err(Into::into),
+      Self::PushPull(msg) => Encodable::encode(&msg, dst).map_err(Into::into),
+      Self::UserEvent(msg) => Transformable::encode(msg, dst).map_err(Into::into),
+      Self::Query(msg) => Transformable::encode(msg, dst).map_err(Into::into),
+      Self::QueryResponse(msg) => Transformable::encode(msg, dst).map_err(Into::into),
+      Self::ConflictResponse(msg) => Transformable::encode(msg, dst).map_err(Into::into),
+      #[cfg(feature = "encryption")]
+      Self::KeyRequest(msg) => Transformable::encode(msg, dst).map_err(Into::into),
+      #[cfg(feature = "encryption")]
+      Self::KeyResponse(msg) => Transformable::encode(msg, dst).map_err(Into::into),
+    }
+  }
+}
+
+// /// Used to store the end destination of a relayed message
+// #[viewit::viewit(getters(style = "ref"), setters(prefix = "with"))]
+// #[derive(Debug, Clone, Eq, PartialEq)]
+// #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+// #[cfg_attr(feature = "serde", serde(transparent))]
+// #[repr(transparent)]
+// pub struct RelayHeader<I, A> {
+//   /// The distination node
+//   #[viewit(
+//     getter(style = "ref", attrs(doc = "Returns the destination node")),
+//     setter(attrs(doc = "Sets the destination node (Builder pattern)"))
+//   )]
+//   dest: Node<I, A>,
+// }
