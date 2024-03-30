@@ -341,8 +341,8 @@ mod tests {
         node,
         tags: Arc::new(tags),
         status: MemberStatus::Alive,
-        memberlist_protocol_version: MemberlistProtocolVersion::V0,
-        memberlist_delegate_version: MemberlistDelegateVersion::V0,
+        memberlist_protocol_version: MemberlistProtocolVersion::V1,
+        memberlist_delegate_version: MemberlistDelegateVersion::V1,
         protocol_version: ProtocolVersion::V1,
         delegate_version: DelegateVersion::V1,
       }

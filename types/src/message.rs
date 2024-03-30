@@ -167,7 +167,7 @@ pub enum SerfMessage<I, A> {
   /// QueryResponse message
   QueryResponse(QueryResponseMessage<I, A>),
   /// ConflictResponse message
-  ConflictResponse(Arc<Member<I, A>>),
+  ConflictResponse(Member<I, A>),
   /// Relay message
   #[cfg(feature = "encryption")]
   KeyRequest(KeyRequestMessage),

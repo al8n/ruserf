@@ -257,13 +257,13 @@ where
       if !node_response.result {
         resp
           .messages
-          .insert(r.from.id().cheap_clone(), node_response.msg);
+          .insert(r.from.id().cheap_clone(), node_response.message);
         resp.num_err += 1;
-      } else if node_response.result && node_response.msg.is_empty() {
-        tracing::warn!("ruserf: {}", node_response.msg);
+      } else if node_response.result && node_response.message.is_empty() {
+        tracing::warn!("ruserf: {}", node_response.message);
         resp
           .messages
-          .insert(r.from.id().cheap_clone(), node_response.msg);
+          .insert(r.from.id().cheap_clone(), node_response.message);
       }
 
       // Currently only used for key list queries, this adds keys to a counter

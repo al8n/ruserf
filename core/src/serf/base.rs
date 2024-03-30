@@ -1024,8 +1024,8 @@ where
           status: MemberStatus::Alive,
           protocol_version: ProtocolVersion::V1,
           delegate_version: DelegateVersion::V1,
-          memberlist_delegate_version: MemberlistDelegateVersion::V0,
-          memberlist_protocol_version: MemberlistProtocolVersion::V0,
+          memberlist_delegate_version: MemberlistDelegateVersion::V1,
+          memberlist_protocol_version: MemberlistProtocolVersion::V1,
         },
         status_time: member.status_time,
         leave_time:
@@ -1066,8 +1066,8 @@ where
           status,
           protocol_version: ProtocolVersion::V1,
           delegate_version: DelegateVersion::V1,
-          memberlist_delegate_version: MemberlistDelegateVersion::V0,
-          memberlist_protocol_version: MemberlistProtocolVersion::V0,
+          memberlist_delegate_version: MemberlistDelegateVersion::V1,
+          memberlist_protocol_version: MemberlistProtocolVersion::V1,
         },
         status_time: status_ltime,
         leave_time:
@@ -1461,8 +1461,8 @@ where
         status: ms.member.status,
         protocol_version: ProtocolVersion::V1,
         delegate_version: DelegateVersion::V1,
-        memberlist_delegate_version: MemberlistDelegateVersion::V0,
-        memberlist_protocol_version: MemberlistProtocolVersion::V0,
+        memberlist_delegate_version: MemberlistDelegateVersion::V1,
+        memberlist_protocol_version: MemberlistProtocolVersion::V1,
       };
 
       #[cfg(feature = "metrics")]

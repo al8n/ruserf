@@ -50,7 +50,7 @@ const _: () = {
   impl From<ArchivedDelegateVersion> for DelegateVersion {
     fn from(value: ArchivedDelegateVersion) -> Self {
       match value {
-        ArchivedDelegateVersion::V0 => Self::V0,
+        ArchivedDelegateVersion::V1 => Self::V1,
       }
     }
   }
@@ -58,7 +58,7 @@ const _: () = {
   impl From<DelegateVersion> for ArchivedDelegateVersion {
     fn from(value: DelegateVersion) -> Self {
       match value {
-        DelegateVersion::V0 => Self::V0,
+        DelegateVersion::V1 => Self::V1,
       }
     }
   }
@@ -116,7 +116,7 @@ const _: () = {
   impl From<ArchivedProtocolVersion> for ProtocolVersion {
     fn from(value: ArchivedProtocolVersion) -> Self {
       match value {
-        ArchivedProtocolVersion::V0 => Self::V0,
+        ArchivedProtocolVersion::V1 => Self::V1,
       }
     }
   }
@@ -124,7 +124,7 @@ const _: () = {
   impl From<ProtocolVersion> for ArchivedProtocolVersion {
     fn from(value: ProtocolVersion) -> Self {
       match value {
-        ProtocolVersion::V0 => Self::V0,
+        ProtocolVersion::V1 => Self::V1,
       }
     }
   }

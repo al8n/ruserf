@@ -7,7 +7,7 @@ homepage.workspace = true
 license.workspace = true
 
 [features]
-encryption = ["memberlist-types/encryption"]
+encryption = ["memberlist-types/encryption", "futures"]
 serde = ["dep:serde", "indexmap/serde", "memberlist-types/serde", "smol_str/serde", "bitflags/serde"]
 
 [dependencies]
@@ -16,6 +16,7 @@ bitflags = "2"
 byteorder.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
 derive_more.workspace = true
+futures = { workspace = true, optional = true, default-features = false, features = ["alloc"] }
 indexmap.workspace = true
 memberlist-types = { path = "../../memberlist/types" }
 smol_str.workspace = true
@@ -27,7 +28,7 @@ serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 rand.workspace = true
-futures = { version = "=0.3.29", features = ["executor"] }
+futures = { workspace = true, features = ["executor"] }
 
 [package.metadata.docs.rs]
 all-features = true
