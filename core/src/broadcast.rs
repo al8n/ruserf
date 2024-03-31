@@ -40,7 +40,7 @@ impl Broadcast for SerfBroadcast {
   }
 
   fn encoded_len(msg: &Self::Message) -> usize {
-    todo!()
+    msg.len()
   }
 }
 

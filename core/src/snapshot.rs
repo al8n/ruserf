@@ -24,10 +24,11 @@ use memberlist_core::{
   CheapClone,
 };
 use rand::seq::SliceRandom;
+use ruserf_types::UserEventMessage;
 
 use crate::{
   delegate::{Delegate, TransformDelegate},
-  event::{Event, EventKind, MemberEvent, MemberEventType, UserEvent},
+  event::{Event, EventKind, MemberEvent, MemberEventType},
   invalid_data_io_error,
   types::{LamportClock, LamportTime},
 };
@@ -89,6 +90,7 @@ pub enum SnapshotError {
   Replay(std::io::Error),
 }
 
+#[allow(dead_code)]
 enum SnapshotRecord<'a, I: Clone, A: Clone> {
   Alive(Cow<'a, Node<I, A>>),
   NotAlive(Cow<'a, Node<I, A>>),
@@ -606,7 +608,7 @@ where
   }
 
   /// Used to handle a single user event
-  fn process_user_event(&mut self, e: &UserEvent) {
+  fn process_user_event(&mut self, e: &UserEventMessage) {
     // Ignore old clocks
     let ltime = *e.ltime();
     if ltime <= self.last_event_clock {
@@ -832,85 +834,5 @@ where
     self.offset = offset;
     self.last_flush = Instant::now();
     Ok(())
-  }
-
-  /// Used to seek to reset our internal state by replaying
-  /// the snapshot file. It is used at initialization time to read old
-  /// state
-  fn replay(&mut self) -> Result<(), SnapshotError> {
-    // Seek to the beginning
-    let f = self.fh.as_mut().unwrap().get_mut();
-    f.seek(std::io::SeekFrom::Start(0))
-      .map_err(SnapshotError::SeekStart)?;
-
-    // Read each line
-    let mut reader = BufReader::new(f);
-    let mut buf = Vec::new();
-    loop {
-      if reader.read_until(b'\n', &mut buf).is_err() {
-        break;
-      }
-
-      // Skip the newline
-      let src = &buf[..buf.len() - 1];
-      // Match on the prefix
-      match src[0] {
-        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::ALIVE => {
-          let (_, node) = <D as TransformDelegate>::decode_node(&src[1..])
-            .map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
-          self.alive_nodes.insert(node);
-        }
-        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::NOT_ALIVE => {
-          let (_, node) = <D as TransformDelegate>::decode_node(&src[1..])
-            .map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
-          self.alive_nodes.remove(&node);
-        }
-        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::CLOCK => {
-          let t = u64::from_be_bytes([
-            src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
-          ]);
-          self.last_clock = LamportTime::new(t);
-        }
-        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::EVENT_CLOCK => {
-          let t = u64::from_be_bytes([
-            src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
-          ]);
-          self.last_event_clock = LamportTime::new(t);
-        }
-        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::QUERY_CLOCK => {
-          let t = u64::from_be_bytes([
-            src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
-          ]);
-          self.last_query_clock = LamportTime::new(t);
-        }
-        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::COORDINATE => {
-          continue;
-        }
-        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::LEAVE => {
-          // Ignore a leave if we plan on re-joining
-          if self.rejoin_after_leave {
-            tracing::info!("ruserf: ignoring previous leave in snapshot");
-            continue;
-          }
-          self.alive_nodes.clear();
-          self.last_clock = LamportTime::ZERO;
-          self.last_event_clock = LamportTime::ZERO;
-          self.last_query_clock = LamportTime::ZERO;
-        }
-        SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::COMMENT => {
-          continue;
-        }
-        v => {
-          tracing::warn!("ruserf: unrecognized snapshot record {v}: {:?}", buf);
-        }
-      }
-    }
-
-    // Seek to the end
-    reader
-      .into_inner()
-      .seek(std::io::SeekFrom::End(0))
-      .map(|_| ())
-      .map_err(SnapshotError::SeekEnd)
   }
 }

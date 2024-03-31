@@ -1,18 +1,16 @@
 use std::{collections::HashMap, marker::PhantomData};
 
 use either::Either;
+use ruserf_types::UserEventMessage;
 use smol_str::SmolStr;
 
-use crate::{
-  event::{EventKind, UserEvent},
-  types::LamportTime,
-};
+use crate::{event::EventKind, types::LamportTime};
 
 use super::*;
 
 struct LatestUserEvents {
   ltime: LamportTime,
-  events: Vec<UserEvent>,
+  events: Vec<UserEventMessage>,
 }
 
 #[derive(Default)]

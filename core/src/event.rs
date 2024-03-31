@@ -13,7 +13,7 @@ use memberlist_core::{
   types::TinyVec,
   CheapClone,
 };
-use ruserf_types::QueryFlag;
+use ruserf_types::{QueryFlag, UserEventMessage};
 use smol_str::SmolStr;
 
 use super::{
@@ -101,14 +101,14 @@ where
   }
 }
 
-impl<D, T> From<UserEvent> for Event<T, D>
+impl<D, T> From<UserEventMessage> for Event<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
   <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
   <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
-  fn from(value: UserEvent) -> Self {
+  fn from(value: UserEventMessage) -> Self {
     Self(Either::Left(EventKind::User(value)))
   }
 }
@@ -144,7 +144,7 @@ where
   T: Transport,
 {
   Member(MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>),
-  User(UserEvent),
+  User(UserEventMessage),
   Query(QueryEvent<T, D>),
   InternalQuery {
     kind: InternalQueryEvent<T::Id>,
@@ -170,29 +170,6 @@ where
   }
 }
 
-impl<D, T> EventKind<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  #[inline]
-  pub const fn member(
-    event: MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  ) -> Self {
-    Self::Member(event)
-  }
-
-  #[inline]
-  pub const fn user(event: UserEvent) -> Self {
-    Self::User(event)
-  }
-
-  #[inline]
-  pub const fn query(event: QueryEvent<T, D>) -> Self {
-    Self::Query(event)
-  }
-}
-
 impl<D, T> From<MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>
   for EventKind<T, D>
 where
@@ -204,12 +181,12 @@ where
   }
 }
 
-impl<D, T> From<UserEvent> for EventKind<T, D>
+impl<D, T> From<UserEventMessage> for EventKind<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  fn from(event: UserEvent) -> Self {
+  fn from(event: UserEventMessage) -> Self {
     Self::User(event)
   }
 }
@@ -295,24 +272,6 @@ impl<I, A> MemberEvent<I, A> {
 impl<I, A> From<MemberEvent<I, A>> for (MemberEventType, TinyVec<Member<I, A>>) {
   fn from(event: MemberEvent<I, A>) -> Self {
     (event.ty, event.members)
-  }
-}
-
-/// UserEvent is the struct used for events that are triggered
-/// by the user and are not related to members
-
-#[viewit::viewit(vis_all = "pub(crate)", setters(prefix = "with"))]
-#[derive(Clone)]
-pub struct UserEvent {
-  ltime: LamportTime,
-  name: SmolStr,
-  payload: Bytes,
-  pub coalesce: bool,
-}
-
-impl core::fmt::Display for UserEvent {
-  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    write!(f, "user")
   }
 }
 
