@@ -556,7 +556,7 @@ where
   }
 
   /// Returns the network coordinate of the local node.
-  pub fn get_cooridate(&self) -> Result<Coordinate, Error<T, D>> {
+  pub fn cooridate(&self) -> Result<Coordinate, Error<T, D>> {
     if let Some(ref coord) = self.inner.coord_core {
       return Ok(coord.client.get_coordinate());
     }
@@ -566,12 +566,19 @@ where
 
   /// Returns the network coordinate for the node with the given
   /// name. This will only be valid if `disable_coordinates` is set to `false`.
-  pub fn get_cached_coordinate(&self, id: &T::Id) -> Result<Option<Coordinate>, Error<T, D>> {
+  pub fn cached_coordinate(&self, id: &T::Id) -> Result<Option<Coordinate>, Error<T, D>> {
     if let Some(ref coord) = self.inner.coord_core {
       return Ok(coord.cache.read().get(id).cloned());
     }
 
     Err(Error::CoordinatesDisabled)
+  }
+
+  /// Returns the underlying [`Memberlist`] instance
+  #[allow(private_interfaces)]
+  #[inline]
+  pub fn memberlist(&self) -> &Memberlist<T, SerfDelegate<T, D>> {
+    &self.inner.memberlist
   }
 }
 

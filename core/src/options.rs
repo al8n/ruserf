@@ -312,11 +312,6 @@ impl Options {
   }
 
   #[inline]
-  pub(crate) fn set_tags(&self, tags: Tags) {
-    self.tags.store(Some(Arc::new(tags)));
-  }
-
-  #[inline]
   pub(crate) fn queue_opts(&self) -> QueueOptions {
     QueueOptions {
       max_queue_depth: self.max_queue_depth,

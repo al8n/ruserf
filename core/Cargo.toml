@@ -23,7 +23,7 @@ serde = [
 ]
 
 [dependencies]
-atomic = "0.6"
+atomic_refcell = "0.1"
 arc-swap = "1"
 async-lock = "3"
 async-channel = "2"
