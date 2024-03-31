@@ -10,15 +10,10 @@ use crate::{
   Serf,
 };
 
-use std::{
-  future::Future,
-  sync::{atomic::Ordering, Arc, OnceLock},
-};
+use std::sync::{atomic::Ordering, Arc, OnceLock};
 
-use futures::Stream;
 use indexmap::IndexSet;
 use memberlist_core::{
-  agnostic_lite::RuntimeLite,
   bytes::{Buf, BufMut, Bytes, BytesMut},
   delegate::{
     AliveDelegate, ConflictDelegate, Delegate as MemberlistDelegate, EventDelegate,
@@ -529,8 +524,6 @@ impl<D, T> MemberlistMergeDelegate for SerfDelegate<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   type Id = T::Id;
   type Address = <T::Resolver as AddressResolver>::ResolvedAddress;

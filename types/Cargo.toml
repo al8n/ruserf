@@ -1,10 +1,12 @@
 [package]
 name = "ruserf-types"
 version.workspace = true
+rust-version.workspace = true
 edition.workspace = true
 repository.workspace = true
 homepage.workspace = true
 license.workspace = true
+description = "Types for the `ruserf` crate"
 
 [features]
 encryption = ["memberlist-types/encryption", "futures"]

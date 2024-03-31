@@ -1,8 +1,11 @@
 [package]
 name = "ruserf"
-version = { workspace = true } 
-edition = { workspace = true }
-license = { workspace = true }
-description = "A placeholder"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]

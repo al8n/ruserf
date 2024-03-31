@@ -1,9 +1,12 @@
 [package]
 name = "ruserf-core"
-version = { workspace = true } 
-edition = { workspace = true }
-license = { workspace = true }
-description = "A placeholder"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [features]
 default = ["metrics", "async-graphql"]
@@ -28,10 +31,7 @@ arc-swap = "1"
 async-lock = "3"
 async-channel = "2"
 async-graphql = { version = "7", optional = true }
-
-bitflags = "2"
 byteorder.workspace = true
-bytemuck = { version = "1", features = ["derive"] }
 derive_more.workspace = true
 futures.workspace = true
 either = "1"
@@ -45,9 +45,7 @@ smol_str.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 viewit.workspace = true
-
 memberlist-core = { path = "../../memberlist/core", default-features = false }
-
 ruserf-types.workspace = true
 
 metrics = { version = "0.22", optional = true }

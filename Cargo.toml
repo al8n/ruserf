@@ -9,6 +9,8 @@ resolver = "2"
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
+rust-version = "1.75.0"
+description = "A decentralized solution for service discovery and orchestration that is lightweight, highly available, and fault tolerant."
 repository = "https://github.com/al8n/ruserf"
 homepage = "https://github.com/al8n/ruserf"
 license = "MPL-2.0"

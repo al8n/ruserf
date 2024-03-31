@@ -1,10 +1,8 @@
-use std::{collections::HashMap, future::Future, marker::PhantomData};
+use std::{collections::HashMap, marker::PhantomData};
 
 use async_channel::Sender;
 use either::Either;
-use futures::Stream;
 use memberlist_core::{
-  agnostic_lite::RuntimeLite,
   transport::{AddressResolver, Node, Transport},
   types::TinyVec,
   CheapClone,
@@ -48,8 +46,6 @@ impl<T, D> Coalescer for MemberEventCoalescer<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   type Delegate = D;
   type Transport = T;

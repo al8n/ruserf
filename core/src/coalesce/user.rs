@@ -33,8 +33,6 @@ impl<T, D> Coalescer for UserEventCoalescer<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   type Delegate = D;
   type Transport = T;

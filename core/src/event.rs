@@ -5,9 +5,7 @@ use std::{
 
 use async_lock::Mutex;
 use either::Either;
-use futures::{Future, Stream};
 use memberlist_core::{
-  agnostic_lite::RuntimeLite,
   bytes::{BufMut, Bytes, BytesMut},
   transport::{AddressResolver, Node, Transport},
   types::TinyVec,
@@ -46,16 +44,12 @@ pub enum EventType {
 pub struct Event<T, D>(pub(crate) Either<EventKind<T, D>, Arc<EventKind<T, D>>>)
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send;
+  T: Transport;
 
 impl<D, T> Clone for Event<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   fn clone(&self) -> Self {
     Self(self.0.clone())
@@ -66,8 +60,6 @@ impl<D, T> Event<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   pub(crate) fn into_right(self) -> Self {
     match self.0 {
@@ -93,8 +85,6 @@ impl<D, T> From<MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAdd
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   fn from(value: MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>) -> Self {
     Self(Either::Left(EventKind::Member(value)))
@@ -105,8 +95,6 @@ impl<D, T> From<UserEventMessage> for Event<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   fn from(value: UserEventMessage) -> Self {
     Self(Either::Left(EventKind::User(value)))
@@ -117,8 +105,6 @@ impl<D, T> From<QueryEvent<T, D>> for Event<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   fn from(value: QueryEvent<T, D>) -> Self {
     Self(Either::Left(EventKind::Query(value)))

@@ -2,7 +2,6 @@ use std::{
   borrow::Cow,
   collections::HashSet,
   fs::{File, OpenOptions},
-  future::Future,
   io::{BufRead, BufReader, BufWriter, Seek, Write},
   mem,
   path::PathBuf,
@@ -14,7 +13,7 @@ use std::os::unix::prelude::OpenOptionsExt;
 
 use async_channel::{Receiver, Sender};
 use either::Either;
-use futures::{FutureExt, Stream};
+use futures::FutureExt;
 use memberlist_core::{
   agnostic_lite::RuntimeLite,
   bytes::{BufMut, BytesMut},
@@ -320,8 +319,6 @@ pub(crate) struct Snapshot<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   alive_nodes: HashSet<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
   clock: LamportClock,
@@ -348,8 +345,6 @@ impl<D, T> Snapshot<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
-  <<T::Runtime as RuntimeLite>::Sleep as Future>::Output: Send,
-  <<T::Runtime as RuntimeLite>::Interval as Stream>::Item: Send,
 {
   #[allow(clippy::type_complexity)]
   pub(crate) fn from_replay_result(
