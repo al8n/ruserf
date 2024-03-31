@@ -417,7 +417,6 @@ where
 {
   type Error = SerfMessageTransformError<I, A>;
 
-  /// Returns the encoded length of this message
   #[inline]
   fn encoded_len(&self) -> usize {
     match *self {
@@ -435,6 +434,7 @@ where
     }
   }
 
+  #[inline]
   fn encode(&self, dst: &mut [u8]) -> Result<usize, Self::Error> {
     match *self {
       Self::Leave(msg) => Transformable::encode(msg, dst).map_err(Into::into),
@@ -451,18 +451,3 @@ where
     }
   }
 }
-
-// /// Used to store the end destination of a relayed message
-// #[viewit::viewit(getters(style = "ref"), setters(prefix = "with"))]
-// #[derive(Debug, Clone, Eq, PartialEq)]
-// #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-// #[cfg_attr(feature = "serde", serde(transparent))]
-// #[repr(transparent)]
-// pub struct RelayHeader<I, A> {
-//   /// The distination node
-//   #[viewit(
-//     getter(style = "ref", attrs(doc = "Returns the destination node")),
-//     setter(attrs(doc = "Sets the destination node (Builder pattern)"))
-//   )]
-//   dest: Node<I, A>,
-// }

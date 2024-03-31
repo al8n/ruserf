@@ -3,7 +3,6 @@ use std::{
   time::{Duration, Instant},
 };
 
-use atomic::Atomic;
 use futures::{Future, FutureExt, StreamExt};
 use memberlist_core::{
   agnostic_lite::{AsyncSpawner, Detach, RuntimeLite},

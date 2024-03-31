@@ -32,8 +32,6 @@ pub use query::*;
 
 mod internal_query;
 
-const MAGIC_BYTE: u8 = 255;
-
 /// Maximum 128 KB snapshot
 const SNAPSHOT_SIZE_LIMIT: u64 = 128 * 1024;
 
