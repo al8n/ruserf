@@ -24,7 +24,10 @@ pub struct Options {
     getter(
       vis = "pub",
       style = "ref",
-      result(converter(style = "ref", fn = "tags",), type = "Option<Arc<Tags>>",)
+      result(converter(style = "ref", fn = "tags",), type = "Option<Arc<Tags>>",),
+      attrs(
+        doc = "Returns the tags for this role, if any. This is used to provide arbitrary key/value metadata per-node. For example, a \"role\" tag may be used to differentiate \"load-balancer\" from a \"web\" role as parts of the same cluster."
+      )
     ),
     setter(skip)
   )]
@@ -32,9 +35,17 @@ pub struct Options {
   tags: Arc<ArcSwapOption<Tags>>,
 
   /// The protocol version to speak
+  #[viewit(
+    getter(const, attrs(doc = "Returns the protocol version to speak")),
+    setter(attrs(doc = "Sets the protocol version to speak"))
+  )]
   protocol_version: ProtocolVersion,
 
   /// The delegate version to speak
+  #[viewit(
+    getter(const, attrs(doc = "Returns the delegate version to speak")),
+    setter(attrs(doc = "Sets the delegate version to speak"))
+  )]
   delegate_version: DelegateVersion,
 
   /// The amount of time to wait for a broadcast
@@ -263,6 +274,7 @@ impl Clone for Options {
 }
 
 impl Options {
+  /// Returns a new instance of `Options` with default configurations.
   #[inline]
   pub fn new() -> Self {
     Self {
