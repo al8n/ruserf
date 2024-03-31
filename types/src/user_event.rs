@@ -223,7 +223,7 @@ impl Transformable for UserEvent {
 
 /// Used for user-generated events
 #[viewit::viewit(setters(prefix = "with"))]
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Default, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct UserEventMessage {
   /// The lamport time

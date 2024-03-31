@@ -138,3 +138,128 @@ where
     Ok(())
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use std::{net::SocketAddr, time::Duration};
+
+  use agnostic_lite::{tokio::TokioRuntime, RuntimeLite};
+  use futures::FutureExt;
+use memberlist_core::transport::{
+    resolver::socket_addr::SocketAddrResolver, tests::UnimplementedTransport, Lpe,
+  };
+  use ruserf_types::{MemberStatus, UserEventMessage};
+  use smol_str::SmolStr;
+
+  use crate::{coalesce::coalesced_event, DefaultDelegate};
+
+  use super::*;
+
+  type Transport = UnimplementedTransport<
+    SmolStr,
+    SocketAddrResolver<TokioRuntime>,
+    Lpe<SmolStr, SocketAddr>,
+    TokioRuntime,
+  >;
+
+  type Delegate = DefaultDelegate<Transport>;
+
+  #[tokio::test]
+  async fn test_member_event_coalesce_tag_update() {
+    let (tx, rx) = async_channel::unbounded();
+    let (_shutdown_tx, shutdown_rx) = async_channel::bounded(1);
+    let coalescer = MemberEventCoalescer::<Transport, Delegate>::new();
+
+    let in_ = coalesced_event(tx, shutdown_rx, Duration::from_millis(5), Duration::from_millis(5), coalescer);
+
+    in_.send(Event::from(MemberEvent {
+      ty: MemberEventType::Update,
+      members: TinyVec::from(Member::new(Node::new("foo".into(), "127.0.0.1:8080".parse().unwrap()), [("role", "foo")].into_iter().collect(), MemberStatus::None)),
+    })).await.unwrap();
+
+    TokioRuntime::sleep(Duration::from_millis(30)).await;
+
+    futures::select! {
+      e = rx.recv().fuse() => {
+        let e = e.unwrap();
+
+        match e.kind() {
+          EventKind::Member(MemberEvent { ty, .. }) => {
+            assert!(matches!(ty, MemberEventType::Update));
+          }
+          _ => panic!("expected update"),
+        }
+      }
+      default => panic!("expected update"),
+    }
+
+    // Second update should not be suppressed even though
+	  // last event was an update
+    in_.send(Event::from(MemberEvent {
+      ty: MemberEventType::Update,
+      members: TinyVec::from(Member::new(Node::new("foo".into(), "127.0.0.1:8080".parse().unwrap()), [("role", "bar")].into_iter().collect(), MemberStatus::None)),
+    })).await.unwrap();
+    TokioRuntime::sleep(Duration::from_millis(10)).await; 
+
+    futures::select! {
+      e = rx.recv().fuse() => {
+        let e = e.unwrap();
+
+        match e.kind() {
+          EventKind::Member(MemberEvent { ty, .. }) => {
+            assert!(matches!(ty, MemberEventType::Update));
+          }
+          _ => panic!("expected update"),
+        }
+      }
+      default => panic!("expected update"),
+    }
+  }
+
+  #[test]
+  fn test_member_event_coalesce_pass_through() {
+    let cases = [
+      (Event::from(UserEventMessage::default()), false),
+      (
+        Event::from(MemberEvent {
+          ty: MemberEventType::Join,
+          members: TinyVec::new(),
+        }),
+        true,
+      ),
+      (
+        Event::from(MemberEvent {
+          ty: MemberEventType::Leave,
+          members: TinyVec::new(),
+        }),
+        true,
+      ),
+      (
+        Event::from(MemberEvent {
+          ty: MemberEventType::Failed,
+          members: TinyVec::new(),
+        }),
+        true,
+      ),
+      (
+        Event::from(MemberEvent {
+          ty: MemberEventType::Update,
+          members: TinyVec::new(),
+        }),
+        true,
+      ),
+      (
+        Event::from(MemberEvent {
+          ty: MemberEventType::Reap,
+          members: TinyVec::new(),
+        }),
+        true,
+      ),
+    ];
+
+    for (event, handle) in cases.iter() {
+      let coalescer = MemberEventCoalescer::<Transport, Delegate>::new();
+      assert_eq!(coalescer.handle(event), *handle);
+    }
+  }
+}

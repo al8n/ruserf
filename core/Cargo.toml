@@ -46,7 +46,7 @@ smol_str.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 viewit.workspace = true
-memberlist-core = { path = "../../memberlist/core", default-features = false }
+memberlist-core.workspace = true 
 ruserf-types.workspace = true
 
 metrics = { version = "0.22", optional = true }
@@ -65,8 +65,10 @@ tracing-subscriber = { version = "0.3", optional = true, features = [
 ] }
 
 [dev-dependencies]
+agnostic-lite = { version = "0.3", features = ["tokio"] }
 tokio = { version = "1", features = ["full"] }
 futures = { workspace = true, features = ["executor"] }
+
 
 [package.metadata.docs.rs]
 all-features = true
