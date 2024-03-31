@@ -3,6 +3,7 @@ use memberlist_core::{
   types::TinyVec,
   CheapClone,
 };
+use ruserf_types::MessageType;
 
 use crate::{
   coordinate::Coordinate,
@@ -224,9 +225,10 @@ where
   }
 
   fn decode_message(
+    ty: MessageType,
     bytes: impl AsRef<[u8]>,
   ) -> Result<(usize, SerfMessage<Self::Id, Self::Address>), Self::Error> {
-    T::decode_message(bytes)
+    T::decode_message(ty, bytes)
   }
 }
 

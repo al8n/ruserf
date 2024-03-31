@@ -13,6 +13,7 @@ use memberlist_core::{
   types::TinyVec,
   CheapClone,
 };
+use ruserf_types::QueryFlag;
 use smol_str::SmolStr;
 
 use super::{
@@ -268,8 +269,7 @@ impl core::fmt::Display for MemberEventType {
 #[derive(Debug, Clone)]
 pub struct MemberEvent<I, A> {
   pub(crate) ty: MemberEventType,
-  // TODO: use an enum to avoid allocate when there is only one member
-  pub(crate) members: TinyVec<Arc<Member<I, A>>>,
+  pub(crate) members: TinyVec<Member<I, A>>,
 }
 
 impl<I, A> core::fmt::Display for MemberEvent<I, A> {
@@ -279,7 +279,7 @@ impl<I, A> core::fmt::Display for MemberEvent<I, A> {
 }
 
 impl<I, A> MemberEvent<I, A> {
-  pub fn new(ty: MemberEventType, members: TinyVec<Arc<Member<I, A>>>) -> Self {
+  pub fn new(ty: MemberEventType, members: TinyVec<Member<I, A>>) -> Self {
     Self { ty, members }
   }
 
@@ -287,12 +287,12 @@ impl<I, A> MemberEvent<I, A> {
     self.ty
   }
 
-  pub fn members(&self) -> &[Arc<Member<I, A>>] {
+  pub fn members(&self) -> &[Member<I, A>] {
     &self.members
   }
 }
 
-impl<I, A> From<MemberEvent<I, A>> for (MemberEventType, TinyVec<Arc<Member<I, A>>>) {
+impl<I, A> From<MemberEvent<I, A>> for (MemberEventType, TinyVec<Member<I, A>>) {
   fn from(event: MemberEvent<I, A>) -> Self {
     (event.ty, event.members)
   }
@@ -441,7 +441,7 @@ where
       ltime,
       id,
       from,
-      flags: 0,
+      flags: QueryFlag::empty(),
       payload: msg,
     };
     let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&resp);
@@ -529,7 +529,7 @@ where
       ltime: self.ltime,
       id: self.id,
       from: self.ctx.this.inner.memberlist.advertise_node(),
-      flags: 0,
+      flags: QueryFlag::empty(),
       payload: buf,
     }
   }

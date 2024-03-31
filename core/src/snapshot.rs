@@ -143,7 +143,7 @@ where
         const N: usize = 2 * mem::size_of::<u8>() + mem::size_of::<u64>();
         let mut data = [0u8; N];
         data[0] = Self::$status;
-        data[1..N - 1].copy_from_slice(&$t.0.to_be_bytes());
+        data[1..N - 1].copy_from_slice(&$t.to_be_bytes());
         data[N - 1] = b'\n';
         w.write_all(&data).map(|_| N)
       }};
@@ -191,7 +191,6 @@ pub(crate) fn open_and_replay_snapshot<
     .create(true)
     .append(true)
     .read(true)
-    .write(true)
     .mode(0o644)
     .open(p)
     .map_err(SnapshotError::Open)?;
@@ -238,19 +237,19 @@ pub(crate) fn open_and_replay_snapshot<
         let t = u64::from_be_bytes([
           src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
         ]);
-        last_clock = LamportTime(t);
+        last_clock = LamportTime::new(t);
       }
       SnapshotRecord::<I, A>::EVENT_CLOCK => {
         let t = u64::from_be_bytes([
           src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
         ]);
-        last_event_clock = LamportTime(t);
+        last_event_clock = LamportTime::new(t);
       }
       SnapshotRecord::<I, A>::QUERY_CLOCK => {
         let t = u64::from_be_bytes([
           src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
         ]);
-        last_query_clock = LamportTime(t);
+        last_query_clock = LamportTime::new(t);
       }
       SnapshotRecord::<I, A>::COORDINATE => {
         continue;
@@ -658,9 +657,9 @@ where
   /// clock value. This is done after member events but should also be done
   /// periodically due to race conditions with join and leave intents
   fn update_clock(&mut self) {
-    let last_seen = self.clock.time().0 - 1;
-    if last_seen > self.last_clock.0 {
-      self.last_clock = LamportTime(last_seen);
+    let last_seen = self.clock.time() - LamportTime::new(1);
+    if last_seen > self.last_clock {
+      self.last_clock = last_seen;
       self.try_append(SnapshotRecord::Clock(self.last_clock));
     }
   }
@@ -870,19 +869,19 @@ where
           let t = u64::from_be_bytes([
             src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
           ]);
-          self.last_clock = LamportTime(t);
+          self.last_clock = LamportTime::new(t);
         }
         SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::EVENT_CLOCK => {
           let t = u64::from_be_bytes([
             src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
           ]);
-          self.last_event_clock = LamportTime(t);
+          self.last_event_clock = LamportTime::new(t);
         }
         SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::QUERY_CLOCK => {
           let t = u64::from_be_bytes([
             src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
           ]);
-          self.last_query_clock = LamportTime(t);
+          self.last_query_clock = LamportTime::new(t);
         }
         SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::COORDINATE => {
           continue;
@@ -894,9 +893,9 @@ where
             continue;
           }
           self.alive_nodes.clear();
-          self.last_clock = LamportTime(0);
-          self.last_event_clock = LamportTime(0);
-          self.last_query_clock = LamportTime(0);
+          self.last_clock = LamportTime::ZERO;
+          self.last_event_clock = LamportTime::ZERO;
+          self.last_query_clock = LamportTime::ZERO;
         }
         SnapshotRecord::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::COMMENT => {
           continue;

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use memberlist_core::{
   transport::{AddressResolver, MaybeResolvedAddress, Node, Transport},
@@ -148,7 +148,7 @@ where
 pub struct RelayError<T, D>(
   #[allow(clippy::type_complexity)]
   TinyVec<(
-    Arc<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+    Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     memberlist_core::error::Error<T, SerfDelegate<T, D>>,
   )>,
 )
@@ -159,7 +159,7 @@ where
 impl<T, D>
   From<
     TinyVec<(
-      Arc<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+      Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
       memberlist_core::error::Error<T, SerfDelegate<T, D>>,
     )>,
   > for RelayError<T, D>
@@ -169,7 +169,7 @@ where
 {
   fn from(
     value: TinyVec<(
-      Arc<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+      Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
       memberlist_core::error::Error<T, SerfDelegate<T, D>>,
     )>,
   ) -> Self {

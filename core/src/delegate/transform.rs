@@ -3,9 +3,14 @@ use memberlist_core::{
   transport::{Id, Node, Transformable},
   CheapClone,
 };
+use ruserf_types::{
+  FilterTransformError, JoinMessage, LeaveMessage, Member, MessageType, NodeTransformError,
+  PushPullMessage, QueryMessage, QueryResponseMessage, SerfMessageTransformError,
+  TagsTransformError, UserEventMessage,
+};
 
 use crate::{
-  coordinate::Coordinate,
+  coordinate::{Coordinate, CoordinateTransformError},
   types::{AsMessageRef, Filter, SerfMessage, Tags, UnknownMessageType},
 };
 
@@ -74,70 +79,54 @@ pub trait TransformDelegate: Send + Sync + 'static {
   ) -> Result<usize, Self::Error>;
 
   fn decode_message(
+    ty: MessageType,
     bytes: impl AsRef<[u8]>,
   ) -> Result<(usize, SerfMessage<Self::Id, Self::Address>), Self::Error>;
 }
 
 /// The error type for the LPE transformation.
+#[derive(thiserror::Error)]
 pub enum LpeTransformError<I, A>
 where
-  I: Transformable,
-  A: Transformable,
+  I: Transformable + core::hash::Hash + Eq,
+  A: Transformable + core::hash::Hash + Eq,
 {
   /// Id transformation error.
+  #[error(transparent)]
   Id(<I as Transformable>::Error),
   /// Address transformation error.
+  #[error(transparent)]
   Address(<A as Transformable>::Error),
+  /// Coordinate transformation error.
+  #[error(transparent)]
+  Coordinate(#[from] CoordinateTransformError),
   /// Node transformation error.
-  Node(<Node<I, A> as Transformable>::Error),
+  #[error(transparent)]
+  Node(#[from] NodeTransformError<I, A>),
+  /// Filter transformation error.
+  #[error(transparent)]
+  Filter(#[from] FilterTransformError<I, A>),
+  /// Tags transformation error.
+  #[error(transparent)]
+  Tags(#[from] TagsTransformError),
+  /// Serf message transformation error.
+  #[error(transparent)]
+  Message(#[from] SerfMessageTransformError<I, A>),
   /// Unknown message type error.
-  UnknownMessage(UnknownMessageType),
+  #[error(transparent)]
+  UnknownMessage(#[from] UnknownMessageType),
+  /// Unexpected relay message.
+  #[error("unexpected relay message")]
+  UnexpectedRelayMessage,
 }
 
 impl<I, A> core::fmt::Debug for LpeTransformError<I, A>
 where
-  I: Transformable,
-  A: Transformable,
+  I: Transformable + core::hash::Hash + Eq,
+  A: Transformable + core::hash::Hash + Eq,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    match self {
-      Self::Id(err) => write!(f, "{err:?}"),
-      Self::Address(err) => write!(f, "{err:?}"),
-      Self::Node(err) => write!(f, "{err:?}"),
-      Self::UnknownMessage(err) => write!(f, "{err:?}"),
-    }
-  }
-}
-
-impl<I, A> core::fmt::Display for LpeTransformError<I, A>
-where
-  I: Transformable,
-  A: Transformable,
-{
-  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    match self {
-      Self::Id(err) => write!(f, "{err}"),
-      Self::Address(err) => write!(f, "{err}"),
-      Self::Node(err) => write!(f, "{err}"),
-      Self::UnknownMessage(err) => write!(f, "{err}"),
-    }
-  }
-}
-
-impl<I, A> std::error::Error for LpeTransformError<I, A>
-where
-  I: Transformable,
-  A: Transformable,
-{
-}
-
-impl<I, A> From<UnknownMessageType> for LpeTransformError<I, A>
-where
-  I: Transformable,
-  A: Transformable,
-{
-  fn from(err: UnknownMessageType) -> Self {
-    Self::UnknownMessage(err)
+    write!(f, "{}", self)
   }
 }
 
@@ -160,18 +149,21 @@ impl<I, A> Copy for LpeTransfromDelegate<I, A> {}
 impl<I, A> TransformDelegate for LpeTransfromDelegate<I, A>
 where
   I: Id,
-  A: Transformable + CheapClone + Send + Sync + 'static,
+  A: Transformable + CheapClone + core::hash::Hash + Eq + Send + Sync + 'static,
 {
   type Error = LpeTransformError<Self::Id, Self::Address>;
   type Id = I;
   type Address = A;
 
   fn encode_filter(filter: &Filter<Self::Id, Self::Address>) -> Result<Bytes, Self::Error> {
-    todo!()
+    filter
+      .encode_to_vec()
+      .map(Bytes::from)
+      .map_err(Self::Error::Filter)
   }
 
   fn decode_filter(bytes: &[u8]) -> Result<(usize, Filter<Self::Id, Self::Address>), Self::Error> {
-    todo!()
+    Filter::decode(bytes).map_err(Self::Error::Filter)
   }
 
   fn node_encoded_len(node: &Node<Self::Id, Self::Address>) -> usize {
@@ -216,43 +208,78 @@ where
   }
 
   fn cooradinate_encoded_len(coordinate: &Coordinate) -> usize {
-    todo!()
+    Transformable::encoded_len(coordinate)
   }
 
   fn encode_coordinate(coordinate: &Coordinate, dst: &mut [u8]) -> Result<usize, Self::Error> {
-    todo!()
+    Transformable::encode(coordinate, dst).map_err(Self::Error::Coordinate)
   }
 
   fn decode_coordinate(bytes: &[u8]) -> Result<(usize, Coordinate), Self::Error> {
-    todo!()
+    Transformable::decode(bytes).map_err(Self::Error::Coordinate)
   }
 
   fn tags_encoded_len(tags: &Tags) -> usize {
-    todo!()
+    Transformable::encoded_len(tags)
   }
 
   fn encode_tags(tags: &Tags, dst: &mut [u8]) -> Result<usize, Self::Error> {
-    todo!()
+    Transformable::encode(tags, dst).map_err(Self::Error::Tags)
   }
 
   fn decode_tags(bytes: &[u8]) -> Result<(usize, Tags), Self::Error> {
-    todo!()
+    Transformable::decode(bytes).map_err(Self::Error::Tags)
   }
 
   fn message_encoded_len(msg: impl AsMessageRef<Self::Id, Self::Address>) -> usize {
-    todo!()
+    let msg = msg.as_message_ref();
+    ruserf_types::Encodable::encoded_len(&msg)
   }
 
   fn encode_message(
     msg: impl AsMessageRef<Self::Id, Self::Address>,
-    dst: impl AsMut<[u8]>,
+    mut dst: impl AsMut<[u8]>,
   ) -> Result<usize, Self::Error> {
-    todo!()
+    let msg = msg.as_message_ref();
+    ruserf_types::Encodable::encode(&msg, dst.as_mut()).map_err(Into::into)
   }
 
   fn decode_message(
+    ty: MessageType,
     bytes: impl AsRef<[u8]>,
   ) -> Result<(usize, SerfMessage<Self::Id, Self::Address>), Self::Error> {
-    todo!()
+    match ty {
+      MessageType::Leave => LeaveMessage::decode(bytes.as_ref())
+        .map(|(n, m)| (n, SerfMessage::Leave(m)))
+        .map_err(|e| Self::Error::Message(e.into())),
+      MessageType::Join => JoinMessage::decode(bytes.as_ref())
+        .map(|(n, m)| (n, SerfMessage::Join(m)))
+        .map_err(|e| Self::Error::Message(e.into())),
+      MessageType::PushPull => PushPullMessage::decode(bytes.as_ref())
+        .map(|(n, m)| (n, SerfMessage::PushPull(m)))
+        .map_err(|e| Self::Error::Message(e.into())),
+      MessageType::UserEvent => UserEventMessage::decode(bytes.as_ref())
+        .map(|(n, m)| (n, SerfMessage::UserEvent(m)))
+        .map_err(|e| Self::Error::Message(e.into())),
+      MessageType::Query => QueryMessage::decode(bytes.as_ref())
+        .map(|(n, m)| (n, SerfMessage::Query(m)))
+        .map_err(|e| Self::Error::Message(e.into())),
+      MessageType::QueryResponse => QueryResponseMessage::decode(bytes.as_ref())
+        .map(|(n, m)| (n, SerfMessage::QueryResponse(m)))
+        .map_err(|e| Self::Error::Message(e.into())),
+      MessageType::ConflictResponse => Member::decode(bytes.as_ref())
+        .map(|(n, m)| (n, SerfMessage::ConflictResponse(m)))
+        .map_err(|e| Self::Error::Message(e.into())),
+      MessageType::Relay => Err(Self::Error::UnexpectedRelayMessage),
+      #[cfg(feature = "encryption")]
+      MessageType::KeyRequest => ruserf_types::KeyRequestMessage::decode(bytes.as_ref())
+        .map(|(n, m)| (n, SerfMessage::KeyRequest(m)))
+        .map_err(|e| Self::Error::Message(e.into())),
+      #[cfg(feature = "encryption")]
+      MessageType::KeyResponse => ruserf_types::KeyResponseMessage::decode(bytes.as_ref())
+        .map(|(n, m)| (n, SerfMessage::KeyResponse(m)))
+        .map_err(|e| Self::Error::Message(e.into())),
+      _ => unreachable!(),
+    }
   }
 }

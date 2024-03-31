@@ -7,9 +7,11 @@ use std::{
   time::Duration,
 };
 
+use byteorder::{ByteOrder, NetworkEndian};
 use memberlist_core::CheapClone;
 use parking_lot::RwLock;
 use rand::Rng;
+use ruserf_types::Transformable;
 use smallvec::SmallVec;
 
 /// Used to convert float seconds to nanoseconds.
@@ -49,7 +51,7 @@ pub enum CoordinateError {
 /// [3] Lee, Sanghwan, et al. "On suitability of Euclidean embedding for
 ///     host-based network coordinate systems." Networking, IEEE/ACM Transactions
 ///     on 18.1 (2010): 27-40.
-#[viewit::viewit]
+#[viewit::viewit(getters(style = "ref"), setters(prefix = "with"))]
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CoordinateOptions {
@@ -123,7 +125,7 @@ impl CoordinateOptions {
 }
 
 /// Used to record events that occur when updating coordinates.
-#[viewit::viewit]
+#[viewit::viewit(getters(style = "ref"), setters(prefix = "with"))]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CoordinateClientStats {
@@ -399,14 +401,15 @@ where
 /// A specialized structure for holding network coordinates for the
 /// Vivaldi-based coordinate mapping algorithm. All of the fields should be public
 /// to enable this to be serialized. All values in here are in units of seconds.
-#[viewit::viewit]
+#[viewit::viewit(getters(style = "move"), setters(prefix = "with"))]
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Coordinate {
   /// The Euclidean portion of the coordinate. This is used along
   /// with the other fields to provide an overall distance estimate. The
   /// units here are seconds.
-  vec: SmallVec<[f64; DEFAULT_DIMENSIONALITY]>,
+  #[viewit(getter(const, style = "ref"))]
+  portion: SmallVec<[f64; DEFAULT_DIMENSIONALITY]>,
   /// Reflects the confidence in the given coordinate and is updated
   /// dynamically by the Vivaldi Client. This is dimensionless.
   error: f64,
@@ -443,7 +446,7 @@ impl Coordinate {
     let mut vec = SmallVec::with_capacity(opts.dimensionality);
     vec.resize(opts.dimensionality, 0.0);
     Self {
-      vec,
+      portion: vec,
       error: opts.vivaldi_error_max,
       adjustment: 0.0,
       height: opts.height_min,
@@ -452,7 +455,7 @@ impl Coordinate {
 
   #[inline]
   pub fn is_valid(&self) -> bool {
-    self.vec.iter().all(|&f| f.is_finite())
+    self.portion.iter().all(|&f| f.is_finite())
       && self.error.is_finite()
       && self.adjustment.is_finite()
       && self.height.is_finite()
@@ -460,7 +463,7 @@ impl Coordinate {
 
   #[inline]
   pub fn is_compatible_with(&self, other: &Self) -> bool {
-    self.vec.len() == other.vec.len()
+    self.portion.len() == other.portion.len()
   }
 
   /// Returns the result of applying the force from the direction of the
@@ -472,8 +475,8 @@ impl Coordinate {
     );
 
     let mut ret = self.clone();
-    let (mut unit, mag) = unit_vector_at(&self.vec, &other.vec);
-    add_in_place(&mut ret.vec, mul_in_place(&mut unit, force));
+    let (mut unit, mag) = unit_vector_at(&self.portion, &other.portion);
+    add_in_place(&mut ret.portion, mul_in_place(&mut unit, force));
     if mag > ZERO_THRESHOLD {
       ret.height = (ret.height + other.height) * force / mag + ret.height;
       ret.height = ret.height.max(height_min);
@@ -488,8 +491,8 @@ impl Coordinate {
       self.is_compatible_with(other),
       "coordinate dimensionality does not match"
     );
-    let (mut unit, mag) = unit_vector_at(&self.vec, &other.vec);
-    add_in_place(&mut self.vec, mul_in_place(&mut unit, force));
+    let (mut unit, mag) = unit_vector_at(&self.portion, &other.portion);
+    add_in_place(&mut self.portion, mul_in_place(&mut unit, force));
 
     if mag > ZERO_THRESHOLD {
       self.height = (self.height + other.height) * force / mag + self.height;
@@ -517,7 +520,99 @@ impl Coordinate {
 
   #[inline]
   fn raw_distance_to(&self, other: &Self) -> f64 {
-    magnitude_in_place(diff_in_place(&self.vec, &other.vec)) + self.height + other.height
+    magnitude_in_place(diff_in_place(&self.portion, &other.portion)) + self.height + other.height
+  }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CoordinateTransformError {
+  #[error("encode buffer too small")]
+  BufferTooSmall,
+  #[error("not enough bytes to decode")]
+  NotEnoughBytes,
+}
+
+impl Transformable for Coordinate {
+  type Error = CoordinateTransformError;
+
+  fn encode(&self, dst: &mut [u8]) -> Result<usize, Self::Error> {
+    let encoded_len = self.encoded_len();
+    if dst.len() < encoded_len {
+      return Err(Self::Error::BufferTooSmall);
+    }
+
+    let mut offset = 0;
+    NetworkEndian::write_u32(&mut dst[offset..], encoded_len as u32);
+    offset += 4;
+    NetworkEndian::write_f64(&mut dst[offset..], self.error);
+    offset += 8;
+    NetworkEndian::write_f64(&mut dst[offset..], self.adjustment);
+    offset += 8;
+    NetworkEndian::write_f64(&mut dst[offset..], self.height);
+    offset += 8;
+    for f in &self.portion {
+      NetworkEndian::write_f64(&mut dst[offset..], *f);
+      offset += 8;
+    }
+
+    debug_assert_eq!(
+      offset, encoded_len,
+      "expect write {} bytes, but actual write {} bytes",
+      encoded_len, offset
+    );
+
+    Ok(offset)
+  }
+
+  fn encoded_len(&self) -> usize {
+    4 + 8 * self.portion.len() + 8 * 3
+  }
+
+  fn decode(src: &[u8]) -> Result<(usize, Self), Self::Error>
+  where
+    Self: Sized,
+  {
+    let src_len = src.len();
+    if src_len < 4 + 3 * 8 {
+      return Err(Self::Error::NotEnoughBytes);
+    }
+
+    let len = NetworkEndian::read_u32(&src[0..4]) as usize;
+    if src_len < len {
+      return Err(Self::Error::NotEnoughBytes);
+    }
+
+    let mut offset = 4;
+    let error = NetworkEndian::read_f64(&src[offset..]);
+    offset += 8;
+    let adjustment = NetworkEndian::read_f64(&src[offset..]);
+    offset += 8;
+    let height = NetworkEndian::read_f64(&src[offset..]);
+    offset += 8;
+
+    let num_portion = (len - 4 - 3 * 8) / 8;
+    let mut portion = SmallVec::with_capacity(num_portion);
+
+    for _ in 0..num_portion {
+      portion.push(NetworkEndian::read_f64(&src[offset..]));
+      offset += 8;
+    }
+
+    debug_assert_eq!(
+      offset, len,
+      "expect read {} bytes, but actual read {} bytes",
+      len, offset
+    );
+
+    Ok((
+      len,
+      Self {
+        portion,
+        error,
+        adjustment,
+        height,
+      },
+    ))
   }
 }
 
@@ -619,42 +714,83 @@ mod tests {
     }
   }
 
+  impl Coordinate {
+    fn random(size: usize) -> Self {
+      let mut portion = SmallVec::with_capacity(size);
+      for _ in 0..size {
+        portion.push(rand_f64());
+      }
+      Self {
+        portion,
+        error: rand_f64(),
+        adjustment: rand_f64(),
+        height: rand_f64(),
+      }
+    }
+  }
+
+  #[tokio::test]
+  async fn test_transform_encode_decode() {
+    for i in 0..100 {
+      let filter = Coordinate::random(i);
+      let mut buf = vec![0; filter.encoded_len()];
+      let encoded_len = filter.encode(&mut buf).unwrap();
+      assert_eq!(encoded_len, filter.encoded_len());
+
+      let (decoded_len, decoded) = Coordinate::decode(&buf).unwrap();
+      assert_eq!(decoded_len, encoded_len);
+      assert_eq!(decoded, filter);
+
+      let (decoded_len, decoded) =
+        Coordinate::decode_from_reader(&mut std::io::Cursor::new(&buf)).unwrap();
+      assert_eq!(decoded_len, encoded_len);
+      assert_eq!(decoded, filter);
+
+      let (decoded_len, decoded) =
+        Coordinate::decode_from_async_reader(&mut futures::io::Cursor::new(&buf))
+          .await
+          .unwrap();
+      assert_eq!(decoded_len, encoded_len);
+      assert_eq!(decoded, filter);
+    }
+  }
+
   #[test]
   fn test_client_update() {
-    let cfg = CoordinateOptions::default().set_dimensionality(3);
+    let cfg = CoordinateOptions::default().with_dimensionality(3);
 
     let client = CoordinateClient::with_options(cfg.clone());
 
     let c = client.get_coordinate();
-    verify_equal_vectors(&c.vec, [0.0, 0.0, 0.0].as_slice());
+    verify_equal_vectors(&c.portion, [0.0, 0.0, 0.0].as_slice());
 
     // Place a node right above the client and observe an RTT longer than the
     // client expects, given its distance.
     let mut other = Coordinate::with_options(cfg.clone());
-    other.vec[2] = 0.001;
+    other.portion[2] = 0.001;
 
-    let rtt = Duration::from_nanos((2.0 * other.vec[2] * 1.0e9) as u64);
+    let rtt = Duration::from_nanos((2.0 * other.portion[2] * 1.0e9) as u64);
     let mut c = client.update(&SmolStr::from("other"), &other, rtt).unwrap();
 
     // The client should have scooted down to get away from it.
-    assert!(c.vec[2] < 0.0);
+    assert!(c.portion[2] < 0.0);
 
     // Set the coordinate to a known state.
-    c.vec[2] = 99.0;
+    c.portion[2] = 99.0;
     client.set_coordinate(c.clone()).unwrap();
     let c = client.get_coordinate();
-    verify_equal_floats(c.vec[2], 99.0);
+    verify_equal_floats(c.portion[2], 99.0);
   }
 
   #[test]
   fn test_client_invalid_in_ping_values() {
-    let cfg = CoordinateOptions::default().set_dimensionality(3);
+    let cfg = CoordinateOptions::default().with_dimensionality(3);
 
     let client = CoordinateClient::with_options(cfg.clone());
 
     // Place another node
     let mut other = Coordinate::with_options(cfg);
-    other.vec[2] = 0.001;
+    other.portion[2] = 0.001;
     let dist = client.distance_to(&other);
 
     // Update with a series of invalid ping periods, should return an error and estimated rtt remains unchanged
@@ -676,22 +812,22 @@ mod tests {
   #[test]
   fn test_client_distance_to() {
     let cfg = CoordinateOptions::default()
-      .set_dimensionality(3)
-      .set_height_min(0f64);
+      .with_dimensionality(3)
+      .with_height_min(0f64);
 
     let client = CoordinateClient::<SmolStr>::with_options(cfg.clone());
 
     // Fiddle a raw coordinate to put it a specific number of seconds away.
     let mut other = Coordinate::with_options(cfg);
-    other.vec[2] = 12.345;
-    let expected = Duration::from_nanos((other.vec[2] * SECONDS_TO_NANOSECONDS) as u64);
+    other.portion[2] = 12.345;
+    let expected = Duration::from_nanos((other.portion[2] * SECONDS_TO_NANOSECONDS) as u64);
     let dist = client.distance_to(&other);
     assert_eq!(dist, expected);
   }
 
   #[test]
   fn test_client_latency_filter() {
-    let cfg = CoordinateOptions::default().set_latency_filter_size(3);
+    let cfg = CoordinateOptions::default().with_latency_filter_size(3);
 
     let client = CoordinateClient::with_options(cfg);
 
@@ -770,13 +906,13 @@ mod tests {
 
   #[test]
   fn test_client_nan_defense() {
-    let cfg = CoordinateOptions::default().set_dimensionality(3);
+    let cfg = CoordinateOptions::default().with_dimensionality(3);
 
     let client = CoordinateClient::with_options(cfg.clone());
 
     // Block a bad coordinate from coming in.
     let mut other = Coordinate::with_options(cfg.clone());
-    other.vec[0] = f64::NAN;
+    other.portion[0] = f64::NAN;
     assert!(!other.is_valid());
 
     let rtt = Duration::from_millis(250);
@@ -788,14 +924,14 @@ mod tests {
     assert!(c.is_valid());
 
     // Block setting an incompatible coordinate directly.
-    other.vec.resize(other.vec.len() * 2, 0.0);
+    other.portion.resize(other.portion.len() * 2, 0.0);
     let e = client.set_coordinate(other).unwrap_err();
     assert_eq!(e, CoordinateError::DimensionalityMismatch);
     let c = client.get_coordinate();
     assert!(c.is_valid());
 
     // Poison the internal state and make sure we reset on an update.
-    client.inner.write().coord.vec[0] = f64::NAN;
+    client.inner.write().coord.portion[0] = f64::NAN;
     let other = Coordinate::with_options(cfg);
     let c = client.update(&SmolStr::from("node"), &other, rtt).unwrap();
     assert!(c.is_valid());
@@ -806,15 +942,15 @@ mod tests {
   fn test_coordinate_new() {
     let opts = CoordinateOptions::default();
     let c = Coordinate::with_options(opts.clone());
-    assert_eq!(opts.dimensionality, c.vec.len());
+    assert_eq!(opts.dimensionality, c.portion.len());
   }
 
   #[test]
   fn test_coordinate_is_valid() {
     let c = Coordinate::new();
     let mut fields = vec![];
-    for i in 0..c.vec.len() {
-      fields.push(c.vec[i]);
+    for i in 0..c.portion.len() {
+      fields.push(c.portion[i]);
     }
     fields.push(c.error);
     fields.push(c.adjustment);
@@ -828,11 +964,11 @@ mod tests {
 
   #[test]
   fn test_coordinate_is_compatible_with() {
-    let cfg = CoordinateOptions::default().set_dimensionality(3);
+    let cfg = CoordinateOptions::default().with_dimensionality(3);
 
     let c1 = Coordinate::with_options(cfg.clone());
     let c2 = Coordinate::with_options(cfg.clone());
-    let cfg = cfg.set_dimensionality(2);
+    let cfg = cfg.with_dimensionality(2);
     let alien = Coordinate::with_options(cfg);
 
     assert!(c1.is_compatible_with(&c2));
@@ -845,29 +981,29 @@ mod tests {
   #[should_panic(expected = "coordinate dimensionality does not match")]
   fn test_coordinate_apply_force() {
     let cfg = CoordinateOptions::default()
-      .set_dimensionality(3)
-      .set_height_min(0f64);
+      .with_dimensionality(3)
+      .with_height_min(0f64);
 
     let origin = Coordinate::with_options(cfg.clone());
 
     // This proves that we normalize, get the direction right, and apply the
     // force multiplier correctly.
     let mut above = Coordinate::with_options(cfg.clone());
-    above.vec[0] = 0.0;
-    above.vec[1] = 0.0;
-    above.vec[2] = 2.9;
+    above.portion[0] = 0.0;
+    above.portion[1] = 0.0;
+    above.portion[2] = 2.9;
     let c = origin.apply_force(cfg.height_min, 5.3, &above);
 
-    verify_equal_vectors(&c.vec, [0.0, 0.0, -5.3].as_slice());
+    verify_equal_vectors(&c.portion, [0.0, 0.0, -5.3].as_slice());
 
     // Scoot a point not starting at the origin to make sure there's nothing
     // special there.
     let mut right = Coordinate::with_options(cfg.clone());
-    right.vec[0] = 3.4;
-    right.vec[1] = 0.0;
-    right.vec[2] = -5.3;
+    right.portion[0] = 3.4;
+    right.portion[1] = 0.0;
+    right.portion[2] = -5.3;
     let c = c.apply_force(cfg.height_min, 2.0, &right);
-    verify_equal_vectors(&c.vec, [-2.0, 0.0, -5.3].as_slice());
+    verify_equal_vectors(&c.portion, [-2.0, 0.0, -5.3].as_slice());
 
     // If the points are right on top of each other, then we should end up
     // in a random direction, one unit away. This makes sure the unit vector
@@ -876,20 +1012,20 @@ mod tests {
     verify_equal_floats(origin.distance_to(&c).as_secs_f64(), 1.0);
 
     // Enable a minimum height and make sure that gets factored in properly.
-    let cfg = cfg.set_height_min(10.0e-6);
+    let cfg = cfg.with_height_min(10.0e-6);
     let origin = Coordinate::with_options(cfg.clone());
     let c = origin.apply_force(cfg.height_min, 5.3, &above);
-    verify_equal_vectors(&c.vec, [0.0, 0.0, -5.3].as_slice());
+    verify_equal_vectors(&c.portion, [0.0, 0.0, -5.3].as_slice());
     verify_equal_floats(c.height, cfg.height_min + 5.3 * cfg.height_min / 2.9);
 
     // Make sure the height minimum is enforced.
     let c = origin.apply_force(cfg.height_min, -5.3, &above);
-    verify_equal_vectors(&c.vec, [0.0, 0.0, 5.3].as_slice());
+    verify_equal_vectors(&c.portion, [0.0, 0.0, 5.3].as_slice());
     verify_equal_floats(c.height, cfg.height_min);
 
     // Shenanigans should get called if the dimensions don't match.
     let mut bad = c.clone();
-    bad.vec = SmallVec::from_slice(&vec![0.0; bad.vec.len() + 1]);
+    bad.portion = SmallVec::from_slice(&vec![0.0; bad.portion.len() + 1]);
     c.apply_force(cfg.height_min, 1.0, &bad);
   }
 

@@ -47,7 +47,7 @@ impl Broadcast for SerfBroadcast {
 // #[tokio::test]
 // async fn test_broadcast_finished() {
 //   use std::time::Duration;
-//   use showbiz_core::futures_util::{self, FutureExt};
+//   use memberlist_core::futures_util::{self, FutureExt};
 
 //   let (tx, rx) = async_channel::unbounded();
 

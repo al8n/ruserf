@@ -185,28 +185,33 @@ where
   async fn handle_install_key(ev: impl AsRef<QueryEvent<T, D>> + Send) {
     let q = ev.as_ref();
     let mut response = KeyResponseMessage::default();
-    let req = match <D as TransformDelegate>::decode_message(&q.payload[1..]) {
-      Ok((_, msg)) => match msg {
-        SerfMessage::KeyRequest(req) => req,
-        msg => {
-          tracing::error!(err = "unexpected message type", "ruserf: {}", msg.as_str());
+    let req =
+      match <D as TransformDelegate>::decode_message(MessageType::KeyRequest, &q.payload[1..]) {
+        Ok((_, msg)) => match msg {
+          SerfMessage::KeyRequest(req) => req,
+          msg => {
+            tracing::error!(
+              err = "unexpected message type",
+              "ruserf: {}",
+              msg.ty().as_str()
+            );
+            Self::send_key_response(q, &mut response).await;
+            return;
+          }
+        },
+        Err(e) => {
+          tracing::error!(err=%e, "ruserf: failed to decode key request");
           Self::send_key_response(q, &mut response).await;
           return;
         }
-      },
-      Err(e) => {
-        tracing::error!(err=%e, "ruserf: failed to decode key request");
-        Self::send_key_response(q, &mut response).await;
-        return;
-      }
-    };
+      };
 
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
         err = "no keyring to modify (encryption not enabled)",
         "ruserf: encryption not enabled"
       );
-      response.msg = SmolStr::new("No keyring to modify (encryption not enabled)");
+      response.message = SmolStr::new("No keyring to modify (encryption not enabled)");
       Self::send_key_response(q, &mut response).await;
       return;
     }
@@ -217,7 +222,7 @@ where
       if q.ctx.this.inner.opts.keyring_file.is_some() {
         if let Err(e) = q.ctx.this.write_keyring_file().await {
           tracing::error!(err=%e, "ruserf: failed to write keyring file");
-          response.msg = SmolStr::new(e.to_string());
+          response.message = SmolStr::new(e.to_string());
           Self::send_key_response(q, &mut response).await;
           return;
         }
@@ -230,7 +235,7 @@ where
         err = "encryption enabled but keyring is empty",
         "ruserf: keyring is empty"
       );
-      response.msg = SmolStr::new("encryption enabled but keyring is empty");
+      response.message = SmolStr::new("encryption enabled but keyring is empty");
       Self::send_key_response(q, &mut response).await;
     }
   }
@@ -240,28 +245,33 @@ where
     let q = ev.as_ref();
     let mut response = KeyResponseMessage::default();
 
-    let req = match <D as TransformDelegate>::decode_message(&q.payload[1..]) {
-      Ok((_, msg)) => match msg {
-        SerfMessage::KeyRequest(req) => req,
-        msg => {
-          tracing::error!(err = "unexpected message type", "ruserf: {}", msg.as_str());
+    let req =
+      match <D as TransformDelegate>::decode_message(MessageType::KeyRequest, &q.payload[1..]) {
+        Ok((_, msg)) => match msg {
+          SerfMessage::KeyRequest(req) => req,
+          msg => {
+            tracing::error!(
+              err = "unexpected message type",
+              "ruserf: {}",
+              msg.ty().as_str()
+            );
+            Self::send_key_response(q, &mut response).await;
+            return;
+          }
+        },
+        Err(e) => {
+          tracing::error!(err=%e, "ruserf: failed to decode key request");
           Self::send_key_response(q, &mut response).await;
           return;
         }
-      },
-      Err(e) => {
-        tracing::error!(err=%e, "ruserf: failed to decode key request");
-        Self::send_key_response(q, &mut response).await;
-        return;
-      }
-    };
+      };
 
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
         err = "no keyring to modify (encryption not enabled)",
         "ruserf: encryption is disabled"
       );
-      response.msg = SmolStr::new("No keyring to modify (encryption not enabled)");
+      response.message = SmolStr::new("No keyring to modify (encryption not enabled)");
       Self::send_key_response(q, &mut response).await;
       return;
     }
@@ -270,7 +280,7 @@ where
     if let Some(kr) = q.ctx.this.inner.memberlist.keyring() {
       if let Err(e) = kr.use_key(&req.key.unwrap()).await {
         tracing::error!(err=%e, "ruserf: failed to change primary key");
-        response.msg = SmolStr::new(e.to_string());
+        response.message = SmolStr::new(e.to_string());
         Self::send_key_response(q, &mut response).await;
         return;
       }
@@ -278,7 +288,7 @@ where
       if q.ctx.this.inner.opts.keyring_file.is_some() {
         if let Err(e) = q.ctx.this.write_keyring_file().await {
           tracing::error!(err=%e, "ruserf: failed to write keyring file");
-          response.msg = SmolStr::new(e.to_string());
+          response.message = SmolStr::new(e.to_string());
           Self::send_key_response(q, &mut response).await;
           return;
         }
@@ -291,7 +301,7 @@ where
         err = "encryption enabled but keyring is empty",
         "ruserf: keyring is empty"
       );
-      response.msg = SmolStr::new("encryption enabled but keyring is empty");
+      response.message = SmolStr::new("encryption enabled but keyring is empty");
       Self::send_key_response(q, &mut response).await;
     }
   }
@@ -301,28 +311,33 @@ where
     let q = ev.as_ref();
     let mut response = KeyResponseMessage::default();
 
-    let req = match <D as TransformDelegate>::decode_message(&q.payload[1..]) {
-      Ok((_, msg)) => match msg {
-        SerfMessage::KeyRequest(req) => req,
-        msg => {
-          tracing::error!(err = "unexpected message type", "ruserf: {}", msg.as_str());
+    let req =
+      match <D as TransformDelegate>::decode_message(MessageType::KeyRequest, &q.payload[1..]) {
+        Ok((_, msg)) => match msg {
+          SerfMessage::KeyRequest(req) => req,
+          msg => {
+            tracing::error!(
+              err = "unexpected message type",
+              "ruserf: {}",
+              msg.ty().as_str()
+            );
+            Self::send_key_response(q, &mut response).await;
+            return;
+          }
+        },
+        Err(e) => {
+          tracing::error!(target="ruserf", err=%e, "failed to decode key request");
           Self::send_key_response(q, &mut response).await;
           return;
         }
-      },
-      Err(e) => {
-        tracing::error!(target="ruserf", err=%e, "failed to decode key request");
-        Self::send_key_response(q, &mut response).await;
-        return;
-      }
-    };
+      };
 
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
         err = "no keyring to modify (encryption not enabled)",
         "ruserf: encryption is disabled"
       );
-      response.msg = SmolStr::new("No keyring to modify (encryption not enabled)");
+      response.message = SmolStr::new("No keyring to modify (encryption not enabled)");
       Self::send_key_response(q, &mut response).await;
       return;
     }
@@ -331,7 +346,7 @@ where
     if let Some(kr) = q.ctx.this.inner.memberlist.keyring() {
       if let Err(e) = kr.remove(&req.key.unwrap()).await {
         tracing::error!(err=%e, "ruserf: failed to remove key");
-        response.msg = SmolStr::new(e.to_string());
+        response.message = SmolStr::new(e.to_string());
         Self::send_key_response(q, &mut response).await;
         return;
       }
@@ -339,7 +354,7 @@ where
       if q.ctx.this.inner.opts.keyring_file.is_some() {
         if let Err(e) = q.ctx.this.write_keyring_file().await {
           tracing::error!(err=%e, "ruserf: failed to write keyring file");
-          response.msg = SmolStr::new(e.to_string());
+          response.message = SmolStr::new(e.to_string());
           Self::send_key_response(q, &mut response).await;
           return;
         }
@@ -352,7 +367,7 @@ where
         err = "encryption enabled but keyring is empty",
         "ruserf: keyring is empty"
       );
-      response.msg = SmolStr::new("encryption enabled but keyring is empty");
+      response.message = SmolStr::new("encryption enabled but keyring is empty");
       Self::send_key_response(q, &mut response).await;
     }
   }
@@ -368,7 +383,7 @@ where
         err = "keyring is empty (encryption not enabled)",
         "ruserf: encryption is disabled"
       );
-      response.msg = SmolStr::new("Keyring is empty (encryption not enabled)");
+      response.message = SmolStr::new("Keyring is empty (encryption not enabled)");
       Self::send_key_response(q, &mut response).await;
       return;
     }
@@ -388,7 +403,7 @@ where
         err = "keyring is empty",
         "ruserf: encryption enabled but keyring is empty"
       );
-      response.msg = SmolStr::new("encryption enabled but keyring is empty");
+      response.message = SmolStr::new("encryption enabled but keyring is empty");
       Self::send_key_response(q, &mut response).await;
     }
   }
@@ -450,7 +465,7 @@ where
       // Check the size limit
       if q.check_response_size(&qraw).is_err() {
         resp.keys.drain(i..);
-        resp.msg = SmolStr::new(format!(
+        resp.message = SmolStr::new(format!(
           "truncated key list response, showing first {} of {} keys",
           i, actual
         ));
@@ -458,7 +473,7 @@ where
       }
 
       if actual > i {
-        tracing::warn!("ruserf: {}", resp.msg);
+        tracing::warn!("ruserf: {}", resp.message);
       }
       return Ok((qraw, qresp));
     }

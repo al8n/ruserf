@@ -114,7 +114,7 @@ where
   #[inline]
   pub async fn local_member(
     &self,
-  ) -> Arc<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>> {
+  ) -> Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> {
     self
       .inner
       .members
@@ -124,7 +124,7 @@ where
       .get(self.inner.memberlist.local_id())
       .unwrap()
       .member
-      .clone()
+      .cheap_clone()
   }
 
   /// Used to dynamically update the tags associated with
@@ -281,7 +281,7 @@ where
       id: rand::random(),
       from: local.cheap_clone(),
       filters,
-      flags: flags.bits(),
+      flags,
       relay_factor: params.relay_factor,
       timeout: params.timeout,
       name: name.clone(),
@@ -309,7 +309,7 @@ where
     );
 
     // Register QueryResponse to track acks and responses
-    let resp = q.response(self.inner.memberlist.num_online_members().await);
+    let resp = QueryResponse::from_query(&q, self.inner.memberlist.num_online_members().await);
     self
       .register_query_response(params.timeout, resp.clone())
       .await;

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, future::Future, marker::PhantomData, sync::Arc};
+use std::{collections::HashMap, future::Future, marker::PhantomData};
 
 use async_channel::Sender;
 use either::Either;
@@ -20,7 +20,7 @@ use super::Coalescer;
 
 pub(crate) struct CoalesceEvent<I, A> {
   ty: MemberEventType,
-  member: Arc<Member<I, A>>,
+  member: Member<I, A>,
 }
 
 #[derive(Default)]

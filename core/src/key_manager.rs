@@ -221,16 +221,30 @@ where
         continue;
       }
 
-      let node_response = match <D as TransformDelegate>::decode_message(&r.payload[1..]) {
-        Ok((_, nr)) => match nr {
-          SerfMessage::KeyResponse(kr) => kr,
-          msg => {
+      let node_response =
+        match <D as TransformDelegate>::decode_message(MessageType::KeyResponse, &r.payload[1..]) {
+          Ok((_, nr)) => match nr {
+            SerfMessage::KeyResponse(kr) => kr,
+            msg => {
+              resp.messages.insert(
+                r.from.id().cheap_clone(),
+                SmolStr::new(format!(
+                  "Invalid key query response type: {:?}",
+                  msg.ty().as_str()
+                )),
+              );
+              resp.num_err += 1;
+
+              if resp.num_resp == resp.num_nodes {
+                return resp;
+              }
+              continue;
+            }
+          },
+          Err(e) => {
             resp.messages.insert(
               r.from.id().cheap_clone(),
-              SmolStr::new(format!(
-                "Invalid key query response type: {:?}",
-                msg.as_str()
-              )),
+              SmolStr::new(format!("Failed to decode key query response: {:?}", e)),
             );
             resp.num_err += 1;
 
@@ -239,31 +253,18 @@ where
             }
             continue;
           }
-        },
-        Err(e) => {
-          resp.messages.insert(
-            r.from.id().cheap_clone(),
-            SmolStr::new(format!("Failed to decode key query response: {:?}", e)),
-          );
-          resp.num_err += 1;
-
-          if resp.num_resp == resp.num_nodes {
-            return resp;
-          }
-          continue;
-        }
-      };
+        };
 
       if !node_response.result {
         resp
           .messages
-          .insert(r.from.id().cheap_clone(), node_response.msg);
+          .insert(r.from.id().cheap_clone(), node_response.message);
         resp.num_err += 1;
-      } else if node_response.result && node_response.msg.is_empty() {
-        tracing::warn!("ruserf: {}", node_response.msg);
+      } else if node_response.result && node_response.message.is_empty() {
+        tracing::warn!("ruserf: {}", node_response.message);
         resp
           .messages
-          .insert(r.from.id().cheap_clone(), node_response.msg);
+          .insert(r.from.id().cheap_clone(), node_response.message);
       }
 
       // Currently only used for key list queries, this adds keys to a counter
