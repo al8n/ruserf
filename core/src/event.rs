@@ -32,13 +32,14 @@ pub(crate) const INTERNAL_REMOVE_KEY: &str = "ruserf-remove-key";
 #[cfg(feature = "encryption")]
 pub(crate) const INTERNAL_LIST_KEYS: &str = "ruserf-list-keys";
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]
 pub enum EventType {
   Member(MemberEventType),
   User,
   Query,
+  InternalQuery,
 }
 
 pub struct Event<T, D>(pub(crate) Either<EventKind<T, D>, Arc<EventKind<T, D>>>)
@@ -61,6 +62,17 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
+  /// Returns the type of the event
+  #[inline]
+  pub fn ty(&self) -> EventType {
+    match self.kind() {
+      EventKind::Member(e) => EventType::Member(e.ty),
+      EventKind::User(_) => EventType::User,
+      EventKind::Query(_) => EventType::Query,
+      EventKind::InternalQuery { .. } => EventType::InternalQuery,
+    }
+  }
+
   pub(crate) fn into_right(self) -> Self {
     match self.0 {
       Either::Left(e) => Self(Either::Right(Arc::new(e))),
@@ -229,7 +241,7 @@ impl core::fmt::Display for MemberEventType {
 
 /// MemberEvent is the struct used for member related events
 /// Because Serf coalesces events, an event may contain multiple members.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MemberEvent<I, A> {
   pub(crate) ty: MemberEventType,
   pub(crate) members: TinyVec<Member<I, A>>,
@@ -421,6 +433,21 @@ where
   pub(crate) from: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
   /// Number of duplicate responses to relay back to sender
   pub(crate) relay_factor: u8,
+}
+
+impl<D, T> PartialEq for QueryEvent<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  fn eq(&self, other: &Self) -> bool {
+    self.id == other.id
+      && self.from == other.from
+      && self.relay_factor == other.relay_factor
+      && self.ltime == other.ltime
+      && self.name == other.name
+      && self.payload == other.payload
+  }
 }
 
 impl<D, T> AsRef<QueryEvent<T, D>> for QueryEvent<T, D>

@@ -139,12 +139,12 @@ where
   type Address = T::Address;
 
   fn encode_filter(
-    filter: &Filter<Self::Id, Self::Address>,
+    filter: &Filter<Self::Id>,
   ) -> Result<memberlist_core::bytes::Bytes, Self::Error> {
     T::encode_filter(filter)
   }
 
-  fn decode_filter(bytes: &[u8]) -> Result<(usize, Filter<Self::Id, Self::Address>), Self::Error> {
+  fn decode_filter(bytes: &[u8]) -> Result<(usize, Filter<Self::Id>), Self::Error> {
     T::decode_filter(bytes)
   }
 

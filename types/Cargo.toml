@@ -19,7 +19,7 @@ bytemuck = { version = "1", features = ["derive"] }
 derive_more.workspace = true
 futures = { workspace = true, optional = true, default-features = false, features = ["alloc"] }
 indexmap.workspace = true
-memberlist-types = { path = "../../memberlist/types" }
+memberlist-types.workspace = true
 smol_str.workspace = true
 transformable = { version = "0.1", features = ["async"] }
 thiserror.workspace = true

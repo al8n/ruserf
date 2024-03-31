@@ -367,7 +367,7 @@ where
   /// with the memberLock held.
   pub(crate) async fn broadcast_join(&self, ltime: LamportTime) -> Result<(), Error<T, D>> {
     // Construct message to update our lamport clock
-    let msg = JoinMessage::new(ltime, self.inner.memberlist.advertise_node());
+    let msg = JoinMessage::new(ltime, self.inner.memberlist.local_id().cheap_clone());
     self.inner.clock.witness(ltime);
 
     // Process update locally
@@ -429,15 +429,11 @@ where
   /// immediately, instead of waiting for the reaper to eventually reclaim it.
   /// This also has the effect that Serf will no longer attempt to reconnect
   /// to this node.
-  pub(crate) async fn force_leave(
-    &self,
-    node: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-    prune: bool,
-  ) -> Result<(), Error<T, D>> {
+  pub(crate) async fn force_leave(&self, id: T::Id, prune: bool) -> Result<(), Error<T, D>> {
     // Construct the message to broadcast
     let msg = LeaveMessage {
       ltime: self.inner.clock.time(),
-      node,
+      id,
       prune,
     };
 
@@ -516,9 +512,11 @@ macro_rules! reap {
       }
 
       // Skip if the timeout is not yet reached
-      if m.leave_time.elapsed() <= member_timeout {
-        i += 1;
-        continue;
+      if let Some(leave_time) = m.leave_time {
+        if leave_time.elapsed() <= member_timeout {
+          i += 1;
+          continue;
+        }
       }
 
       // Delete from the list
@@ -778,6 +776,25 @@ where
     true
   }
 
+  pub(crate) fn query_event(
+    &self,
+    q: QueryMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> QueryEvent<T, D> {
+    QueryEvent {
+      ltime: q.ltime,
+      name: q.name,
+      payload: q.payload,
+      ctx: Arc::new(QueryContext {
+        query_timeout: q.timeout,
+        span: Mutex::new(Some(Instant::now())),
+        this: self.clone(),
+      }),
+      id: q.id,
+      from: q.from,
+      relay_factor: q.relay_factor,
+    }
+  }
+
   /// Called when a query broadcast is
   /// received. Returns if the message should be rebroadcast.
   pub(crate) async fn handle_query(
@@ -900,19 +917,7 @@ where
     }
 
     if let Some(ref tx) = self.inner.event_tx {
-      let ev = QueryEvent {
-        ltime: q.ltime,
-        name: q.name,
-        payload: q.payload,
-        ctx: Arc::new(QueryContext {
-          query_timeout: q.timeout,
-          span: Mutex::new(Some(Instant::now())),
-          this: self.clone(),
-        }),
-        id: q.id,
-        from: q.from,
-        relay_factor: q.relay_factor,
-      };
+      let ev = self.query_event(q);
 
       if let Err(e) = tx
         .send(match ty {
@@ -995,14 +1000,18 @@ where
 
     let (old_status, fut) = if let Some(member) = members.states.get_mut(node.id()) {
       let old_status = member.member.status;
-      let dead_time = member.leave_time.elapsed();
+      let dead_time = member.leave_time.map(|t| t.elapsed());
       #[cfg(feature = "metrics")]
-      if old_status == MemberStatus::Failed && dead_time < self.inner.opts.flap_timeout {
-        metrics::counter!(
-          "ruserf.member.flap",
-          self.inner.opts.memberlist_options.metric_labels().iter()
-        )
-        .increment(1);
+      if old_status == MemberStatus::Failed {
+        if let Some(dead_time) = dead_time {
+          if dead_time < self.inner.opts.flap_timeout {
+            metrics::counter!(
+              "ruserf.member.flap",
+              self.inner.opts.memberlist_options.metric_labels().iter()
+            )
+            .increment(1);
+          }
+        }
       }
 
       *member = MemberState {
@@ -1010,14 +1019,13 @@ where
           node: node.cheap_clone(),
           tags: Arc::new(tags),
           status: MemberStatus::Alive,
-          protocol_version: ProtocolVersion::V1,
-          delegate_version: DelegateVersion::V1,
-          memberlist_delegate_version: MemberlistDelegateVersion::V1,
-          memberlist_protocol_version: MemberlistProtocolVersion::V1,
+          protocol_version: member.member.protocol_version,
+          delegate_version: member.member.delegate_version,
+          memberlist_delegate_version: member.member.memberlist_delegate_version,
+          memberlist_protocol_version: member.member.memberlist_protocol_version,
         },
         status_time: member.status_time,
-        leave_time:
-          MemberState::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::zero_leave_time(),
+        leave_time: None,
       };
 
       (
@@ -1052,14 +1060,13 @@ where
           node: node.cheap_clone(),
           tags: Arc::new(tags),
           status,
-          protocol_version: ProtocolVersion::V1,
-          delegate_version: DelegateVersion::V1,
-          memberlist_delegate_version: MemberlistDelegateVersion::V1,
-          memberlist_protocol_version: MemberlistProtocolVersion::V1,
+          protocol_version: self.inner.opts.protocol_version,
+          delegate_version: self.inner.opts.delegate_version,
+          memberlist_delegate_version: self.inner.opts.memberlist_options.delegate_version(),
+          memberlist_protocol_version: self.inner.opts.memberlist_options.protocol_version(),
         },
         status_time: status_ltime,
-        leave_time:
-          MemberState::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::zero_leave_time(),
+        leave_time: None,
       };
       let member = ms.member.clone();
       members.states.insert(node.id().cheap_clone(), ms);
@@ -1100,15 +1107,12 @@ where
 
   /// Called when a node broadcasts a
   /// join message to set the lamport time of its join
-  pub(crate) async fn handle_node_join_intent(
-    &self,
-    join_msg: &JoinMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  ) -> bool {
+  pub(crate) async fn handle_node_join_intent(&self, join_msg: &JoinMessage<T::Id>) -> bool {
     // Witness a potentially newer time
     self.inner.clock.witness(join_msg.ltime);
 
     let mut members = self.inner.members.write().await;
-    match members.states.get_mut(join_msg.node.id()) {
+    match members.states.get_mut(join_msg.id()) {
       Some(member) => {
         // Check if this time is newer than what we have
         if join_msg.ltime <= member.status_time {
@@ -1131,7 +1135,7 @@ where
         // Rebroadcast only if this was an update we hadn't seen before.
         upsert_intent(
           &mut members.recent_intents,
-          join_msg.node.id(),
+          join_msg.id(),
           MessageType::Join,
           join_msg.ltime,
           Instant::now,
@@ -1156,7 +1160,7 @@ where
         member_state.member.status = MemberStatus::Left;
 
         ms = MemberStatus::Left;
-        member_state.leave_time = Instant::now();
+        member_state.leave_time = Some(Instant::now());
         let member_state = member_state.clone();
         let member = member_state.member.clone();
         members.left_members.push(member_state);
@@ -1165,7 +1169,7 @@ where
       MemberStatus::Alive => {
         member_state.member.status = MemberStatus::Failed;
         ms = MemberStatus::Failed;
-        member_state.leave_time = Instant::now();
+        member_state.leave_time = Some(Instant::now());
         let member_state = member_state.clone();
         let member = member_state.member.clone();
         members.failed_members.push(member_state);
@@ -1210,10 +1214,7 @@ where
     }
   }
 
-  pub(crate) async fn handle_node_leave_intent(
-    &self,
-    msg: &LeaveMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  ) -> bool {
+  pub(crate) async fn handle_node_leave_intent(&self, msg: &LeaveMessage<T::Id>) -> bool {
     let state = self.state();
 
     // Witness a potentially newer time
@@ -1221,10 +1222,10 @@ where
 
     let mut members = self.inner.members.write().await;
 
-    if !members.states.contains_key(msg.node.id()) {
+    if !members.states.contains_key(msg.id()) {
       return upsert_intent(
         &mut members.recent_intents,
-        msg.node.id(),
+        msg.id(),
         MessageType::Leave,
         msg.ltime,
         Instant::now,
@@ -1233,7 +1234,7 @@ where
 
     let members = atomic_refcell::AtomicRefCell::new(&mut *members);
     let mut members_mut = members.borrow_mut();
-    let member = members_mut.states.get_mut(msg.node.id()).unwrap();
+    let member = members_mut.states.get_mut(msg.id()).unwrap();
     // If the message is old, then it is irrelevant and we can skip it
     if msg.ltime <= member.status_time {
       return false;
@@ -1241,7 +1242,7 @@ where
 
     // Refute us leaving if we are in the alive state
     // Must be done in another goroutine since we have the memberLock
-    if msg.node.id().eq(self.inner.memberlist.local_id()) && state == SerfState::Alive {
+    if msg.id().eq(self.inner.memberlist.local_id()) && state == SerfState::Alive {
       tracing::debug!("ruserf: refuting an older leave intent");
       let this = self.clone();
       let ltime = self.inner.clock.time();
@@ -1581,7 +1582,7 @@ fn reap_intents<I>(intents: &mut HashMap<I, NodeIntent>, timeout: Duration) {
   intents.retain(|_, intent| intent.wall_time.elapsed() <= timeout);
 }
 
-fn upsert_intent<I>(
+pub(crate) fn upsert_intent<I>(
   intents: &mut HashMap<I, NodeIntent>,
   node: &I,
   t: MessageType,

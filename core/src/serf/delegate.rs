@@ -20,7 +20,7 @@ use memberlist_core::{
     MergeDelegate as MemberlistMergeDelegate, NodeDelegate, PingDelegate,
   },
   tracing,
-  transport::{AddressResolver, Node, Transport},
+  transport::{AddressResolver, Transport},
   types::{Meta, NodeState, SmallVec, State, TinyVec},
   CheapClone, META_MAX_SIZE,
 };
@@ -30,7 +30,8 @@ use memberlist_core::{
 // to the ping message without a full protocol bump.
 const PING_VERSION: u8 = 1;
 
-pub(crate) struct SerfDelegate<T, D>
+/// The memberlist delegate for Serf.
+pub struct SerfDelegate<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
@@ -317,13 +318,13 @@ where
     let status_ltimes = members
       .states
       .values()
-      .map(|v| (v.member.node.cheap_clone(), v.status_time))
+      .map(|v| (v.member.node.id().cheap_clone(), v.status_time))
       .collect();
     let left_members = members
       .left_members
       .iter()
-      .map(|v| v.member.node().cheap_clone())
-      .collect::<IndexSet<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>();
+      .map(|v| v.member.node().id().cheap_clone())
+      .collect::<IndexSet<T::Id>>();
     let pp = PushPullMessageRef {
       ltime: this.inner.clock.time(),
       status_ltimes: &status_ltimes,
@@ -405,7 +406,7 @@ where
                     this
                       .handle_node_leave_intent(&LeaveMessage {
                         ltime,
-                        node: node.cheap_clone(),
+                        id: node.cheap_clone(),
                         prune: false,
                       })
                       .await;
@@ -426,7 +427,7 @@ where
 
                   // Create an artificial join message
                   this
-                    .handle_node_join_intent(&JoinMessage { ltime, node })
+                    .handle_node_join_intent(&JoinMessage { ltime, id: node })
                     .await;
                 }
 

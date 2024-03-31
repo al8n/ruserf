@@ -32,8 +32,13 @@ pub use query::*;
 
 mod internal_query;
 
+/// Re-export the unit tests
+#[cfg(any(test, feature = "test"))]
+#[cfg_attr(docsrs, doc(cfg(any(test, feature = "test"))))]
+pub mod tests;
+
 /// Maximum 128 KB snapshot
-const SNAPSHOT_SIZE_LIMIT: u64 = 128 * 1024;
+pub(crate) const SNAPSHOT_SIZE_LIMIT: u64 = 128 * 1024;
 
 /// Maximum 9KB for event name and payload
 const USER_EVENT_SIZE_LIMIT: usize = 9 * 1024;
@@ -197,6 +202,3 @@ where
     }
   }
 }
-
-#[test]
-fn test_() {}

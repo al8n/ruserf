@@ -217,7 +217,9 @@ where
     }
 
     tracing::info!("ruserf: received install-key query");
-    if let Some(kr) = q.ctx.this.inner.memberlist.keyring() {
+    let kr = q.ctx.this.inner.memberlist.keyring();
+    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
+      let kr = kr.unwrap();
       kr.insert(req.key.unwrap()).await;
       if q.ctx.this.inner.opts.keyring_file.is_some() {
         if let Err(e) = q.ctx.this.write_keyring_file().await {
@@ -277,7 +279,9 @@ where
     }
 
     tracing::info!("ruserf: received use-key query");
-    if let Some(kr) = q.ctx.this.inner.memberlist.keyring() {
+    let kr = q.ctx.this.inner.memberlist.keyring();
+    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
+      let kr = kr.unwrap();
       if let Err(e) = kr.use_key(&req.key.unwrap()).await {
         tracing::error!(err=%e, "ruserf: failed to change primary key");
         response.message = SmolStr::new(e.to_string());
@@ -343,7 +347,9 @@ where
     }
 
     tracing::info!("ruserf: received remove-key query");
-    if let Some(kr) = q.ctx.this.inner.memberlist.keyring() {
+    let kr = q.ctx.this.inner.memberlist.keyring();
+    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
+      let kr = kr.unwrap();
       if let Err(e) = kr.remove(&req.key.unwrap()).await {
         tracing::error!(err=%e, "ruserf: failed to remove key");
         response.message = SmolStr::new(e.to_string());
@@ -389,7 +395,9 @@ where
     }
 
     tracing::info!("ruserf: received list-keys query");
-    if let Some(kr) = q.ctx.this.inner.memberlist.keyring() {
+    let kr = q.ctx.this.inner.memberlist.keyring();
+    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
+      let kr = kr.unwrap();
       for k in kr.keys().await {
         response.keys.push(k);
       }
@@ -409,7 +417,7 @@ where
   }
 
   #[cfg(feature = "encryption")]
-  fn key_list_response_with_correct_size(
+  pub(crate) fn key_list_response_with_correct_size(
     q: &QueryEvent<T, D>,
     resp: &mut KeyResponseMessage,
   ) -> Result<

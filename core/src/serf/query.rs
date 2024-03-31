@@ -33,9 +33,9 @@ use super::Serf;
 #[viewit::viewit]
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct QueryParam<I, A> {
+pub struct QueryParam<I> {
   /// The filters to apply to the query.
-  filters: OneOrMore<Filter<I, A>>,
+  filters: OneOrMore<Filter<I>>,
 
   /// If true, we are requesting an delivery acknowledgement from
   /// every node that meets the filter requirement. This means nodes
@@ -53,13 +53,12 @@ pub struct QueryParam<I, A> {
   timeout: Duration,
 }
 
-impl<I, A> QueryParam<I, A>
+impl<I> QueryParam<I>
 where
   I: Id,
-  A: CheapClone + Send + 'static,
 {
   /// Used to convert the filters into the wire format
-  pub(crate) fn encode_filters<W: TransformDelegate<Id = I, Address = A>>(
+  pub(crate) fn encode_filters<W: TransformDelegate<Id = I>>(
     &self,
   ) -> Result<TinyVec<Bytes>, W::Error> {
     let mut filters = TinyVec::with_capacity(self.filters.len());
@@ -386,9 +385,7 @@ where
   }
 
   /// Used to return the default query parameters
-  pub async fn default_query_param(
-    &self,
-  ) -> QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> {
+  pub async fn default_query_param(&self) -> QueryParam<T::Id> {
     QueryParam {
       filters: OneOrMore::new(),
       request_ack: false,
@@ -419,11 +416,9 @@ where
       };
 
       match filter {
-        Filter::Node(nodes) => {
+        Filter::Id(nodes) => {
           // Check if we are being targeted
-          let found = nodes
-            .iter()
-            .any(|n| n.id().eq(self.inner.memberlist.local_id()));
+          let found = nodes.iter().any(|n| n.eq(self.inner.memberlist.local_id()));
           if !found {
             return false;
           }

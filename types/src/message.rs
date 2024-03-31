@@ -121,11 +121,11 @@ pub trait AsMessageRef<I, A> {
 #[derive(Debug)]
 pub enum SerfMessageRef<'a, I, A> {
   /// Leave message reference
-  Leave(&'a LeaveMessage<I, A>),
+  Leave(&'a LeaveMessage<I>),
   /// Join message reference
-  Join(&'a JoinMessage<I, A>),
+  Join(&'a JoinMessage<I>),
   /// PushPull message reference
-  PushPull(PushPullMessageRef<'a, I, A>),
+  PushPull(PushPullMessageRef<'a, I>),
   /// UserEvent message reference
   UserEvent(&'a UserEventMessage),
   /// Query message reference
@@ -161,11 +161,11 @@ impl<'a, I, A> AsMessageRef<I, A> for SerfMessageRef<'a, I, A> {
 #[derive(Debug, Clone)]
 pub enum SerfMessage<I, A> {
   /// Leave message
-  Leave(LeaveMessage<I, A>),
+  Leave(LeaveMessage<I>),
   /// Join message
-  Join(JoinMessage<I, A>),
+  Join(JoinMessage<I>),
   /// PushPull message
-  PushPull(PushPullMessage<I, A>),
+  PushPull(PushPullMessage<I>),
   /// UserEvent message
   UserEvent(UserEventMessage),
   /// Query message
@@ -212,7 +212,7 @@ impl<I, A> AsMessageRef<I, A> for QueryResponseMessage<I, A> {
   }
 }
 
-impl<I, A> AsMessageRef<I, A> for JoinMessage<I, A> {
+impl<I, A> AsMessageRef<I, A> for JoinMessage<I> {
   fn as_message_ref(&self) -> SerfMessageRef<I, A> {
     SerfMessageRef::Join(self)
   }
@@ -236,15 +236,28 @@ impl<'a, I, A> AsMessageRef<I, A> for &'a QueryResponseMessage<I, A> {
   }
 }
 
-impl<'a, I, A> AsMessageRef<I, A> for &'a JoinMessage<I, A> {
+impl<'a, I, A> AsMessageRef<I, A> for &'a JoinMessage<I> {
   fn as_message_ref(&self) -> SerfMessageRef<I, A> {
     SerfMessageRef::Join(self)
   }
 }
 
-impl<'a, I, A> AsMessageRef<I, A> for PushPullMessageRef<'a, I, A> {
+impl<'a, I, A> AsMessageRef<I, A> for PushPullMessageRef<'a, I> {
   fn as_message_ref(&self) -> SerfMessageRef<I, A> {
     SerfMessageRef::PushPull(*self)
+  }
+}
+
+impl<'a, I, A> AsMessageRef<I, A> for &'a PushPullMessage<I> {
+  fn as_message_ref(&self) -> SerfMessageRef<I, A> {
+    SerfMessageRef::PushPull(PushPullMessageRef {
+      ltime: self.ltime,
+      status_ltimes: &self.status_ltimes,
+      left_members: &self.left_members,
+      event_ltime: self.event_ltime,
+      events: &self.events,
+      query_ltime: self.query_ltime,
+    })
   }
 }
 
@@ -254,7 +267,7 @@ impl<'a, I, A> AsMessageRef<I, A> for &'a UserEventMessage {
   }
 }
 
-impl<'a, I, A> AsMessageRef<I, A> for &'a LeaveMessage<I, A> {
+impl<'a, I, A> AsMessageRef<I, A> for &'a LeaveMessage<I> {
   fn as_message_ref(&self) -> SerfMessageRef<I, A> {
     SerfMessageRef::Leave(self)
   }
@@ -371,13 +384,13 @@ where
 {
   /// [`LeaveMessage`] transformation error
   #[error(transparent)]
-  Leave(#[from] LeaveMessageTransformError<I, A>),
+  Leave(#[from] LeaveMessageTransformError<I>),
   /// [`JoinMessage`] transformation error
   #[error(transparent)]
-  Join(#[from] JoinMessageTransformError<I, A>),
+  Join(#[from] JoinMessageTransformError<I>),
   /// [`PushPullMessage`] transformation error
   #[error(transparent)]
-  PushPull(#[from] PushPullMessageTransformError<I, A>),
+  PushPull(#[from] PushPullMessageTransformError<I>),
   /// [`UserEventMessage`] transformation error
   #[error(transparent)]
   UserEvent(#[from] UserEventMessageTransformError),

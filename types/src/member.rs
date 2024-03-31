@@ -128,6 +128,23 @@ pub struct Member<I, A> {
   delegate_version: DelegateVersion,
 }
 
+impl<I, A> Member<I, A> {
+  /// Create a new member with the given node, tags, and status.
+  /// Other fields are set to their default values.
+  #[inline]
+  pub fn new(node: Node<I, A>, tags: Tags, status: MemberStatus) -> Self {
+    Self {
+      node,
+      tags: Arc::new(tags),
+      status,
+      memberlist_protocol_version: MemberlistProtocolVersion::V1,
+      memberlist_delegate_version: MemberlistDelegateVersion::V1,
+      protocol_version: ProtocolVersion::V1,
+      delegate_version: DelegateVersion::V1,
+    }
+  }
+}
+
 impl<I: Clone, A: Clone> Clone for Member<I, A> {
   fn clone(&self) -> Self {
     Self {

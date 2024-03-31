@@ -1,9 +1,9 @@
 use byteorder::{ByteOrder, NetworkEndian};
 use indexmap::{IndexMap, IndexSet};
-use memberlist_types::{NodeTransformError, TinyVec};
+use memberlist_types::TinyVec;
 use transformable::Transformable;
 
-use super::{LamportTime, LamportTimeTransformError, Node, UserEvents, UserEventsTransformError};
+use super::{LamportTime, LamportTimeTransformError, UserEvents, UserEventsTransformError};
 
 /// Used when doing a state exchange. This
 /// is a relatively large message, but is sent infrequently
@@ -13,14 +13,14 @@ use super::{LamportTime, LamportTimeTransformError, Node, UserEvents, UserEvents
 #[cfg_attr(
   feature = "serde",
   serde(bound(
-    serialize = "I: core::cmp::Eq + core::hash::Hash + serde::Serialize, A: core::cmp::Eq + core::hash::Hash + serde::Serialize",
-    deserialize = "I: core::cmp::Eq + core::hash::Hash + serde::Deserialize<'de>, A: core::cmp::Eq + core::hash::Hash + serde::Deserialize<'de>"
+    serialize = "I: core::cmp::Eq + core::hash::Hash + serde::Serialize",
+    deserialize = "I: core::cmp::Eq + core::hash::Hash + serde::Deserialize<'de>"
   ))
 )]
-pub struct PushPullMessage<I, A> {
+pub struct PushPullMessage<I> {
   /// Current node lamport time
   #[viewit(
-    getter(const, attrs(doc = "Returns the lamport time")),
+    getter(const, style = "move", attrs(doc = "Returns the lamport time")),
     setter(const, attrs(doc = "Sets the lamport time (Builder pattern)"))
   )]
   ltime: LamportTime,
@@ -33,16 +33,20 @@ pub struct PushPullMessage<I, A> {
     ),
     setter(attrs(doc = "Sets the maps the node to its status time (Builder pattern)"))
   )]
-  status_ltimes: IndexMap<Node<I, A>, LamportTime>,
+  status_ltimes: IndexMap<I, LamportTime>,
   /// List of left nodes
   #[viewit(
     getter(const, style = "ref", attrs(doc = "Returns the list of left nodes")),
     setter(attrs(doc = "Sets the list of left nodes (Builder pattern)"))
   )]
-  left_members: IndexSet<Node<I, A>>,
+  left_members: IndexSet<I>,
   /// Lamport time for event clock
   #[viewit(
-    getter(const, attrs(doc = "Returns the lamport time for event clock")),
+    getter(
+      const,
+      style = "move",
+      attrs(doc = "Returns the lamport time for event clock")
+    ),
     setter(
       const,
       attrs(doc = "Sets the lamport time for event clock (Builder pattern)")
@@ -57,7 +61,11 @@ pub struct PushPullMessage<I, A> {
   events: TinyVec<Option<UserEvents>>,
   /// Lamport time for query clock
   #[viewit(
-    getter(const, attrs(doc = "Returns the lamport time for query clock")),
+    getter(
+      const,
+      style = "move",
+      attrs(doc = "Returns the lamport time for query clock")
+    ),
     setter(
       const,
       attrs(doc = "Sets the lamport time for query clock (Builder pattern)")
@@ -66,10 +74,9 @@ pub struct PushPullMessage<I, A> {
   query_ltime: LamportTime,
 }
 
-impl<I, A> PartialEq for PushPullMessage<I, A>
+impl<I> PartialEq for PushPullMessage<I>
 where
   I: core::hash::Hash + Eq,
-  A: core::hash::Hash + Eq,
 {
   fn eq(&self, other: &Self) -> bool {
     self.ltime == other.ltime
@@ -86,13 +93,13 @@ where
 #[viewit::viewit(getters(skip), setters(skip))]
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct PushPullMessageRef<'a, I, A> {
+pub struct PushPullMessageRef<'a, I> {
   /// Current node lamport time
   ltime: LamportTime,
   /// Maps the node to its status time
-  status_ltimes: &'a IndexMap<Node<I, A>, LamportTime>,
+  status_ltimes: &'a IndexMap<I, LamportTime>,
   /// List of left nodes
-  left_members: &'a IndexSet<Node<I, A>>,
+  left_members: &'a IndexSet<I>,
   /// Lamport time for event clock
   event_ltime: LamportTime,
   /// Recent events
@@ -101,17 +108,17 @@ pub struct PushPullMessageRef<'a, I, A> {
   query_ltime: LamportTime,
 }
 
-impl<'a, I, A> Clone for PushPullMessageRef<'a, I, A> {
+impl<'a, I> Clone for PushPullMessageRef<'a, I> {
   fn clone(&self) -> Self {
     *self
   }
 }
 
-impl<'a, I, A> Copy for PushPullMessageRef<'a, I, A> {}
+impl<'a, I> Copy for PushPullMessageRef<'a, I> {}
 
-impl<'a, I, A> From<&'a PushPullMessage<I, A>> for PushPullMessageRef<'a, I, A> {
+impl<'a, I> From<&'a PushPullMessage<I>> for PushPullMessageRef<'a, I> {
   #[inline]
-  fn from(msg: &'a PushPullMessage<I, A>) -> Self {
+  fn from(msg: &'a PushPullMessage<I>) -> Self {
     Self {
       ltime: msg.ltime,
       status_ltimes: &msg.status_ltimes,
@@ -123,9 +130,9 @@ impl<'a, I, A> From<&'a PushPullMessage<I, A>> for PushPullMessageRef<'a, I, A> 
   }
 }
 
-impl<'a, I, A> From<&'a mut PushPullMessage<I, A>> for PushPullMessageRef<'a, I, A> {
+impl<'a, I> From<&'a mut PushPullMessage<I>> for PushPullMessageRef<'a, I> {
   #[inline]
-  fn from(msg: &'a mut PushPullMessage<I, A>) -> Self {
+  fn from(msg: &'a mut PushPullMessage<I>) -> Self {
     Self {
       ltime: msg.ltime,
       status_ltimes: &msg.status_ltimes,
@@ -137,12 +144,11 @@ impl<'a, I, A> From<&'a mut PushPullMessage<I, A>> for PushPullMessageRef<'a, I,
   }
 }
 
-impl<'a, I, A> super::Encodable for PushPullMessageRef<'a, I, A>
+impl<'a, I> super::Encodable for PushPullMessageRef<'a, I>
 where
   I: Transformable,
-  A: Transformable,
 {
-  type Error = PushPullMessageTransformError<I, A>;
+  type Error = PushPullMessageTransformError<I>;
 
   /// Returns the encoded length of the message
   fn encoded_len(&self) -> usize {
@@ -173,7 +179,7 @@ where
   }
 
   /// Encodes the message into the given buffer
-  fn encode(&self, dst: &mut [u8]) -> Result<usize, PushPullMessageTransformError<I, A>> {
+  fn encode(&self, dst: &mut [u8]) -> Result<usize, PushPullMessageTransformError<I>> {
     let encoded_len = self.encoded_len();
     if dst.len() < encoded_len {
       return Err(PushPullMessageTransformError::BufferTooSmall);
@@ -188,7 +194,7 @@ where
     NetworkEndian::write_u32(&mut dst[offset..offset + 4], len);
     offset += 4;
     for (node, ltime) in self.status_ltimes.iter() {
-      offset += Transformable::encode(node, &mut dst[offset..])?;
+      offset += Transformable::encode(node, &mut dst[offset..]).map_err(Self::Error::Id)?;
       offset += Transformable::encode(ltime, &mut dst[offset..])?;
     }
 
@@ -196,7 +202,7 @@ where
     NetworkEndian::write_u32(&mut dst[offset..offset + 4], len);
     offset += 4;
     for node in self.left_members.iter() {
-      offset += Transformable::encode(node, &mut dst[offset..])?;
+      offset += Transformable::encode(node, &mut dst[offset..]).map_err(Self::Error::Id)?;
     }
 
     offset += Transformable::encode(&self.event_ltime, &mut dst[offset..])?;
@@ -231,10 +237,9 @@ where
 
 /// Error that can occur when transforming a [`PushPullMessage`] or [`PushPullMessageRef`].
 #[derive(thiserror::Error)]
-pub enum PushPullMessageTransformError<I, A>
+pub enum PushPullMessageTransformError<I>
 where
   I: Transformable,
-  A: Transformable,
 {
   /// Not enough bytes to decode [`PushPullMessage`]
   #[error("not enough bytes to decode PushPullMessage")]
@@ -242,9 +247,9 @@ where
   /// Encode buffer too small
   #[error("encode buffer too small")]
   BufferTooSmall,
-  /// Error transforming [`Node`]
+  /// Error transforming [`I`]
   #[error(transparent)]
-  Node(#[from] NodeTransformError<I, A>),
+  Id(I::Error),
   /// Error when we do not have enough nodes
   #[error("expect {expect} nodes, but actual decode {got} nodes")]
   MissingLeftMember {
@@ -277,22 +282,20 @@ where
   },
 }
 
-impl<I, A> core::fmt::Debug for PushPullMessageTransformError<I, A>
+impl<I> core::fmt::Debug for PushPullMessageTransformError<I>
 where
   I: Transformable,
-  A: Transformable,
 {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "{}", self)
   }
 }
 
-impl<I, A> Transformable for PushPullMessage<I, A>
+impl<I> Transformable for PushPullMessage<I>
 where
   I: Transformable + core::hash::Hash + Eq,
-  A: Transformable + core::hash::Hash + Eq,
 {
-  type Error = PushPullMessageTransformError<I, A>;
+  type Error = PushPullMessageTransformError<I>;
 
   fn encode(&self, dst: &mut [u8]) -> Result<usize, Self::Error> {
     super::Encodable::encode(&PushPullMessageRef::from(self), dst)
@@ -325,7 +328,7 @@ where
 
     let mut status_ltimes = IndexMap::with_capacity(len);
     for _ in 0..len {
-      let (n, node) = Node::decode(&src[offset..])?;
+      let (n, node) = I::decode(&src[offset..]).map_err(Self::Error::Id)?;
       offset += n;
       let (n, ltime) = LamportTime::decode(&src[offset..])?;
       offset += n;
@@ -337,7 +340,7 @@ where
 
     let mut left_members = IndexSet::with_capacity(len);
     for _ in 0..len {
-      let (n, node) = Node::decode(&src[offset..])?;
+      let (n, node) = I::decode(&src[offset..]).map_err(Self::Error::Id)?;
       offset += n;
       left_members.insert(node);
     }
@@ -386,14 +389,12 @@ where
 
 #[cfg(test)]
 mod tests {
-  use std::net::SocketAddr;
-
-  use rand::{distributions::Alphanumeric, random, thread_rng, Rng};
+  use rand::{distributions::Alphanumeric, thread_rng, Rng};
   use smol_str::SmolStr;
 
   use super::*;
 
-  impl PushPullMessage<SmolStr, SocketAddr> {
+  impl PushPullMessage<SmolStr> {
     fn random(size: usize) -> Self {
       let mut status_ltimes = IndexMap::new();
       for _ in 0..size {
@@ -402,8 +403,8 @@ mod tests {
           .take(size)
           .collect::<Vec<u8>>();
         let id = String::from_utf8(id).unwrap().into();
-        let addr = SocketAddr::from(([127, 0, 0, 1], random::<u16>()));
-        status_ltimes.insert(Node::new(id, addr), LamportTime::random());
+
+        status_ltimes.insert(id, LamportTime::random());
       }
 
       let mut left_members = IndexSet::new();
@@ -413,8 +414,7 @@ mod tests {
           .take(size)
           .collect::<Vec<u8>>();
         let id = String::from_utf8(id).unwrap().into();
-        let addr = SocketAddr::from(([127, 0, 0, 1], random::<u16>()));
-        left_members.insert(Node::new(id, addr));
+        left_members.insert(id);
       }
 
       let mut events = TinyVec::new();
@@ -446,23 +446,19 @@ mod tests {
         let encoded_len = msg.encode(&mut buf).unwrap();
         assert_eq!(encoded_len, msg.encoded_len());
 
-        let (decoded_len, decoded) = PushPullMessage::<SmolStr, SocketAddr>::decode(&buf).unwrap();
-        assert_eq!(decoded_len, encoded_len);
-        assert_eq!(decoded, msg);
-
-        let (decoded_len, decoded) = PushPullMessage::<SmolStr, SocketAddr>::decode_from_reader(
-          &mut std::io::Cursor::new(&buf),
-        )
-        .unwrap();
+        let (decoded_len, decoded) = PushPullMessage::<SmolStr>::decode(&buf).unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, msg);
 
         let (decoded_len, decoded) =
-          PushPullMessage::<SmolStr, SocketAddr>::decode_from_async_reader(
-            &mut futures::io::Cursor::new(&buf),
-          )
-          .await
-          .unwrap();
+          PushPullMessage::<SmolStr>::decode_from_reader(&mut std::io::Cursor::new(&buf)).unwrap();
+        assert_eq!(decoded_len, encoded_len);
+        assert_eq!(decoded, msg);
+
+        let (decoded_len, decoded) =
+          PushPullMessage::<SmolStr>::decode_from_async_reader(&mut futures::io::Cursor::new(&buf))
+            .await
+            .unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, msg);
       }

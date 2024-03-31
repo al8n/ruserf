@@ -220,6 +220,10 @@ pub(crate) fn open_and_replay_snapshot<
       break;
     }
 
+    if buf.is_empty() {
+      break;
+    }
+
     // Skip the newline
     let src = &buf[..buf.len() - 1];
     // Match on the prefix
@@ -605,7 +609,7 @@ where
   /// Used to handle a single user event
   fn process_user_event(&mut self, e: &UserEventMessage) {
     // Ignore old clocks
-    let ltime = *e.ltime();
+    let ltime = e.ltime();
     if ltime <= self.last_event_clock {
       return;
     }
@@ -654,7 +658,8 @@ where
   /// clock value. This is done after member events but should also be done
   /// periodically due to race conditions with join and leave intents
   fn update_clock(&mut self) {
-    let last_seen = self.clock.time() - LamportTime::new(1);
+    let t: u64 = self.clock.time().into();
+    let last_seen = LamportTime::from(t.wrapping_sub(1));
     if last_seen > self.last_clock {
       self.last_clock = last_seen;
       self.try_append(SnapshotRecord::Clock(self.last_clock));
