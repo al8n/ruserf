@@ -32,13 +32,14 @@ pub(crate) const INTERNAL_REMOVE_KEY: &str = "ruserf-remove-key";
 #[cfg(feature = "encryption")]
 pub(crate) const INTERNAL_LIST_KEYS: &str = "ruserf-list-keys";
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]
 pub enum EventType {
   Member(MemberEventType),
   User,
   Query,
+  InternalQuery,
 }
 
 pub struct Event<T, D>(pub(crate) Either<EventKind<T, D>, Arc<EventKind<T, D>>>)
@@ -61,6 +62,17 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
+  /// Returns the type of the event
+  #[inline]
+  pub fn ty(&self) -> EventType {
+    match self.kind() {
+        EventKind::Member(e) => EventType::Member(e.ty),
+        EventKind::User(_) => EventType::User,
+        EventKind::Query(_) => EventType::Query,
+        EventKind::InternalQuery { .. } => EventType::InternalQuery,
+    }
+  }
+
   pub(crate) fn into_right(self) -> Self {
     match self.0 {
       Either::Left(e) => Self(Either::Right(Arc::new(e))),

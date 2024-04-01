@@ -17,7 +17,7 @@ use crate::{
 use super::Coalescer;
 
 pub(crate) struct CoalesceEvent<I, A> {
-  ty: MemberEventType,
+  pub(super) ty: MemberEventType,
   member: Member<I, A>,
 }
 
@@ -151,7 +151,7 @@ use memberlist_core::transport::{
   use ruserf_types::{MemberStatus, UserEventMessage};
   use smol_str::SmolStr;
 
-  use crate::{coalesce::coalesced_event, DefaultDelegate};
+  use crate::{coalesce::coalesced_event, event::EventType, DefaultDelegate};
 
   use super::*;
 
@@ -163,6 +163,110 @@ use memberlist_core::transport::{
   >;
 
   type Delegate = DefaultDelegate<Transport>;
+
+  #[tokio::test]
+  async fn test_member_event_coealesce_basic() {
+    let (tx, rx) = async_channel::unbounded();
+    let (_shutdown_tx, shutdown_rx) = async_channel::bounded(1);
+    let coalescer = MemberEventCoalescer::<Transport, Delegate>::new();
+
+    let in_ = coalesced_event(tx, shutdown_rx, Duration::from_millis(5), Duration::from_millis(5), coalescer);
+
+    let send = vec![
+      MemberEvent {
+        ty: MemberEventType::Join,
+        members: TinyVec::from(Member::new(Node::new("foo".into(), "127.0.0.1:8080".parse().unwrap()), Default::default(), MemberStatus::None)),
+      },
+      MemberEvent {
+        ty: MemberEventType::Leave,
+        members: TinyVec::from(Member::new(Node::new("foo".into(), "127.0.0.1:8080".parse().unwrap()), Default::default(), MemberStatus::None)),
+      },
+      MemberEvent {
+        ty: MemberEventType::Leave,
+        members: TinyVec::from(Member::new(Node::new("bar".into(), "127.0.0.1:8080".parse().unwrap()), Default::default(), MemberStatus::None)),
+      },
+      MemberEvent {
+        ty: MemberEventType::Update,
+        members: TinyVec::from(Member::new(Node::new("zip".into(), "127.0.0.1:8080".parse().unwrap()), [("role", "foo")].into_iter().collect(), MemberStatus::None)),
+      },
+      MemberEvent {
+        ty: MemberEventType::Update,
+        members: TinyVec::from(Member::new(Node::new("zip".into(), "127.0.0.1:8080".parse().unwrap()), [("role", "bar")].into_iter().collect(), MemberStatus::None)),
+      },
+      MemberEvent {
+        ty: MemberEventType::Reap,
+        members: TinyVec::from(Member::new(Node::new("dead".into(), "127.0.0.1:8080".parse().unwrap()), Default::default(), MemberStatus::None)),
+      },
+    ];
+
+    for event in send {
+      in_.send(Event::from(event)).await.unwrap();
+    }
+
+    let mut events = HashMap::new();
+    let timeout = TokioRuntime::sleep(Duration::from_millis(10));
+    futures::pin_mut!(timeout);
+
+
+      loop {
+        futures::select! {
+          e = rx.recv().fuse() => {
+            let e = e.unwrap();
+            events.insert(e.ty(), e.clone());
+          }
+          _ = (&mut timeout).fuse() => {
+            break;
+          },
+        }
+      }
+
+      assert_eq!(events.len(), 3);
+
+      match events.get(&EventType::Member(MemberEventType::Leave)) {
+        None => panic!(""),
+        Some(e) => {
+          match e.kind() {
+            EventKind::Member(MemberEvent { members, .. }) => {
+              assert_eq!(members.len(), 2);
+
+              let expected = ["bar", "foo"];
+              let mut names = [members[0].node.id().clone(), members[1].node.id().clone()];
+              names.sort();
+
+              assert_eq!(names, expected);
+            }
+            _ => panic!(""),
+          }
+        },
+      }
+
+      match events.get(&EventType::Member(MemberEventType::Update)) {
+        None => panic!(""),
+        Some(e) => {
+          match e.kind() {
+            EventKind::Member(MemberEvent { members, .. }) => {
+              assert_eq!(members.len(), 1);
+              assert_eq!(members[0].node.id(), "zip");
+              assert_eq!(members[0].tags().get("role").unwrap(), "bar");
+            }
+            _ => panic!(""),
+          }
+        },
+      }
+
+      match events.get(&EventType::Member(MemberEventType::Reap)) {
+        None => panic!(""),
+        Some(e) => {
+          match e.kind() {
+            EventKind::Member(MemberEvent { members, .. }) => {
+              assert_eq!(members.len(), 1);
+              assert_eq!(members[0].node.id(), "dead");
+            }
+            _ => panic!(""),
+          }
+        },
+      }
+  }
 
   #[tokio::test]
   async fn test_member_event_coalesce_tag_update() {
