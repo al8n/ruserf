@@ -66,10 +66,10 @@ where
   #[inline]
   pub fn ty(&self) -> EventType {
     match self.kind() {
-        EventKind::Member(e) => EventType::Member(e.ty),
-        EventKind::User(_) => EventType::User,
-        EventKind::Query(_) => EventType::Query,
-        EventKind::InternalQuery { .. } => EventType::InternalQuery,
+      EventKind::Member(e) => EventType::Member(e.ty),
+      EventKind::User(_) => EventType::User,
+      EventKind::Query(_) => EventType::Query,
+      EventKind::InternalQuery { .. } => EventType::InternalQuery,
     }
   }
 

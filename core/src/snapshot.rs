@@ -605,7 +605,7 @@ where
   /// Used to handle a single user event
   fn process_user_event(&mut self, e: &UserEventMessage) {
     // Ignore old clocks
-    let ltime = *e.ltime();
+    let ltime = e.ltime();
     if ltime <= self.last_event_clock {
       return;
     }

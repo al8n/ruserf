@@ -228,7 +228,11 @@ impl Transformable for UserEvent {
 pub struct UserEventMessage {
   /// The lamport time
   #[viewit(
-    getter(const, attrs(doc = "Returns the lamport time for this message")),
+    getter(
+      const,
+      style = "move",
+      attrs(doc = "Returns the lamport time for this message")
+    ),
     setter(
       const,
       attrs(doc = "Sets the lamport time for this message (Builder pattern)")
@@ -249,7 +253,11 @@ pub struct UserEventMessage {
   payload: Bytes,
   /// "Can Coalesce".
   #[viewit(
-    getter(const, attrs(doc = "Returns if this message can be coalesced")),
+    getter(
+      const,
+      style = "move",
+      attrs(doc = "Returns if this message can be coalesced")
+    ),
     setter(
       const,
       attrs(doc = "Sets if this message can be coalesced (Builder pattern)")

@@ -132,11 +132,7 @@ impl<I, A> Member<I, A> {
   /// Create a new member with the given node, tags, and status.
   /// Other fields are set to their default values.
   #[inline]
-  pub fn new(
-    node: Node<I, A>,
-    tags: Tags,
-    status: MemberStatus,
-  ) -> Self {
+  pub fn new(node: Node<I, A>, tags: Tags, status: MemberStatus) -> Self {
     Self {
       node,
       tags: Arc::new(tags),

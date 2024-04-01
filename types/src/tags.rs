@@ -34,7 +34,12 @@ impl FromIterator<(SmolStr, SmolStr)> for Tags {
 
 impl<'a> FromIterator<(&'a str, &'a str)> for Tags {
   fn from_iter<T: IntoIterator<Item = (&'a str, &'a str)>>(iter: T) -> Self {
-    Self(iter.into_iter().map(|(k, v) | (SmolStr::new(k), SmolStr::new(v))).collect())
+    Self(
+      iter
+        .into_iter()
+        .map(|(k, v)| (SmolStr::new(k), SmolStr::new(v)))
+        .collect(),
+    )
   }
 }
 
