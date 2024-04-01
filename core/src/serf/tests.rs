@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use async_channel::Receiver;
 use futures::FutureExt;
 use memberlist_core::{
   agnostic_lite::RuntimeLite,
@@ -16,7 +17,7 @@ use smol_str::SmolStr;
 
 use crate::{
   delegate::TransformDelegate,
-  event::{InternalQueryEvent, MemberEvent, MemberEventType},
+  event::{EventKind, EventType, InternalQueryEvent, MemberEvent, MemberEventType},
 };
 
 use self::internal_query::SerfQueries;
@@ -59,6 +60,120 @@ where
       }
     }
   }
+}
+
+/// tests that the given node had the given sequence of events
+/// on the event channel.
+async fn test_events<T, D>(rx: Receiver<Event<T, D>>, node: T::Id, expected: Vec<EventType>)
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  let mut actual = Vec::with_capacity(expected.len());
+
+  loop {
+    futures::select! {
+      event = rx.recv().fuse() => {
+        let event = event.unwrap();
+        match event.kind() {
+          EventKind::Member(MemberEvent { ty, members }) => {
+            let mut found = false;
+
+            for m in members.iter() {
+              if node.eq(m.node.id()) {
+                found = true;
+                break;
+              }
+            }
+
+            if found {
+              actual.push(EventType::Member(*ty));
+            }
+          }
+          _ => continue,
+        }
+      }
+      _ = <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(10)).fuse() => {
+        break;
+      }
+    }
+  }
+
+  assert_eq!(actual, expected, "bad events for node {:?}", node);
+}
+
+/// tests that the given sequence of usr events
+/// on the event channel took place.
+async fn test_user_events<T, D>(
+  rx: Receiver<Event<T, D>>,
+  expected_name: Vec<SmolStr>,
+  expected_payload: Vec<Bytes>,
+) where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  let mut actual_name = Vec::with_capacity(expected_name.len());
+  let mut actual_payload = Vec::with_capacity(expected_payload.len());
+
+  loop {
+    futures::select! {
+      event = rx.recv().fuse() => {
+        let Ok(event) = event else { break };
+        match event.kind() {
+          EventKind::User(e) => {
+            actual_name.push(e.name.clone());
+            actual_payload.push(e.payload.clone());
+          }
+          _ => continue,
+        }
+      }
+      _ = <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(10)).fuse() => {
+        break;
+      }
+    }
+  }
+
+  assert_eq!(actual_name, expected_name);
+  assert_eq!(actual_payload, expected_payload);
+}
+
+/// tests that the given sequence of query events
+/// on the event channel took place.
+async fn test_query_events<T, D>(
+  rx: Receiver<Event<T, D>>,
+  expected_name: Vec<SmolStr>,
+  expected_payload: Vec<Bytes>,
+) where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  let mut actual_name = Vec::with_capacity(expected_name.len());
+  let mut actual_payload = Vec::with_capacity(expected_payload.len());
+
+  loop {
+    futures::select! {
+      event = rx.recv().fuse() => {
+        let Ok(event) = event else { break };
+        match event.kind() {
+          EventKind::Query(e) => {
+            actual_name.push(e.name.clone());
+            actual_payload.push(e.payload.clone());
+          }
+          EventKind::InternalQuery { query, .. } => {
+            actual_name.push(query.name.clone());
+            actual_payload.push(query.payload.clone());
+          }
+          _ => continue,
+        }
+      }
+      _ = <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(10)).fuse() => {
+        break;
+      }
+    }
+  }
+
+  assert_eq!(actual_name, expected_name);
+  assert_eq!(actual_payload, expected_payload);
 }
 
 /// Unit test for queries pass through functionality
