@@ -10,21 +10,21 @@ homepage.workspace = true
 
 [features]
 default = ["metrics", "async-graphql"]
-metrics = ["memberlist/metrics", "dep:metrics"]
-encryption = ["memberlist/encryption", "ruserf-types/encryption", "base64"]
+metrics = ["memberlist-core/metrics", "dep:metrics"]
+encryption = ["memberlist-core/encryption", "ruserf-types/encryption", "base64"]
 async-graphql = ["dep:async-graphql"]
 
 serde = [
   "dep:serde",
   "dep:humantime-serde",
-  "memberlist/serde",
+  "memberlist-core/serde",
   "ruserf-types/serde",
   "smol_str/serde",
   "smallvec/serde",
   "indexmap/serde",
 ]
 
-test = ["memberlist/test", "paste", "tracing-subscriber"]
+test = ["memberlist-core/test", "paste", "tracing-subscriber"]
 
 [dependencies]
 atomic_refcell = "0.1"
@@ -46,8 +46,7 @@ smol_str.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 viewit.workspace = true
-# memberlist-core.workspace = true
-memberlist.workspace = true
+memberlist-core.workspace = true
 ruserf-types.workspace = true
 
 metrics = { version = "0.22", optional = true }

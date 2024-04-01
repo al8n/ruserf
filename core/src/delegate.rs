@@ -1,4 +1,4 @@
-use memberlist::{transport::Id, CheapClone};
+use memberlist_core::{transport::Id, CheapClone};
 
 mod merge;
 pub use merge::*;

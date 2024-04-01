@@ -48,12 +48,12 @@ fn invalid_data_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> 
 #[cfg(feature = "test")]
 #[cfg_attr(docsrs, doc(cfg(feature = "test")))]
 pub mod tests {
-  pub use memberlist::tests::{next_socket_addr_v4, next_socket_addr_v6, run, AnyError};
+  pub use memberlist_core::tests::{next_socket_addr_v4, next_socket_addr_v6, run, AnyError};
   pub use paste;
 
   pub use super::serf::tests::*;
 
-  /// Add `test` prefix to the predefined unit test fn with a given [`Runtime`](memberlist::agnostic_lite::RuntimeLite)
+  /// Add `test` prefix to the predefined unit test fn with a given [`Runtime`](memberlist_core::agnostic_lite::RuntimeLite)
   #[cfg(any(feature = "test", test))]
   #[cfg_attr(docsrs, doc(cfg(any(feature = "test", test))))]
   #[macro_export]
@@ -70,7 +70,7 @@ pub mod tests {
     };
   }
 
-  /// Add `test` prefix to the predefined unit test fn with a given [`Runtime`](memberlist::agnostic_lite::RuntimeLite)
+  /// Add `test` prefix to the predefined unit test fn with a given [`Runtime`](memberlist_core::agnostic_lite::RuntimeLite)
   #[cfg(any(feature = "test", test))]
   #[cfg_attr(docsrs, doc(cfg(any(feature = "test", test))))]
   #[macro_export]
@@ -99,7 +99,7 @@ pub mod tests {
     static TRACE: Once = Once::new();
     TRACE.call_once(|| {
       let filter = std::env::var("RUSERF_TESTING_LOG").unwrap_or_else(|_| "info".to_owned());
-      memberlist::tracing::subscriber::set_global_default(
+      memberlist_core::tracing::subscriber::set_global_default(
         tracing_subscriber::fmt::fmt()
           .without_time()
           .with_line_number(true)

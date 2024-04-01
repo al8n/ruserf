@@ -1,7 +1,7 @@
 use async_channel::{bounded, Receiver, Sender};
 use either::Either;
 use futures::FutureExt;
-use memberlist::{
+use memberlist_core::{
   agnostic_lite::RuntimeLite,
   bytes::{BufMut, Bytes, BytesMut},
   tracing,

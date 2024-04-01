@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::OnceLock};
 use async_channel::Receiver;
 use async_lock::RwLock;
 use futures::StreamExt;
-use memberlist::{
+use memberlist_core::{
   bytes::{BufMut, BytesMut},
   tracing,
   transport::{AddressResolver, Transport},

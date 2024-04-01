@@ -4,7 +4,7 @@ use std::{
 };
 
 use async_lock::{Mutex, RwLock};
-use memberlist::{
+use memberlist_core::{
   queue::TransmitLimitedQueue,
   transport::{AddressResolver, Transport},
   types::MediumVec,
@@ -115,7 +115,7 @@ impl<I, A> From<Arc<RwLock<Members<I, A>>>> for NumMembers<I, A> {
   }
 }
 
-impl<I, A> memberlist::queue::NodeCalculator for NumMembers<I, A>
+impl<I, A> memberlist_core::queue::NodeCalculator for NumMembers<I, A>
 where
   I: Send + Sync + 'static,
   A: Send + Sync + 'static,

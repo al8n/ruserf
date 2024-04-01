@@ -10,7 +10,7 @@ use futures::{
   stream::{FuturesUnordered, StreamExt},
   FutureExt,
 };
-use memberlist::{
+use memberlist_core::{
   bytes::{BufMut, Bytes, BytesMut},
   tracing,
   transport::{AddressResolver, Id, Node, Transport},
@@ -193,7 +193,7 @@ impl<I, A> QueryResponse<I, A> {
   pub(crate) async fn handle_query_response<T, D>(
     &self,
     resp: QueryResponseMessage<I, A>,
-    #[cfg(feature = "metrics")] metrics_labels: &memberlist::types::MetricLabels,
+    #[cfg(feature = "metrics")] metrics_labels: &memberlist_core::types::MetricLabels,
   ) where
     I: Eq + std::hash::Hash + CheapClone,
     A: Eq + std::hash::Hash + CheapClone,

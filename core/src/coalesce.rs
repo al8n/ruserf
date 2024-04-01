@@ -7,7 +7,7 @@ use std::{future::Future, time::Duration};
 
 use async_channel::{bounded, Receiver, Sender};
 use futures::FutureExt;
-use memberlist::{
+use memberlist_core::{
   agnostic_lite::RuntimeLite,
   tracing,
   transport::{AddressResolver, Transport},

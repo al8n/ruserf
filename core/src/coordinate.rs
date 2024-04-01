@@ -8,7 +8,7 @@ use std::{
 };
 
 use byteorder::{ByteOrder, NetworkEndian};
-use memberlist::CheapClone;
+use memberlist_core::CheapClone;
 use parking_lot::RwLock;
 use rand::Rng;
 use ruserf_types::Transformable;
@@ -95,7 +95,7 @@ pub struct CoordinateOptions {
   gravity_rho: f64,
 
   #[cfg(feature = "metrics")]
-  metric_labels: Arc<memberlist::types::MetricLabels>,
+  metric_labels: Arc<memberlist_core::types::MetricLabels>,
 }
 
 impl Default for CoordinateOptions {
@@ -119,7 +119,7 @@ impl CoordinateOptions {
       latency_filter_size: 3,
       gravity_rho: 150.0,
       #[cfg(feature = "metrics")]
-      metric_labels: Arc::new(memberlist::types::MetricLabels::default()),
+      metric_labels: Arc::new(memberlist_core::types::MetricLabels::default()),
     }
   }
 }

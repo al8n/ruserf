@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering;
 
 use futures::FutureExt;
-use memberlist::{
+use memberlist_core::{
   agnostic_lite::RuntimeLite,
   bytes::{BufMut, Bytes, BytesMut},
   tracing,
@@ -516,7 +516,7 @@ where
     // Construct the message for the graceful leave
     let msg = LeaveMessage {
       ltime: self.inner.clock.time(),
-      node: self.inner.memberlist.advertise_node(),
+      id: self.inner.memberlist.local_id().cheap_clone(),
       prune: false,
     };
 
@@ -577,22 +577,16 @@ where
   /// immediately, instead of waiting for the reaper to eventually reclaim it.
   /// This also has the effect that Serf will no longer attempt to reconnect
   /// to this node.
-  pub async fn remove_failed_node(
-    &self,
-    node: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  ) -> Result<(), Error<T, D>> {
-    self.force_leave(node, false).await
+  pub async fn remove_failed_node(&self, id: T::Id) -> Result<(), Error<T, D>> {
+    self.force_leave(id, false).await
   }
 
   /// Forcibly removes a failed node from the cluster
   /// immediately, instead of waiting for the reaper to eventually reclaim it.
   /// This also has the effect that Serf will no longer attempt to reconnect
   /// to this node.
-  pub async fn remove_failed_node_prune(
-    &self,
-    node: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  ) -> Result<(), Error<T, D>> {
-    self.force_leave(node, true).await
+  pub async fn remove_failed_node_prune(&self, id: T::Id) -> Result<(), Error<T, D>> {
+    self.force_leave(id, true).await
   }
 
   /// Forcefully shuts down the Serf instance, stopping all network

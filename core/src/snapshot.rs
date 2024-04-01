@@ -14,7 +14,7 @@ use std::os::unix::prelude::OpenOptionsExt;
 use async_channel::{Receiver, Sender};
 use either::Either;
 use futures::FutureExt;
-use memberlist::{
+use memberlist_core::{
   agnostic_lite::RuntimeLite,
   bytes::{BufMut, BytesMut},
   tracing,
@@ -338,7 +338,7 @@ where
   wait_tx: Sender<()>,
   last_attempted_compaction: Instant,
   #[cfg(feature = "metrics")]
-  metric_labels: std::sync::Arc<memberlist::types::MetricLabels>,
+  metric_labels: std::sync::Arc<memberlist_core::types::MetricLabels>,
 }
 
 impl<D, T> Snapshot<T, D>
@@ -354,7 +354,7 @@ where
     clock: LamportClock,
     out_tx: Option<Sender<Event<T, D>>>,
     shutdown_rx: Receiver<()>,
-    #[cfg(feature = "metrics")] metric_labels: std::sync::Arc<memberlist::types::MetricLabels>,
+    #[cfg(feature = "metrics")] metric_labels: std::sync::Arc<memberlist_core::types::MetricLabels>,
   ) -> Result<
     (
       Sender<Event<T, D>>,

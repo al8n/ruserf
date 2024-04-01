@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use futures::{FutureExt, StreamExt};
-use memberlist::{
+use memberlist_core::{
   agnostic_lite::{Detach, RuntimeLite},
   bytes::{BufMut, Bytes, BytesMut},
   delegate::EventDelegate,
@@ -367,7 +367,7 @@ where
   /// with the memberLock held.
   pub(crate) async fn broadcast_join(&self, ltime: LamportTime) -> Result<(), Error<T, D>> {
     // Construct message to update our lamport clock
-    let msg = JoinMessage::new(ltime, self.inner.memberlist.advertise_node());
+    let msg = JoinMessage::new(ltime, self.inner.memberlist.local_id().cheap_clone());
     self.inner.clock.witness(ltime);
 
     // Process update locally
@@ -429,15 +429,11 @@ where
   /// immediately, instead of waiting for the reaper to eventually reclaim it.
   /// This also has the effect that Serf will no longer attempt to reconnect
   /// to this node.
-  pub(crate) async fn force_leave(
-    &self,
-    node: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-    prune: bool,
-  ) -> Result<(), Error<T, D>> {
+  pub(crate) async fn force_leave(&self, id: T::Id, prune: bool) -> Result<(), Error<T, D>> {
     // Construct the message to broadcast
     let msg = LeaveMessage {
       ltime: self.inner.clock.time(),
-      node,
+      id,
       prune,
     };
 
@@ -1107,15 +1103,12 @@ where
 
   /// Called when a node broadcasts a
   /// join message to set the lamport time of its join
-  pub(crate) async fn handle_node_join_intent(
-    &self,
-    join_msg: &JoinMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  ) -> bool {
+  pub(crate) async fn handle_node_join_intent(&self, join_msg: &JoinMessage<T::Id>) -> bool {
     // Witness a potentially newer time
     self.inner.clock.witness(join_msg.ltime);
 
     let mut members = self.inner.members.write().await;
-    match members.states.get_mut(join_msg.node.id()) {
+    match members.states.get_mut(join_msg.id()) {
       Some(member) => {
         // Check if this time is newer than what we have
         if join_msg.ltime <= member.status_time {
@@ -1138,7 +1131,7 @@ where
         // Rebroadcast only if this was an update we hadn't seen before.
         upsert_intent(
           &mut members.recent_intents,
-          join_msg.node.id(),
+          join_msg.id(),
           MessageType::Join,
           join_msg.ltime,
           Instant::now,
@@ -1217,10 +1210,7 @@ where
     }
   }
 
-  pub(crate) async fn handle_node_leave_intent(
-    &self,
-    msg: &LeaveMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  ) -> bool {
+  pub(crate) async fn handle_node_leave_intent(&self, msg: &LeaveMessage<T::Id>) -> bool {
     let state = self.state();
 
     // Witness a potentially newer time
@@ -1228,10 +1218,10 @@ where
 
     let mut members = self.inner.members.write().await;
 
-    if !members.states.contains_key(msg.node.id()) {
+    if !members.states.contains_key(msg.id()) {
       return upsert_intent(
         &mut members.recent_intents,
-        msg.node.id(),
+        msg.id(),
         MessageType::Leave,
         msg.ltime,
         Instant::now,
@@ -1240,7 +1230,7 @@ where
 
     let members = atomic_refcell::AtomicRefCell::new(&mut *members);
     let mut members_mut = members.borrow_mut();
-    let member = members_mut.states.get_mut(msg.node.id()).unwrap();
+    let member = members_mut.states.get_mut(msg.id()).unwrap();
     // If the message is old, then it is irrelevant and we can skip it
     if msg.ltime <= member.status_time {
       return false;
@@ -1248,7 +1238,7 @@ where
 
     // Refute us leaving if we are in the alive state
     // Must be done in another goroutine since we have the memberLock
-    if msg.node.id().eq(self.inner.memberlist.local_id()) && state == SerfState::Alive {
+    if msg.id().eq(self.inner.memberlist.local_id()) && state == SerfState::Alive {
       tracing::debug!("ruserf: refuting an older leave intent");
       let this = self.clone();
       let ltime = self.inner.clock.time();
