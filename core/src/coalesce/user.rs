@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use indexmap::IndexMap;
-use memberlist_core::types::TinyVec;
+use memberlist::types::TinyVec;
 use ruserf_types::UserEventMessage;
 use smol_str::SmolStr;
 
@@ -102,7 +102,7 @@ mod tests {
   use std::net::SocketAddr;
 
   use agnostic_lite::tokio::TokioRuntime;
-  use memberlist_core::transport::{
+  use memberlist::transport::{
     resolver::socket_addr::SocketAddrResolver, tests::UnimplementedTransport, Lpe,
   };
 

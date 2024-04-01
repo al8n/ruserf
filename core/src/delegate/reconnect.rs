@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use memberlist_core::{transport::Id, CheapClone};
+use memberlist::{transport::Id, CheapClone};
 
 use crate::types::Member;
 

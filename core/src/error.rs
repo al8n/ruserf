@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use memberlist_core::{
+use memberlist::{
   transport::{AddressResolver, MaybeResolvedAddress, Node, Transport},
   types::{SmallVec, TinyVec},
 };
@@ -93,17 +93,17 @@ where
   }
 }
 
-pub struct MemberlistError<T, D>(memberlist_core::error::Error<T, SerfDelegate<T, D>>)
+pub struct MemberlistError<T, D>(memberlist::error::Error<T, SerfDelegate<T, D>>)
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport;
 
-impl<T, D> From<memberlist_core::error::Error<T, SerfDelegate<T, D>>> for MemberlistError<T, D>
+impl<T, D> From<memberlist::error::Error<T, SerfDelegate<T, D>>> for MemberlistError<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  fn from(value: memberlist_core::error::Error<T, SerfDelegate<T, D>>) -> Self {
+  fn from(value: memberlist::error::Error<T, SerfDelegate<T, D>>) -> Self {
     Self(value)
   }
 }
@@ -135,12 +135,12 @@ where
 {
 }
 
-impl<T, D> From<memberlist_core::error::Error<T, SerfDelegate<T, D>>> for Error<T, D>
+impl<T, D> From<memberlist::error::Error<T, SerfDelegate<T, D>>> for Error<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  fn from(value: memberlist_core::error::Error<T, SerfDelegate<T, D>>) -> Self {
+  fn from(value: memberlist::error::Error<T, SerfDelegate<T, D>>) -> Self {
     Self::Memberlist(MemberlistError(value))
   }
 }
@@ -149,7 +149,7 @@ pub struct RelayError<T, D>(
   #[allow(clippy::type_complexity)]
   TinyVec<(
     Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-    memberlist_core::error::Error<T, SerfDelegate<T, D>>,
+    memberlist::error::Error<T, SerfDelegate<T, D>>,
   )>,
 )
 where
@@ -160,7 +160,7 @@ impl<T, D>
   From<
     TinyVec<(
       Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-      memberlist_core::error::Error<T, SerfDelegate<T, D>>,
+      memberlist::error::Error<T, SerfDelegate<T, D>>,
     )>,
   > for RelayError<T, D>
 where
@@ -170,7 +170,7 @@ where
   fn from(
     value: TinyVec<(
       Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-      memberlist_core::error::Error<T, SerfDelegate<T, D>>,
+      memberlist::error::Error<T, SerfDelegate<T, D>>,
     )>,
   ) -> Self {
     Self(value)

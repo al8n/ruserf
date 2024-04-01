@@ -1,4 +1,4 @@
-use memberlist_core::transport::Node;
+use memberlist::transport::Node;
 
 /// Used to store the end destination of a relayed message
 #[derive(Debug, Clone, Eq, PartialEq)]

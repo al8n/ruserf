@@ -2,7 +2,7 @@ use std::{collections::HashMap, marker::PhantomData};
 
 use async_channel::Sender;
 use either::Either;
-use memberlist_core::{
+use memberlist::{
   transport::{AddressResolver, Node, Transport},
   types::TinyVec,
   CheapClone,
@@ -145,7 +145,7 @@ mod tests {
 
   use agnostic_lite::{tokio::TokioRuntime, RuntimeLite};
   use futures::FutureExt;
-  use memberlist_core::transport::{
+  use memberlist::transport::{
     resolver::socket_addr::SocketAddrResolver, tests::UnimplementedTransport, Lpe,
   };
   use ruserf_types::{MemberStatus, UserEventMessage};

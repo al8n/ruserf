@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::OnceLock};
 use async_channel::Receiver;
 use async_lock::RwLock;
 use futures::StreamExt;
-use memberlist_core::{
+use memberlist::{
   bytes::{BufMut, BytesMut},
   tracing,
   transport::{AddressResolver, Transport},
@@ -36,11 +36,11 @@ pub struct KeyResponse<I> {
   /// Total errors from request
   num_err: usize,
 
-  /// A mapping of the base64-encoded value of the key bytes to the
+  /// A mapping of the value of the key bytes to the
   /// number of nodes that have the key installed.
   keys: HashMap<SecretKey, usize>,
 
-  /// A mapping of the base64-encoded value of the primary
+  /// A mapping of the value of the primary
   /// key bytes to the number of nodes that have the key installed.
   primary_keys: HashMap<SecretKey, usize>,
 }

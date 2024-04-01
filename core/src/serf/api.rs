@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering;
 
 use futures::FutureExt;
-use memberlist_core::{
+use memberlist::{
   agnostic_lite::RuntimeLite,
   bytes::{BufMut, Bytes, BytesMut},
   tracing,
@@ -22,11 +22,42 @@ use crate::{
 
 use super::*;
 
+impl<T> Serf<T>
+where
+  T: Transport,
+{
+  /// Creates a new Serf instance with the given transport and options.
+  pub async fn new(
+    transport: T::Options,
+    opts: Options,
+  ) -> Result<Self, Error<T, DefaultDelegate<T>>> {
+    Self::new_in(None, None, transport, opts).await
+  }
+
+  /// Creates a new Serf instance with the given transport and options.
+  pub async fn with_event_sender(
+    transport: T::Options,
+    opts: Options,
+    ev: async_channel::Sender<Event<T, DefaultDelegate<T>>>,
+  ) -> Result<Self, Error<T, DefaultDelegate<T>>> {
+    Self::new_in(Some(ev), None, transport, opts).await
+  }
+}
+
 impl<T, D> Serf<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
+  /// Creates a new Serf instance with the given transport and options.
+  pub async fn with_delegate(
+    transport: T::Options,
+    opts: Options,
+    delegate: D,
+  ) -> Result<Self, Error<T, D>> {
+    Self::new_in(None, Some(delegate), transport, opts).await
+  }
+
   pub async fn with_event_sender_and_delegate(
     transport: T::Options,
     opts: Options,
@@ -159,10 +190,11 @@ where
   #[inline]
   pub async fn user_event(
     &self,
-    name: SmolStr,
+    name: impl Into<SmolStr>,
     payload: Bytes,
     coalesce: bool,
   ) -> Result<(), Error<T, D>> {
+    let name: SmolStr = name.into();
     let payload_size_before_encoding = name.len() + payload.len();
 
     // Check size before encoding to prevent needless encoding and return early if it's over the specified limit.
@@ -229,12 +261,12 @@ where
   /// and if not provided, a sane set of defaults will be used.
   pub async fn query(
     &self,
-    name: SmolStr,
+    name: impl Into<SmolStr>,
     payload: Bytes,
     params: Option<QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
   ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
   {
-    self.query_in(name, payload, params, None).await
+    self.query_in(name.into(), payload, params, None).await
   }
 
   pub(crate) async fn internal_query(
@@ -287,7 +319,6 @@ where
       name: name.clone(),
       payload,
     };
-    // let msg_ref = SerfMessageRef::Query(&q);
 
     // Encode the query
     let len = <D as TransformDelegate>::message_encoded_len(&q);
@@ -329,6 +360,47 @@ where
     Ok(resp)
   }
 
+  /// Joins an existing Serf cluster. Returns the id of node
+  /// successfully contacted. If `ignore_old` is true, then any
+  /// user messages sent prior to the join will be ignored.
+  pub async fn join(
+    &self,
+    node: Node<T::Id, MaybeResolvedAddress<T>>,
+    ignore_old: bool,
+  ) -> Result<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>> {
+    // Do a quick state check
+    let current_state = self.state();
+    if current_state != SerfState::Alive {
+      return Err(Error::BadJoinStatus(current_state));
+    }
+
+    // Hold the joinLock, this is to make eventJoinIgnore safe
+    let _join_lock = self.inner.join_lock.lock().await;
+
+    // Ignore any events from a potential join. This is safe since we hold
+    // the joinLock and nobody else can be doing a Join
+    if ignore_old {
+      self.inner.event_join_ignore.store(true, Ordering::SeqCst);
+    }
+
+    // Have memberlist attempt to join
+    match self.inner.memberlist.join(node).await {
+      Ok(node) => {
+        // Start broadcasting the update
+        if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
+          self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+          return Err(e);
+        }
+        self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+        Ok(node)
+      }
+      Err(e) => {
+        self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+        Err(Error::Memberlist(e.into()))
+      }
+    }
+  }
+
   /// Joins an existing Serf cluster. Returns the id of nodes
   /// successfully contacted. If `ignore_old` is true, then any
   /// user messages sent prior to the join will be ignored.
@@ -360,7 +432,6 @@ where
     // the joinLock and nobody else can be doing a Join
     if ignore_old {
       self.inner.event_join_ignore.store(true, Ordering::SeqCst);
-      scopeguard::defer!(self.inner.event_join_ignore.store(false, Ordering::SeqCst));
     }
 
     // Have memberlist attempt to join
@@ -368,12 +439,14 @@ where
       Ok(joined) => {
         // Start broadcasting the update
         if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
+          self.inner.event_join_ignore.store(false, Ordering::SeqCst);
           return Err(JoinError {
             joined,
             errors: Default::default(),
             broadcast_error: Some(e),
           });
         }
+        self.inner.event_join_ignore.store(false, Ordering::SeqCst);
         Ok(joined)
       }
       Err(e) => {
@@ -382,6 +455,7 @@ where
         if !joined.is_empty() {
           // Start broadcasting the update
           if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
+            self.inner.event_join_ignore.store(false, Ordering::SeqCst);
             return Err(JoinError {
               joined,
               errors: errors
@@ -392,6 +466,7 @@ where
             });
           }
 
+          self.inner.event_join_ignore.store(false, Ordering::SeqCst);
           Err(JoinError {
             joined,
             errors: errors
@@ -401,6 +476,7 @@ where
             broadcast_error: None,
           })
         } else {
+          self.inner.event_join_ignore.store(false, Ordering::SeqCst);
           Err(JoinError {
             joined,
             errors: errors

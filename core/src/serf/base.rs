@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use futures::{FutureExt, StreamExt};
-use memberlist_core::{
+use memberlist::{
   agnostic_lite::{Detach, RuntimeLite},
   bytes::{BufMut, Bytes, BytesMut},
   delegate::EventDelegate,
@@ -778,6 +778,25 @@ where
     true
   }
 
+  pub(crate) fn query_event(
+    &self,
+    q: QueryMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) -> QueryEvent<T, D> {
+    QueryEvent {
+      ltime: q.ltime,
+      name: q.name,
+      payload: q.payload,
+      ctx: Arc::new(QueryContext {
+        query_timeout: q.timeout,
+        span: Mutex::new(Some(Instant::now())),
+        this: self.clone(),
+      }),
+      id: q.id,
+      from: q.from,
+      relay_factor: q.relay_factor,
+    }
+  }
+
   /// Called when a query broadcast is
   /// received. Returns if the message should be rebroadcast.
   pub(crate) async fn handle_query(
@@ -900,19 +919,7 @@ where
     }
 
     if let Some(ref tx) = self.inner.event_tx {
-      let ev = QueryEvent {
-        ltime: q.ltime,
-        name: q.name,
-        payload: q.payload,
-        ctx: Arc::new(QueryContext {
-          query_timeout: q.timeout,
-          span: Mutex::new(Some(Instant::now())),
-          this: self.clone(),
-        }),
-        id: q.id,
-        from: q.from,
-        relay_factor: q.relay_factor,
-      };
+      let ev = self.query_event(q);
 
       if let Err(e) = tx
         .send(match ty {

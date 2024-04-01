@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use arc_swap::ArcSwapOption;
-pub use memberlist_core::Options as MemberlistOptions;
+pub use memberlist::Options as MemberlistOptions;
 use smol_str::SmolStr;
 
 use super::types::{DelegateVersion, ProtocolVersion, Tags};
@@ -343,7 +343,7 @@ pub(crate) struct QueueOptions {
   pub(crate) check_interval: Duration,
   pub(crate) depth_warning: usize,
   #[cfg(feature = "metrics")]
-  pub(crate) metric_labels: Arc<memberlist_core::types::MetricLabels>,
+  pub(crate) metric_labels: Arc<memberlist::types::MetricLabels>,
 }
 
 #[cfg(feature = "serde")]

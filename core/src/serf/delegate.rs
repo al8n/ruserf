@@ -13,7 +13,7 @@ use crate::{
 use std::sync::{atomic::Ordering, Arc, OnceLock};
 
 use indexmap::IndexSet;
-use memberlist_core::{
+use memberlist::{
   bytes::{Buf, BufMut, Bytes, BytesMut},
   delegate::{
     AliveDelegate, ConflictDelegate, Delegate as MemberlistDelegate, EventDelegate,
@@ -30,7 +30,8 @@ use memberlist_core::{
 // to the ping message without a full protocol bump.
 const PING_VERSION: u8 = 1;
 
-pub(crate) struct SerfDelegate<T, D>
+/// The memberlist delegate for Serf.
+pub struct SerfDelegate<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,

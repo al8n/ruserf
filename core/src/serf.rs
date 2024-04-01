@@ -4,7 +4,7 @@ use std::{
 };
 
 use async_lock::{Mutex, RwLock};
-use memberlist_core::{
+use memberlist::{
   queue::TransmitLimitedQueue,
   transport::{AddressResolver, Transport},
   types::MediumVec,
@@ -31,6 +31,11 @@ mod query;
 pub use query::*;
 
 mod internal_query;
+
+/// Re-export the unit tests
+#[cfg(any(test, feature = "test"))]
+#[cfg_attr(docsrs, doc(cfg(any(test, feature = "test"))))]
+pub mod tests;
 
 /// Maximum 128 KB snapshot
 const SNAPSHOT_SIZE_LIMIT: u64 = 128 * 1024;
@@ -110,7 +115,7 @@ impl<I, A> From<Arc<RwLock<Members<I, A>>>> for NumMembers<I, A> {
   }
 }
 
-impl<I, A> memberlist_core::queue::NodeCalculator for NumMembers<I, A>
+impl<I, A> memberlist::queue::NodeCalculator for NumMembers<I, A>
 where
   I: Send + Sync + 'static,
   A: Send + Sync + 'static,
@@ -197,6 +202,3 @@ where
     }
   }
 }
-
-#[test]
-fn test_() {}

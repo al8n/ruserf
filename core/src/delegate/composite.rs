@@ -1,4 +1,4 @@
-use memberlist_core::{
+use memberlist::{
   transport::{Id, Node},
   types::TinyVec,
   CheapClone,
@@ -140,7 +140,7 @@ where
 
   fn encode_filter(
     filter: &Filter<Self::Id, Self::Address>,
-  ) -> Result<memberlist_core::bytes::Bytes, Self::Error> {
+  ) -> Result<memberlist::bytes::Bytes, Self::Error> {
     T::encode_filter(filter)
   }
 

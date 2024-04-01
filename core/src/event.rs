@@ -5,7 +5,7 @@ use std::{
 
 use async_lock::Mutex;
 use either::Either;
-use memberlist_core::{
+use memberlist::{
   bytes::{BufMut, Bytes, BytesMut},
   transport::{AddressResolver, Node, Transport},
   types::TinyVec,

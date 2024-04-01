@@ -1,4 +1,4 @@
-use memberlist_core::{
+use memberlist::{
   bytes::Bytes,
   transport::{Id, Node, Transformable},
   CheapClone,

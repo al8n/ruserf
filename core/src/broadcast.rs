@@ -1,5 +1,5 @@
 use async_channel::Sender;
-use memberlist_core::{bytes::Bytes, Broadcast};
+use memberlist::{bytes::Bytes, Broadcast};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub(crate) struct BroadcastId;

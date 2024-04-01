@@ -20,7 +20,7 @@ use super::{LamportTime, LamportTimeTransformError, Node, UserEvents, UserEvents
 pub struct PushPullMessage<I, A> {
   /// Current node lamport time
   #[viewit(
-    getter(const, attrs(doc = "Returns the lamport time")),
+    getter(const, style = "move", attrs(doc = "Returns the lamport time")),
     setter(const, attrs(doc = "Sets the lamport time (Builder pattern)"))
   )]
   ltime: LamportTime,
@@ -42,7 +42,7 @@ pub struct PushPullMessage<I, A> {
   left_members: IndexSet<Node<I, A>>,
   /// Lamport time for event clock
   #[viewit(
-    getter(const, attrs(doc = "Returns the lamport time for event clock")),
+    getter(const, style = "move", attrs(doc = "Returns the lamport time for event clock")),
     setter(
       const,
       attrs(doc = "Sets the lamport time for event clock (Builder pattern)")
@@ -57,7 +57,7 @@ pub struct PushPullMessage<I, A> {
   events: TinyVec<Option<UserEvents>>,
   /// Lamport time for query clock
   #[viewit(
-    getter(const, attrs(doc = "Returns the lamport time for query clock")),
+    getter(const, style = "move", attrs(doc = "Returns the lamport time for query clock")),
     setter(
       const,
       attrs(doc = "Sets the lamport time for query clock (Builder pattern)")
