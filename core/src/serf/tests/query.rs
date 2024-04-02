@@ -10,7 +10,10 @@ where
   let opts = test_config();
   let s = Serf::<T>::new(transport_opts, opts).await.unwrap();
   let timeout = s.default_query_timeout().await;
-  assert_eq!(timeout, s.inner.opts.memberlist_options.gossip_interval() * (s.inner.opts.query_timeout_mult as u32));
+  assert_eq!(
+    timeout,
+    s.inner.opts.memberlist_options.gossip_interval() * (s.inner.opts.query_timeout_mult as u32)
+  );
 
   let params = s.default_query_param().await;
 
@@ -27,7 +30,9 @@ where
   let opts = test_config();
   let s = Serf::<T>::new(transport_opts, opts).await.unwrap();
   let mut params = s.default_query_param().await;
-  params.filters.push(Filter::Id(["foo".into(), "bar".into()].into()));
+  params
+    .filters
+    .push(Filter::Id(["foo".into(), "bar".into()].into()));
   params.filters.push(Filter::Tag {
     tag: "role".into(),
     expr: "^web".into(),
@@ -56,9 +61,22 @@ where
   T: Transport<Id = SmolStr>,
 {
   let opts = test_config();
-  let s = Serf::<T>::new(transport_opts, opts.with_tags([("role", "webserver"), ("datacenter", "east-aws")].into_iter())).await.unwrap();
+  let s = Serf::<T>::new(
+    transport_opts,
+    opts.with_tags([("role", "webserver"), ("datacenter", "east-aws")].into_iter()),
+  )
+  .await
+  .unwrap();
   let mut params = s.default_query_param().await;
-  params.filters.push(Filter::Id(["foo".into(), "bar".into(), s.memberlist().local_id().clone()].into_iter().collect()));
+  params.filters.push(Filter::Id(
+    [
+      "foo".into(),
+      "bar".into(),
+      s.memberlist().local_id().clone(),
+    ]
+    .into_iter()
+    .collect(),
+  ));
   params.filters.push(Filter::Tag {
     tag: "role".into(),
     expr: "^web".into(),
@@ -75,7 +93,9 @@ where
 
   // Omit node
   let mut params = s.default_query_param().await;
-  params.filters.push(Filter::Id(["foo".into(), "bar".into()].into()));
+  params
+    .filters
+    .push(Filter::Id(["foo".into(), "bar".into()].into()));
 
   let filters = params.encode_filters::<DefaultDelegate<T>>().unwrap();
   assert!(!s.should_process_query(&filters));
@@ -100,5 +120,3 @@ where
   let filters = params.encode_filters::<DefaultDelegate<T>>().unwrap();
   assert!(!s.should_process_query(&filters));
 }
-
-

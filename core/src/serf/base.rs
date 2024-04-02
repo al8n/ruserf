@@ -512,9 +512,11 @@ macro_rules! reap {
       }
 
       // Skip if the timeout is not yet reached
-      if m.leave_time.elapsed() <= member_timeout {
-        i += 1;
-        continue;
+      if let Some(leave_time) = m.leave_time {
+        if leave_time.elapsed() <= member_timeout {
+          i += 1;
+          continue;
+        }
       }
 
       // Delete from the list
@@ -998,14 +1000,18 @@ where
 
     let (old_status, fut) = if let Some(member) = members.states.get_mut(node.id()) {
       let old_status = member.member.status;
-      let dead_time = member.leave_time.elapsed();
+      let dead_time = member.leave_time.map(|t| t.elapsed());
       #[cfg(feature = "metrics")]
-      if old_status == MemberStatus::Failed && dead_time < self.inner.opts.flap_timeout {
-        metrics::counter!(
-          "ruserf.member.flap",
-          self.inner.opts.memberlist_options.metric_labels().iter()
-        )
-        .increment(1);
+      if old_status == MemberStatus::Failed {
+        if let Some(dead_time) = dead_time {
+          if dead_time < self.inner.opts.flap_timeout {
+            metrics::counter!(
+              "ruserf.member.flap",
+              self.inner.opts.memberlist_options.metric_labels().iter()
+            )
+            .increment(1);
+          }
+        }
       }
 
       *member = MemberState {
@@ -1013,14 +1019,13 @@ where
           node: node.cheap_clone(),
           tags: Arc::new(tags),
           status: MemberStatus::Alive,
-          protocol_version: ProtocolVersion::V1,
-          delegate_version: DelegateVersion::V1,
-          memberlist_delegate_version: MemberlistDelegateVersion::V1,
-          memberlist_protocol_version: MemberlistProtocolVersion::V1,
+          protocol_version: member.member.protocol_version,
+          delegate_version: member.member.delegate_version,
+          memberlist_delegate_version: member.member.memberlist_delegate_version,
+          memberlist_protocol_version: member.member.memberlist_protocol_version,
         },
         status_time: member.status_time,
-        leave_time:
-          MemberState::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::zero_leave_time(),
+        leave_time: None,
       };
 
       (
@@ -1055,14 +1060,13 @@ where
           node: node.cheap_clone(),
           tags: Arc::new(tags),
           status,
-          protocol_version: ProtocolVersion::V1,
-          delegate_version: DelegateVersion::V1,
-          memberlist_delegate_version: MemberlistDelegateVersion::V1,
-          memberlist_protocol_version: MemberlistProtocolVersion::V1,
+          protocol_version: self.inner.opts.protocol_version,
+          delegate_version: self.inner.opts.delegate_version,
+          memberlist_delegate_version: self.inner.opts.memberlist_options.delegate_version(),
+          memberlist_protocol_version: self.inner.opts.memberlist_options.protocol_version(),
         },
         status_time: status_ltime,
-        leave_time:
-          MemberState::<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>::zero_leave_time(),
+        leave_time: None,
       };
       let member = ms.member.clone();
       members.states.insert(node.id().cheap_clone(), ms);
@@ -1156,7 +1160,7 @@ where
         member_state.member.status = MemberStatus::Left;
 
         ms = MemberStatus::Left;
-        member_state.leave_time = Instant::now();
+        member_state.leave_time = Some(Instant::now());
         let member_state = member_state.clone();
         let member = member_state.member.clone();
         members.left_members.push(member_state);
@@ -1165,7 +1169,7 @@ where
       MemberStatus::Alive => {
         member_state.member.status = MemberStatus::Failed;
         ms = MemberStatus::Failed;
-        member_state.leave_time = Instant::now();
+        member_state.leave_time = Some(Instant::now());
         let member_state = member_state.clone();
         let member = member_state.member.clone();
         members.failed_members.push(member_state);
@@ -1578,7 +1582,7 @@ fn reap_intents<I>(intents: &mut HashMap<I, NodeIntent>, timeout: Duration) {
   intents.retain(|_, intent| intent.wall_time.elapsed() <= timeout);
 }
 
-fn upsert_intent<I>(
+pub(crate) fn upsert_intent<I>(
   intents: &mut HashMap<I, NodeIntent>,
   node: &I,
   t: MessageType,

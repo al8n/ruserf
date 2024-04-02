@@ -385,9 +385,7 @@ where
   }
 
   /// Used to return the default query parameters
-  pub async fn default_query_param(
-    &self,
-  ) -> QueryParam<T::Id> {
+  pub async fn default_query_param(&self) -> QueryParam<T::Id> {
     QueryParam {
       filters: OneOrMore::new(),
       request_ack: false,
@@ -420,9 +418,7 @@ where
       match filter {
         Filter::Id(nodes) => {
           // Check if we are being targeted
-          let found = nodes
-            .iter()
-            .any(|n| n.eq(self.inner.memberlist.local_id()));
+          let found = nodes.iter().any(|n| n.eq(self.inner.memberlist.local_id()));
           if !found {
             return false;
           }

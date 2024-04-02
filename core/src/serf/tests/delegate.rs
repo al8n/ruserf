@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Unit test for delegate node meta
 pub async fn delegate_nodemeta<T>(transport_opts: T::Options)
 where

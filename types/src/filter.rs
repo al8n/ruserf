@@ -45,7 +45,6 @@ impl TryFrom<u8> for FilterType {
   }
 }
 
-
 /// Transform error type for [`Filter`]
 #[derive(thiserror::Error)]
 pub enum FilterTransformError<I: Transformable> {
@@ -260,16 +259,14 @@ mod tests {
         assert_eq!(decoded, filter);
 
         let (decoded_len, decoded) =
-          Filter::<SmolStr>::decode_from_reader(&mut std::io::Cursor::new(&buf))
-            .unwrap();
+          Filter::<SmolStr>::decode_from_reader(&mut std::io::Cursor::new(&buf)).unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, filter);
 
-        let (decoded_len, decoded) = Filter::<SmolStr>::decode_from_async_reader(
-          &mut futures::io::Cursor::new(&buf),
-        )
-        .await
-        .unwrap();
+        let (decoded_len, decoded) =
+          Filter::<SmolStr>::decode_from_async_reader(&mut futures::io::Cursor::new(&buf))
+            .await
+            .unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, filter);
       }
@@ -285,16 +282,14 @@ mod tests {
         assert_eq!(decoded, filter);
 
         let (decoded_len, decoded) =
-          Filter::<SmolStr>::decode_from_reader(&mut std::io::Cursor::new(&buf))
-            .unwrap();
+          Filter::<SmolStr>::decode_from_reader(&mut std::io::Cursor::new(&buf)).unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, filter);
 
-        let (decoded_len, decoded) = Filter::<SmolStr>::decode_from_async_reader(
-          &mut futures::io::Cursor::new(&buf),
-        )
-        .await
-        .unwrap();
+        let (decoded_len, decoded) =
+          Filter::<SmolStr>::decode_from_async_reader(&mut futures::io::Cursor::new(&buf))
+            .await
+            .unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, filter);
       }

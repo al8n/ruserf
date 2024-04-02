@@ -15,15 +15,7 @@ pub(crate) struct MemberState<I, A> {
   /// lamport clock time of last received message
   status_time: LamportTime,
   /// wall clock time of leave
-  leave_time: Instant,
-}
-
-impl<I, A> MemberState<I, A> {
-  pub(crate) fn zero_leave_time() -> Instant {
-    static ZERO: once_cell::sync::Lazy<Instant> =
-      once_cell::sync::Lazy::new(|| Instant::now() - std::time::UNIX_EPOCH.elapsed().unwrap());
-    *ZERO
-  }
+  leave_time: Option<Instant>,
 }
 
 /// Used to buffer intents for out-of-order deliveries.
