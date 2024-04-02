@@ -13,7 +13,7 @@ use crate::{
   delegate::{Delegate, TransformDelegate},
   error::Error,
   event::{Event, EventKind, InternalQueryEvent, QueryEvent},
-  types::{MessageType, QueryResponseMessage, SerfMessage}, SerfDelegate,
+  types::{MessageType, QueryResponseMessage, SerfMessage},
 };
 
 #[cfg(feature = "encryption")]
@@ -125,7 +125,7 @@ where
   /// invoked when we get a query that is attempting to
   /// disambiguate a name conflict. They payload is a node name, and the response
   /// should the address we believe that node is at, if any.
-  async fn handle_conflict(memberlist: &Memberlist<T, SerfDelegate<D>>, conflict: &T::Id, ev: &QueryEvent<T, D>) {
+  async fn handle_conflict(conflict: &T::Id, ev: &QueryEvent<T, D>) {
     // The target node id is the payload
 
     // Do not respond to the query if it is about us
@@ -311,7 +311,7 @@ where
   }
 
   #[cfg(feature = "encryption")]
-  async fn handle_remove_key(ev: impl AsRef<QueryEvent<T, D>> + Send) {
+  async fn handle_remove_key(ev: impl AsRef<QueryEvent<T, D>> + Send,) {
     let q = ev.as_ref();
     let mut response = KeyResponseMessage::default();
 

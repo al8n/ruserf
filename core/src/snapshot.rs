@@ -32,9 +32,6 @@ use crate::{
   types::{LamportClock, LamportTime},
 };
 
-#[cfg(any(test, feature = "test"))]
-pub(crate) mod tests;
-
 /// How often we force a flush of the snapshot file
 const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -220,6 +217,10 @@ pub(crate) fn open_and_replay_snapshot<
 
   loop {
     if reader.read_until(b'\n', &mut buf).is_err() {
+      break;
+    }
+
+    if buf.is_empty() {
       break;
     }
 
@@ -657,7 +658,8 @@ where
   /// clock value. This is done after member events but should also be done
   /// periodically due to race conditions with join and leave intents
   fn update_clock(&mut self) {
-    let last_seen = self.clock.time() - LamportTime::new(1);
+    let t: u64 = self.clock.time().into();
+    let last_seen = LamportTime::from(t.wrapping_sub(1));
     if last_seen > self.last_clock {
       self.last_clock = last_seen;
       self.try_append(SnapshotRecord::Clock(self.last_clock));

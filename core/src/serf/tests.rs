@@ -33,6 +33,9 @@ pub use internals::*;
 mod query;
 pub use query::*;
 
+mod snapshot;
+pub use snapshot::*;
+
 fn test_config() -> Options {
   let mut opts = Options::new();
   opts.memberlist_options = opts

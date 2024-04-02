@@ -427,13 +427,12 @@ where
   pub(crate) name: SmolStr,
   pub(crate) payload: Bytes,
 
-  // pub(crate) ctx: Arc<QueryContext<T, D>>,
+  pub(crate) ctx: Arc<QueryContext<T, D>>,
   pub(crate) id: u32,
   /// source node
   pub(crate) from: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
   /// Number of duplicate responses to relay back to sender
   pub(crate) relay_factor: u8,
-  pub(crate) _marker: std::marker::PhantomData<D>,
 }
 
 impl<D, T> PartialEq for QueryEvent<T, D>

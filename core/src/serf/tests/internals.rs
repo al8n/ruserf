@@ -1,7 +1,7 @@
 use memberlist_core::types::{Meta, NodeState};
 use ruserf_types::{JoinMessage, LeaveMessage, Member, MemberStatus};
 
-use crate::{event, types::MemberState};
+use crate::types::MemberState;
 
 use self::base::upsert_intent;
 

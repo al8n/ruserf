@@ -784,15 +784,14 @@ where
       ltime: q.ltime,
       name: q.name,
       payload: q.payload,
-      // ctx: Arc::new(QueryContext {
-      //   query_timeout: q.timeout,
-      //   span: Mutex::new(Some(Instant::now())),
-      //   this: self.clone(),
-      // }),
+      ctx: Arc::new(QueryContext {
+        query_timeout: q.timeout,
+        span: Mutex::new(Some(Instant::now())),
+        this: self.clone(),
+      }),
       id: q.id,
       from: q.from,
       relay_factor: q.relay_factor,
-      _marker: std::marker::PhantomData,
     }
   }
 

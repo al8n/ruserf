@@ -24,7 +24,7 @@ serde = [
   "indexmap/serde",
 ]
 
-test = ["memberlist-core/test", "paste", "tracing-subscriber"]
+test = ["memberlist-core/test", "paste", "tracing-subscriber", "tempfile"]
 
 [dependencies]
 atomic_refcell = "0.1"
@@ -63,6 +63,7 @@ tracing-subscriber = { version = "0.3", optional = true, features = [
   "env-filter",
   "tracing-log",
 ] }
+tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 agnostic-lite = { version = "0.3", features = ["tokio"] }
