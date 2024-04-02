@@ -1,13 +1,54 @@
 use byteorder::{ByteOrder, NetworkEndian};
-use memberlist_types::{Node, NodeTransformError, TinyVec};
+use memberlist_types::TinyVec;
 use smol_str::SmolStr;
 use transformable::StringTransformError;
 
 use super::Transformable;
 
+/// Unknown filter type error
+#[derive(Debug, thiserror::Error)]
+#[error("unknown filter type: {0}")]
+pub struct UnknownFilterType(u8);
+
+/// The type of filter
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[repr(u8)]
+#[non_exhaustive]
+pub enum FilterType {
+  /// Filter by node ids
+  Id = 0,
+  /// Filter by tag
+  Tag = 1,
+}
+
+impl FilterType {
+  /// Get the string representation of the filter type
+  #[inline]
+  pub const fn as_str(&self) -> &'static str {
+    match self {
+      Self::Id => "id",
+      Self::Tag => "tag",
+    }
+  }
+}
+
+impl TryFrom<u8> for FilterType {
+  type Error = UnknownFilterType;
+
+  fn try_from(value: u8) -> Result<Self, Self::Error> {
+    match value {
+      0 => Ok(Self::Id),
+      1 => Ok(Self::Tag),
+      other => Err(UnknownFilterType(other)),
+    }
+  }
+}
+
+
 /// Transform error type for [`Filter`]
 #[derive(thiserror::Error)]
-pub enum FilterTransformError<I: Transformable, A: Transformable> {
+pub enum FilterTransformError<I: Transformable> {
   /// Returned when there are not enough bytes to decode
   #[error("not enough bytes to decode")]
   NotEnoughBytes(usize),
@@ -16,13 +57,13 @@ pub enum FilterTransformError<I: Transformable, A: Transformable> {
   BufferTooSmall,
   /// Returned when there is an error decoding a node
   #[error(transparent)]
-  Node(#[from] NodeTransformError<I, A>),
+  Id(I::Error),
   /// Returned when there is an error decoding a tag
   #[error(transparent)]
   Tag(#[from] StringTransformError),
   /// Returned when there is an error decoding
   #[error("not enough nodes, expected {expected} nodes, got {got} nodes")]
-  NotEnoughNodes {
+  NotEnoughIds {
     /// expected number of nodes
     expected: usize,
     /// got number of nodes
@@ -30,10 +71,10 @@ pub enum FilterTransformError<I: Transformable, A: Transformable> {
   },
   /// Returned when there is an unknown filter type
   #[error("unknown filter type: {0}")]
-  UnknownFilterType(u8),
+  UnknownFilterType(#[from] UnknownFilterType),
 }
 
-impl<I: Transformable, A: Transformable> core::fmt::Debug for FilterTransformError<I, A> {
+impl<I: Transformable> core::fmt::Debug for FilterTransformError<I> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "{}", self)
   }
@@ -43,9 +84,9 @@ impl<I: Transformable, A: Transformable> core::fmt::Debug for FilterTransformErr
 /// filter we are sending
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum Filter<I, A> {
-  /// Filter by nodes
-  Node(TinyVec<Node<I, A>>),
+pub enum Filter<I> {
+  /// Filter by node ids
+  Id(TinyVec<I>),
   /// Filter by tag
   Tag {
     /// The tag to filter by
@@ -55,12 +96,22 @@ pub enum Filter<I, A> {
   },
 }
 
-impl<I, A> Transformable for Filter<I, A>
+impl<I> Filter<I> {
+  /// Returns the type of filter
+  #[inline]
+  pub const fn ty(&self) -> FilterType {
+    match self {
+      Self::Id(_) => FilterType::Id,
+      Self::Tag { .. } => FilterType::Tag,
+    }
+  }
+}
+
+impl<I> Transformable for Filter<I>
 where
   I: Transformable,
-  A: Transformable,
 {
-  type Error = FilterTransformError<I, A>;
+  type Error = FilterTransformError<I>;
 
   fn encode(&self, dst: &mut [u8]) -> Result<usize, Self::Error> {
     let encoded_len = self.encoded_len();
@@ -68,23 +119,24 @@ where
       return Err(Self::Error::BufferTooSmall);
     }
 
+    let ty = self.ty();
     let mut offset = 0;
     NetworkEndian::write_u32(&mut dst[offset..offset + 4], encoded_len as u32);
     offset += 4;
     match self {
-      Self::Node(nodes) => {
-        dst[offset] = 0;
+      Self::Id(nodes) => {
+        dst[offset] = ty as u8;
         offset += 1;
         let len = nodes.len() as u32;
         NetworkEndian::write_u32(&mut dst[offset..offset + 4], len);
         offset += 4;
         for node in nodes.iter() {
-          offset += node.encode(&mut dst[offset..])?;
+          offset += node.encode(&mut dst[offset..]).map_err(Self::Error::Id)?;
         }
         Ok(offset)
       }
       Self::Tag { tag, expr } => {
-        dst[offset] = 1;
+        dst[offset] = ty as u8;
         offset += 1;
         offset += tag.encode(&mut dst[offset..])?;
         offset += expr.encode(&mut dst[offset..])?;
@@ -95,7 +147,7 @@ where
 
   fn encoded_len(&self) -> usize {
     4 + match self {
-      Self::Node(nodes) => 1 + 4 + nodes.iter().map(Transformable::encoded_len).sum::<usize>(),
+      Self::Id(nodes) => 1 + 4 + nodes.iter().map(Transformable::encoded_len).sum::<usize>(),
       Self::Tag { tag, expr } => 1 + tag.encoded_len() + expr.encoded_len(),
     }
   }
@@ -114,15 +166,15 @@ where
       return Err(Self::Error::NotEnoughBytes(len));
     }
 
-    let ty = src[4];
+    let ty = FilterType::try_from(src[4])?;
     let mut offset = 5;
     match ty {
-      0 => {
+      FilterType::Id => {
         let total_nodes = NetworkEndian::read_u32(&src[offset..offset + 4]) as usize;
         offset += 4;
         let mut nodes = TinyVec::with_capacity(total_nodes);
         for _ in 0..total_nodes {
-          let (n, node) = Node::decode(&src[offset..])?;
+          let (n, node) = I::decode(&src[offset..]).map_err(Self::Error::Id)?;
           nodes.push(node);
           offset += n;
         }
@@ -133,9 +185,9 @@ where
           len, offset
         );
 
-        Ok((offset, Self::Node(nodes)))
+        Ok((offset, Self::Id(nodes)))
       }
-      1 => {
+      FilterType::Tag => {
         let (n, tag) = SmolStr::decode(&src[offset..])?;
         offset += n;
         let (n, expr) = SmolStr::decode(&src[offset..])?;
@@ -149,20 +201,17 @@ where
 
         Ok((offset, Self::Tag { tag, expr }))
       }
-      other => Err(Self::Error::UnknownFilterType(other)),
     }
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use std::net::SocketAddr;
-
   use rand::{distributions::Alphanumeric, thread_rng, Rng};
 
   use super::*;
 
-  impl Filter<SmolStr, SocketAddr> {
+  impl Filter<SmolStr> {
     fn random_node(size: usize, num_nodes: usize) -> Self {
       let mut nodes = TinyVec::with_capacity(num_nodes);
 
@@ -172,10 +221,9 @@ mod tests {
           .take(size)
           .collect::<Vec<u8>>();
         let id = String::from_utf8(id).unwrap().into();
-        let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
-        nodes.push(Node::new(id, addr));
+        nodes.push(id);
       }
-      Self::Node(nodes)
+      Self::Id(nodes)
     }
 
     fn random_tag(size: usize) -> Self {
@@ -207,17 +255,17 @@ mod tests {
         let encoded_len = filter.encode(&mut buf).unwrap();
         assert_eq!(encoded_len, filter.encoded_len());
 
-        let (decoded_len, decoded) = Filter::<SmolStr, SocketAddr>::decode(&buf).unwrap();
+        let (decoded_len, decoded) = Filter::<SmolStr>::decode(&buf).unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, filter);
 
         let (decoded_len, decoded) =
-          Filter::<SmolStr, SocketAddr>::decode_from_reader(&mut std::io::Cursor::new(&buf))
+          Filter::<SmolStr>::decode_from_reader(&mut std::io::Cursor::new(&buf))
             .unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, filter);
 
-        let (decoded_len, decoded) = Filter::<SmolStr, SocketAddr>::decode_from_async_reader(
+        let (decoded_len, decoded) = Filter::<SmolStr>::decode_from_async_reader(
           &mut futures::io::Cursor::new(&buf),
         )
         .await
@@ -232,17 +280,17 @@ mod tests {
         let encoded_len = filter.encode(&mut buf).unwrap();
         assert_eq!(encoded_len, filter.encoded_len());
 
-        let (decoded_len, decoded) = Filter::<SmolStr, SocketAddr>::decode(&buf).unwrap();
+        let (decoded_len, decoded) = Filter::<SmolStr>::decode(&buf).unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, filter);
 
         let (decoded_len, decoded) =
-          Filter::<SmolStr, SocketAddr>::decode_from_reader(&mut std::io::Cursor::new(&buf))
+          Filter::<SmolStr>::decode_from_reader(&mut std::io::Cursor::new(&buf))
             .unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, filter);
 
-        let (decoded_len, decoded) = Filter::<SmolStr, SocketAddr>::decode_from_async_reader(
+        let (decoded_len, decoded) = Filter::<SmolStr>::decode_from_async_reader(
           &mut futures::io::Cursor::new(&buf),
         )
         .await

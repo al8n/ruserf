@@ -263,7 +263,7 @@ where
     &self,
     name: impl Into<SmolStr>,
     payload: Bytes,
-    params: Option<QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+    params: Option<QueryParam<T::Id>>,
   ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
   {
     self.query_in(name.into(), payload, params, None).await
@@ -273,7 +273,7 @@ where
     &self,
     name: SmolStr,
     payload: Bytes,
-    params: Option<QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+    params: Option<QueryParam<T::Id>>,
     ty: InternalQueryEvent<T::Id>,
   ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
   {
@@ -284,7 +284,7 @@ where
     &self,
     name: SmolStr,
     payload: Bytes,
-    params: Option<QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+    params: Option<QueryParam<T::Id>>,
     ty: Option<InternalQueryEvent<T::Id>>,
   ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
   {
