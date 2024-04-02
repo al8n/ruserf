@@ -68,7 +68,7 @@ tracing-subscriber = { version = "0.3", optional = true, features = [
 agnostic-lite = { version = "0.3", features = ["tokio"] }
 tokio = { version = "1", features = ["full"] }
 futures = { workspace = true, features = ["executor"] }
-
+tempfile = "3"
 
 [package.metadata.docs.rs]
 all-features = true

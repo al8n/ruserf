@@ -241,7 +241,7 @@ impl core::fmt::Display for MemberEventType {
 
 /// MemberEvent is the struct used for member related events
 /// Because Serf coalesces events, an event may contain multiple members.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MemberEvent<I, A> {
   pub(crate) ty: MemberEventType,
   pub(crate) members: TinyVec<Member<I, A>>,
@@ -427,12 +427,24 @@ where
   pub(crate) name: SmolStr,
   pub(crate) payload: Bytes,
 
-  pub(crate) ctx: Arc<QueryContext<T, D>>,
+  // pub(crate) ctx: Arc<QueryContext<T, D>>,
   pub(crate) id: u32,
   /// source node
   pub(crate) from: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
   /// Number of duplicate responses to relay back to sender
   pub(crate) relay_factor: u8,
+  pub(crate) _marker: std::marker::PhantomData<D>,
+}
+
+impl<D, T> PartialEq for QueryEvent<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  fn eq(&self, other: &Self) -> bool {
+    self.id == other.id && self.from == other.from && self.relay_factor == other.relay_factor
+    && self.ltime == other.ltime && self.name == other.name && self.payload == other.payload
+  }
 }
 
 impl<D, T> AsRef<QueryEvent<T, D>> for QueryEvent<T, D>

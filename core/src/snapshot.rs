@@ -32,6 +32,9 @@ use crate::{
   types::{LamportClock, LamportTime},
 };
 
+#[cfg(any(test, feature = "test"))]
+pub(crate) mod tests;
+
 /// How often we force a flush of the snapshot file
 const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
