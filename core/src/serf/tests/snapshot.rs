@@ -653,8 +653,8 @@ async fn test_snapshoter_slow_disk_not_blocking_memberlist() {
     }
 
     // Allow just the tiniest time so that the runtime can schedule the
-		// task that's reading this even if they are both on the same physical
-		// core (like in CI).
+    // task that's reading this even if they are both on the same physical
+    // core (like in CI).
     TokioRuntime::sleep(Duration::from_micros(1)).await;
   }
 

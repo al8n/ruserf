@@ -311,7 +311,7 @@ where
   }
 
   #[cfg(feature = "encryption")]
-  async fn handle_remove_key(ev: impl AsRef<QueryEvent<T, D>> + Send,) {
+  async fn handle_remove_key(ev: impl AsRef<QueryEvent<T, D>> + Send) {
     let q = ev.as_ref();
     let mut response = KeyResponseMessage::default();
 

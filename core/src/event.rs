@@ -441,8 +441,12 @@ where
   T: Transport,
 {
   fn eq(&self, other: &Self) -> bool {
-    self.id == other.id && self.from == other.from && self.relay_factor == other.relay_factor
-    && self.ltime == other.ltime && self.name == other.name && self.payload == other.payload
+    self.id == other.id
+      && self.from == other.from
+      && self.relay_factor == other.relay_factor
+      && self.ltime == other.ltime
+      && self.name == other.name
+      && self.payload == other.payload
   }
 }
 
