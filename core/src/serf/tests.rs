@@ -36,6 +36,9 @@ pub use query::*;
 mod snapshot;
 pub use snapshot::*;
 
+mod serf;
+pub use serf::*;
+
 fn test_config() -> Options {
   let mut opts = Options::new();
   opts.memberlist_options = opts

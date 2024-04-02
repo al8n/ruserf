@@ -2,7 +2,7 @@ use std::{
   borrow::Cow,
   collections::HashSet,
   fs::{File, OpenOptions},
-  io::{BufRead, BufReader, BufWriter, Seek, Write},
+  io::{BufReader, BufWriter, Read, Seek, Write},
   mem,
   path::PathBuf,
   time::{Duration, Instant},
@@ -12,6 +12,7 @@ use std::{
 use std::os::unix::prelude::OpenOptionsExt;
 
 use async_channel::{Receiver, Sender};
+use byteorder::{LittleEndian, ReadBytesExt};
 use either::Either;
 use futures::FutureExt;
 use memberlist_core::{
@@ -87,6 +88,45 @@ pub enum SnapshotError {
   SeekEnd(std::io::Error),
   #[error("failed to replay snapshot: {0}")]
   Replay(std::io::Error),
+  #[error(transparent)]
+  UnknownRecordType(#[from] UnknownRecordType),
+}
+
+/// UnknownRecordType is used to indicate that we encountered an unknown
+/// record type while reading a snapshot file.
+#[derive(Debug, thiserror::Error)]
+#[error("unrecognized snapshot record type: {0}")]
+pub struct UnknownRecordType(u8);
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(u8)]
+enum SnapshotRecordType {
+  Alive = 0,
+  NotAlive = 1,
+  Clock = 2,
+  EventClock = 3,
+  QueryClock = 4,
+  Coordinate = 5,
+  Leave = 6,
+  Comment = 7,
+}
+
+impl TryFrom<u8> for SnapshotRecordType {
+  type Error = UnknownRecordType;
+
+  fn try_from(value: u8) -> Result<Self, Self::Error> {
+    match value {
+      0 => Ok(Self::Alive),
+      1 => Ok(Self::NotAlive),
+      2 => Ok(Self::Clock),
+      3 => Ok(Self::EventClock),
+      4 => Ok(Self::QueryClock),
+      5 => Ok(Self::Coordinate),
+      6 => Ok(Self::Leave),
+      7 => Ok(Self::Comment),
+      v => Err(UnknownRecordType(v)),
+    }
+  }
 }
 
 #[allow(dead_code)]
@@ -125,31 +165,30 @@ where
       ($node: ident::$status: ident) => {{
         let node = $node.as_ref();
         let encoded_node_len = T::node_encoded_len(node);
-        let encoded_len = 2 + encoded_node_len;
+        let encoded_len = 4 + 1 + encoded_node_len;
         if encoded_len <= MAX_INLINED_BYTES {
           let mut buf = [0u8; MAX_INLINED_BYTES];
           buf[0] = Self::$status;
-          T::encode_node(node, &mut buf[1..]).map_err(invalid_data_io_error)?;
-          buf[1 + encoded_node_len] = b'\n';
+          buf[1..5].copy_from_slice(&(encoded_node_len as u32).to_le_bytes());
+          T::encode_node(node, &mut buf[5..]).map_err(invalid_data_io_error)?;
           w.write_all(&buf[..encoded_len]).map(|_| encoded_len)
         } else {
           let mut buf = BytesMut::with_capacity(encoded_len);
           buf.put_u8(Self::$status);
+          buf.put_u32_le(encoded_node_len as u32);
           T::encode_node(node, &mut buf).map_err(invalid_data_io_error)?;
-          buf.put_u8(b'\n');
           w.write_all(&buf).map(|_| encoded_len)
         }
       }};
       ($t: ident($status: ident)) => {{
-        const N: usize = 2 * mem::size_of::<u8>() + mem::size_of::<u64>();
+        const N: usize = mem::size_of::<u8>() + mem::size_of::<u64>();
         let mut data = [0u8; N];
         data[0] = Self::$status;
-        data[1..N - 1].copy_from_slice(&$t.to_be_bytes());
-        data[N - 1] = b'\n';
+        data[1..N].copy_from_slice(&$t.to_le_bytes());
         w.write_all(&data).map(|_| N)
       }};
       ($ident: ident) => {{
-        w.write_all(&[Self::$ident, b'\n']).map(|_| 2)
+        w.write_all(&[Self::$ident]).map(|_| 1)
       }};
     }
 
@@ -216,50 +255,59 @@ pub(crate) fn open_and_replay_snapshot<
   let mut last_query_clock = LamportTime::ZERO;
 
   loop {
-    if reader.read_until(b'\n', &mut buf).is_err() {
-      break;
-    }
+    let kind = match reader.read_u8() {
+      Ok(b) => SnapshotRecordType::try_from(b)?,
+      Err(e) => {
+        if e.kind() == std::io::ErrorKind::UnexpectedEof {
+          break;
+        }
+        return Err(SnapshotError::Replay(e));
+      }
+    };
 
-    if buf.is_empty() {
-      break;
-    }
+    match kind {
+      SnapshotRecordType::Alive => {
+        let len = reader
+          .read_u32::<LittleEndian>()
+          .map_err(SnapshotError::Replay)? as usize;
+        buf.resize(len, 0);
+        reader.read_exact(&mut buf).map_err(SnapshotError::Replay)?;
 
-    // Skip the newline
-    let src = &buf[..buf.len() - 1];
-    // Match on the prefix
-    match src[0] {
-      SnapshotRecord::<I, A>::ALIVE => {
         let (_, node) =
-          T::decode_node(&src[1..]).map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
+          T::decode_node(&buf).map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
         alive_nodes.insert(node);
       }
-      SnapshotRecord::<I, A>::NOT_ALIVE => {
+      SnapshotRecordType::NotAlive => {
+        let len = reader
+          .read_u32::<LittleEndian>()
+          .map_err(SnapshotError::Replay)? as usize;
+        buf.resize(len, 0);
+        reader.read_exact(&mut buf).map_err(SnapshotError::Replay)?;
+
         let (_, node) =
-          T::decode_node(&src[1..]).map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
+          T::decode_node(&buf).map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
         alive_nodes.remove(&node);
       }
-      SnapshotRecord::<I, A>::CLOCK => {
-        let t = u64::from_be_bytes([
-          src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
-        ]);
+      SnapshotRecordType::Clock => {
+        let t = reader
+          .read_u64::<LittleEndian>()
+          .map_err(SnapshotError::Replay)?;
         last_clock = LamportTime::new(t);
       }
-      SnapshotRecord::<I, A>::EVENT_CLOCK => {
-        let t = u64::from_be_bytes([
-          src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
-        ]);
+      SnapshotRecordType::EventClock => {
+        let t = reader
+          .read_u64::<LittleEndian>()
+          .map_err(SnapshotError::Replay)?;
         last_event_clock = LamportTime::new(t);
       }
-      SnapshotRecord::<I, A>::QUERY_CLOCK => {
-        let t = u64::from_be_bytes([
-          src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
-        ]);
+      SnapshotRecordType::QueryClock => {
+        let t = reader
+          .read_u64::<LittleEndian>()
+          .map_err(SnapshotError::Replay)?;
         last_query_clock = LamportTime::new(t);
       }
-      SnapshotRecord::<I, A>::COORDINATE => {
-        continue;
-      }
-      SnapshotRecord::<I, A>::LEAVE => {
+      SnapshotRecordType::Coordinate => continue,
+      SnapshotRecordType::Leave => {
         // Ignore a leave if we plan on re-joining
         if rejoin_after_leave {
           tracing::info!("ruserf: ignoring previous leave in snapshot");
@@ -270,12 +318,7 @@ pub(crate) fn open_and_replay_snapshot<
         last_event_clock = LamportTime::ZERO;
         last_query_clock = LamportTime::ZERO;
       }
-      SnapshotRecord::<I, A>::COMMENT => {
-        continue;
-      }
-      v => {
-        tracing::warn!("ruserf: unrecognized snapshot record {v}: {:?}", buf);
-      }
+      SnapshotRecordType::Comment => continue,
     }
   }
 
