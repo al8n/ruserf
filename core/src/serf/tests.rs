@@ -63,16 +63,51 @@ where
   let start = Instant::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
-
+    let mut conds = Vec::with_capacity(serfs.len());
     for (idx, s) in serfs.iter().enumerate() {
       let n = s.num_nodes().await;
       if n == desired_nodes {
+        conds.push(true);
         continue;
       }
 
       if start.elapsed() > Duration::from_secs(7) {
         panic!("s{} got {} expected {}", idx + 1, n, desired_nodes);
       }
+    }
+    if conds.len() == serfs.len() {
+      break;
+    }
+  }
+}
+
+async fn wait_until_intent_queue_len<T, D>(desired_len: usize, serfs: &[Serf<T, D>])
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  let start = Instant::now();
+  loop {
+    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
+    let mut conds = Vec::with_capacity(serfs.len());
+    for (idx, s) in serfs.iter().enumerate() {
+      let stats = s.stats().await;
+      if stats.get_intent_queue() == desired_len {
+        conds.push(true);
+        continue;
+      }
+
+      if start.elapsed() > Duration::from_secs(7) {
+        panic!(
+          "s{} got {} expected {}",
+          idx + 1,
+          stats.get_intent_queue(),
+          desired_len
+        );
+      }
+    }
+    if conds.len() == serfs.len() {
+      break;
     }
   }
 }

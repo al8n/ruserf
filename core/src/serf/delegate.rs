@@ -30,6 +30,10 @@ use memberlist_core::{
 // to the ping message without a full protocol bump.
 const PING_VERSION: u8 = 1;
 
+pub(crate) trait MessageDropper: Send + Sync + 'static {
+  fn should_drop(&self, ty: MessageType) -> bool;
+}
+
 /// The memberlist delegate for Serf.
 pub struct SerfDelegate<T, D>
 where
@@ -38,6 +42,8 @@ where
 {
   serf: OnceLock<Serf<T, D>>,
   delegate: Option<D>,
+  #[cfg(any(test, feature = "test"))]
+  pub(crate) message_dropper: Option<Box<dyn MessageDropper>>,
 }
 
 impl<D, T> SerfDelegate<T, D>
@@ -49,6 +55,18 @@ where
     Self {
       serf: OnceLock::new(),
       delegate: d,
+      #[cfg(any(test, feature = "test"))]
+      message_dropper: None,
+    }
+  }
+
+  #[cfg(any(test, feature = "test"))]
+  pub(crate) fn with_dropper(d: Option<D>, dropper: Box<dyn MessageDropper>) -> Self {
+    Self {
+      serf: OnceLock::new(),
+      delegate: d,
+      #[cfg(any(test, feature = "test"))]
+      message_dropper: Some(dropper),
     }
   }
 
@@ -137,93 +155,105 @@ where
     let mut rebroadcast_queue = &this.inner.broadcasts;
 
     match MessageType::try_from(msg[0]) {
-      Ok(ty) => match ty {
-        MessageType::Leave => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
-          Ok((_, l)) => {
-            if let SerfMessage::Leave(l) = &l {
-              tracing::debug!("ruserf: leave message",);
-              rebroadcast = this.handle_node_leave_intent(l).await.then(|| msg.clone());
-            } else {
-              tracing::warn!("ruserf: receive unexpected message: {}", l.ty().as_str());
-            }
-          }
-          Err(e) => {
-            tracing::warn!(err=%e, "ruserf: failed to decode message");
-          }
-        },
-        MessageType::Join => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
-          Ok((_, j)) => {
-            if let SerfMessage::Join(j) = &j {
-              tracing::debug!("ruserf: join message",);
-              rebroadcast = this.handle_node_join_intent(j).await.then(|| msg.clone());
-            } else {
-              tracing::warn!("ruserf: receive unexpected message: {}", j.ty().as_str());
-            }
-          }
-          Err(e) => {
-            tracing::warn!(err=%e, "ruserf: failed to decode message");
-          }
-        },
-        MessageType::UserEvent => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
-          Ok((_, ue)) => {
-            if let SerfMessage::UserEvent(ue) = ue {
-              tracing::debug!("ruserf: user event message",);
-              rebroadcast = this.handle_user_event(ue).await.then(|| msg.clone());
-              rebroadcast_queue = &this.inner.event_broadcasts;
-            } else {
-              tracing::warn!("ruserf: receive unexpected message: {}", ue.ty().as_str());
-            }
-          }
-          Err(e) => {
-            tracing::warn!(err=%e, "ruserf: failed to decode message");
-          }
-        },
-        MessageType::Query => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
-          Ok((_, q)) => {
-            if let SerfMessage::Query(q) = q {
-              tracing::debug!("ruserf: query message",);
-              rebroadcast = this.handle_query(q, None).await.then(|| msg.clone());
-              rebroadcast_queue = &this.inner.query_broadcasts;
-            } else {
-              tracing::warn!("ruserf: receive unexpected message: {}", q.ty().as_str());
-            }
-          }
-          Err(e) => {
-            tracing::warn!(err=%e, "ruserf: failed to decode message");
-          }
-        },
-        MessageType::QueryResponse => match <D as TransformDelegate>::decode_message(ty, &msg[1..])
+      Ok(ty) => {
+        #[cfg(any(test, feature = "test"))]
         {
-          Ok((_, qr)) => {
-            if let SerfMessage::QueryResponse(qr) = qr {
-              tracing::debug!("ruserf: query response message",);
-              this.handle_query_response(qr).await;
-            } else {
-              tracing::warn!("ruserf: receive unexpected message: {}", qr.ty().as_str());
+          if let Some(ref dropper) = this.inner.memberlist.delegate().unwrap().message_dropper {
+            if dropper.should_drop(MessageType::Join) {
+              return;
             }
           }
-          Err(e) => {
-            tracing::warn!(err=%e, "ruserf: failed to decode message");
-          }
-        },
-        MessageType::Relay => match <D as TransformDelegate>::decode_node(&msg[1..]) {
-          Ok((consumed, n)) => {
-            tracing::debug!("ruserf: relay message",);
-            tracing::debug!("ruserf: relaying response to node: {}", n);
-            // + 1 for the message type byte
-            msg.advance(consumed + 1);
-            if let Err(e) = this.inner.memberlist.send(n.address(), msg.clone()).await {
-              tracing::error!(err=%e, "ruserf: failed to forwarding message to {}", n);
-            }
-          }
-          Err(e) => {
-            tracing::warn!(err=%e, "ruserf: failed to decode relay destination");
-          }
-        },
-        ty => {
-          tracing::warn!("ruserf: receive unexpected message: {}", ty.as_str());
         }
-      },
+
+        match ty {
+          MessageType::Leave => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
+            Ok((_, l)) => {
+              if let SerfMessage::Leave(l) = &l {
+                tracing::debug!("ruserf: leave message",);
+                rebroadcast = this.handle_node_leave_intent(l).await.then(|| msg.clone());
+              } else {
+                tracing::warn!("ruserf: receive unexpected message: {}", l.ty().as_str());
+              }
+            }
+            Err(e) => {
+              tracing::warn!(err=%e, "ruserf: failed to decode message");
+            }
+          },
+          MessageType::Join => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
+            Ok((_, j)) => {
+              if let SerfMessage::Join(j) = &j {
+                tracing::debug!("ruserf: join message",);
+                rebroadcast = this.handle_node_join_intent(j).await.then(|| msg.clone());
+              } else {
+                tracing::warn!("ruserf: receive unexpected message: {}", j.ty().as_str());
+              }
+            }
+            Err(e) => {
+              tracing::warn!(err=%e, "ruserf: failed to decode message");
+            }
+          },
+          MessageType::UserEvent => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
+            Ok((_, ue)) => {
+              if let SerfMessage::UserEvent(ue) = ue {
+                tracing::debug!("ruserf: user event message",);
+                rebroadcast = this.handle_user_event(ue).await.then(|| msg.clone());
+                rebroadcast_queue = &this.inner.event_broadcasts;
+              } else {
+                tracing::warn!("ruserf: receive unexpected message: {}", ue.ty().as_str());
+              }
+            }
+            Err(e) => {
+              tracing::warn!(err=%e, "ruserf: failed to decode message");
+            }
+          },
+          MessageType::Query => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
+            Ok((_, q)) => {
+              if let SerfMessage::Query(q) = q {
+                tracing::debug!("ruserf: query message",);
+                rebroadcast = this.handle_query(q, None).await.then(|| msg.clone());
+                rebroadcast_queue = &this.inner.query_broadcasts;
+              } else {
+                tracing::warn!("ruserf: receive unexpected message: {}", q.ty().as_str());
+              }
+            }
+            Err(e) => {
+              tracing::warn!(err=%e, "ruserf: failed to decode message");
+            }
+          },
+          MessageType::QueryResponse => {
+            match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
+              Ok((_, qr)) => {
+                if let SerfMessage::QueryResponse(qr) = qr {
+                  tracing::debug!("ruserf: query response message",);
+                  this.handle_query_response(qr).await;
+                } else {
+                  tracing::warn!("ruserf: receive unexpected message: {}", qr.ty().as_str());
+                }
+              }
+              Err(e) => {
+                tracing::warn!(err=%e, "ruserf: failed to decode message");
+              }
+            }
+          }
+          MessageType::Relay => match <D as TransformDelegate>::decode_node(&msg[1..]) {
+            Ok((consumed, n)) => {
+              tracing::debug!("ruserf: relay message",);
+              tracing::debug!("ruserf: relaying response to node: {}", n);
+              // + 1 for the message type byte
+              msg.advance(consumed + 1);
+              if let Err(e) = this.inner.memberlist.send(n.address(), msg.clone()).await {
+                tracing::error!(err=%e, "ruserf: failed to forwarding message to {}", n);
+              }
+            }
+            Err(e) => {
+              tracing::warn!(err=%e, "ruserf: failed to decode relay destination");
+            }
+          },
+          ty => {
+            tracing::warn!("ruserf: receive unexpected message: {}", ty.as_str());
+          }
+        }
+      }
       Err(e) => {
         tracing::warn!(err=%e, "ruserf: receive unknown message type");
       }
@@ -367,7 +397,22 @@ where
       return;
     };
 
-    // TODO: messageDropper
+    #[cfg(any(test, feature = "test"))]
+    {
+      if let Some(ref dropper) = self
+        .this()
+        .inner
+        .memberlist
+        .delegate()
+        .unwrap()
+        .message_dropper
+      {
+        if dropper.should_drop(MessageType::PushPull) {
+          return;
+        }
+      }
+    }
+
     match ty {
       MessageType::PushPull => {
         match <D as TransformDelegate>::decode_message(ty, &buf[1..]) {

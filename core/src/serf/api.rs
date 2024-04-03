@@ -31,7 +31,15 @@ where
     transport: T::Options,
     opts: Options,
   ) -> Result<Self, Error<T, DefaultDelegate<T>>> {
-    Self::new_in(None, None, transport, opts).await
+    Self::new_in(
+      None,
+      None,
+      transport,
+      opts,
+      #[cfg(any(test, feature = "test"))]
+      None,
+    )
+    .await
   }
 
   /// Creates a new Serf instance with the given transport and options.
@@ -40,7 +48,15 @@ where
     opts: Options,
     ev: async_channel::Sender<Event<T, DefaultDelegate<T>>>,
   ) -> Result<Self, Error<T, DefaultDelegate<T>>> {
-    Self::new_in(Some(ev), None, transport, opts).await
+    Self::new_in(
+      Some(ev),
+      None,
+      transport,
+      opts,
+      #[cfg(any(test, feature = "test"))]
+      None,
+    )
+    .await
   }
 }
 
@@ -55,16 +71,33 @@ where
     opts: Options,
     delegate: D,
   ) -> Result<Self, Error<T, D>> {
-    Self::new_in(None, Some(delegate), transport, opts).await
+    Self::new_in(
+      None,
+      Some(delegate),
+      transport,
+      opts,
+      #[cfg(any(test, feature = "test"))]
+      None,
+    )
+    .await
   }
 
+  /// Creates a new Serf instance with the given transport, options, event sender, and delegate.
   pub async fn with_event_sender_and_delegate(
     transport: T::Options,
     opts: Options,
     ev: async_channel::Sender<Event<T, D>>,
     delegate: D,
   ) -> Result<Self, Error<T, D>> {
-    Self::new_in(Some(ev), Some(delegate), transport, opts).await
+    Self::new_in(
+      Some(ev),
+      Some(delegate),
+      transport,
+      opts,
+      #[cfg(any(test, feature = "test"))]
+      None,
+    )
+    .await
   }
 
   /// A predicate that determines whether or not encryption
@@ -93,7 +126,7 @@ where
 
   /// Returns a point-in-time snapshot of the members of this cluster.
   #[inline]
-  pub async fn members(&self) -> usize {
+  pub async fn num_members(&self) -> usize {
     self.inner.members.read().await.states.len()
   }
 

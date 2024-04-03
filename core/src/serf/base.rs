@@ -37,11 +37,29 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
+  #[cfg(any(test, feature = "test"))]
+  pub(crate) async fn with_message_dropper(
+    transport: T::Options,
+    opts: Options,
+    message_dropper: Box<dyn delegate::MessageDropper>,
+  ) -> Result<Self, Error<T, D>> {
+    Self::new_in(
+      None,
+      None,
+      transport,
+      opts,
+      #[cfg(any(test, feature = "test"))]
+      Some(message_dropper),
+    )
+    .await
+  }
+
   pub(crate) async fn new_in(
     ev: Option<async_channel::Sender<Event<T, D>>>,
     delegate: Option<D>,
     transport: T::Options,
     opts: Options,
+    #[cfg(any(test, feature = "test"))] message_dropper: Option<Box<dyn delegate::MessageDropper>>,
   ) -> Result<Self, Error<T, D>> {
     if opts.max_user_event_size > USER_EVENT_SIZE_LIMIT {
       return Err(Error::UserEventLimitTooLarge(USER_EVENT_SIZE_LIMIT));
@@ -176,7 +194,19 @@ where
     // Create the underlying memberlist that will manage membership
     // and failure detection for the Serf instance.
     let memberlist = Memberlist::with_delegate(
-      SerfDelegate::new(delegate),
+      {
+        #[cfg(any(test, feature = "test"))]
+        {
+          match message_dropper {
+            Some(dropper) => SerfDelegate::with_dropper(delegate, dropper),
+            None => SerfDelegate::new(delegate),
+          }
+        }
+        #[cfg(not(any(test, feature = "test")))]
+        {
+          SerfDelegate::new(delegate)
+        }
+      },
       transport,
       opts.memberlist_options.clone(),
     )
@@ -984,7 +1014,14 @@ where
   ) {
     let mut members = self.inner.members.write().await;
 
-    // TODO: message dropper?
+    #[cfg(any(test, feature = "test"))]
+    {
+      if let Some(ref dropper) = self.inner.memberlist.delegate().unwrap().message_dropper {
+        if dropper.should_drop(MessageType::Join) {
+          return;
+        }
+      }
+    }
 
     let node = n.node();
     let tags = match <D as TransformDelegate>::decode_tags(n.meta()) {
