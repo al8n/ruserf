@@ -1,10 +1,3 @@
-use ruserf_types::{Member, MemberStatus};
-
-use crate::{
-  event::{QueryContext, QueryEvent},
-  open_and_replay_snapshot, Snapshot,
-};
-
 use super::*;
 
 /// Unit test for the snapshoter.

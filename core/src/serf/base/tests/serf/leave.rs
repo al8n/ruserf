@@ -1,13 +1,11 @@
 use super::*;
 
-
 /// Unit tests for the force leave failed
 pub async fn serf_force_leave_failed<T>(
   transport_opts1: T::Options,
   transport_opts2: T::Options,
   transport_opts3: T::Options,
-)
-where
+) where
   T: Transport,
 {
   let s1 = Serf::<T>::new(transport_opts1, test_config())
@@ -29,9 +27,9 @@ where
   serfs[0].join(node, false).await.unwrap();
 
   let node = serfs[2]
-  .advertise_node()
-  .map_address(MaybeResolvedAddress::resolved);
-  serfs[0].join(node, false).await.unwrap(); 
+    .advertise_node()
+    .map_address(MaybeResolvedAddress::resolved);
+  serfs[0].join(node, false).await.unwrap();
 
   wait_until_num_nodes(3, &serfs).await;
 
@@ -47,13 +45,7 @@ where
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
     let members = serfs[0].inner.members.read().await;
-    if test_member_status(
-      members.states.clone(),
-      s2id.clone(),
-      MemberStatus::Failed,
-    )
-    .is_ok()
-    {
+    if test_member_status(members.states.clone(), s2id.clone(), MemberStatus::Failed).is_ok() {
       break;
     }
 
@@ -72,28 +64,36 @@ pub async fn serf_force_leave_leaving<T>(
   transport_opts1: T::Options,
   transport_opts2: T::Options,
   transport_opts3: T::Options,
-)
-where
+) where
   T: Transport,
 {
   const TOMBSTONE_TIMEOUT: Duration = Duration::from_secs(3600);
   const LEAVE_PROPAGATE_DELAY: Duration = Duration::from_secs(5);
 
-  let s1 = Serf::<T>::new(transport_opts1, test_config()
-    .with_tombstone_timeout(TOMBSTONE_TIMEOUT)
-    .with_leave_propagate_delay(LEAVE_PROPAGATE_DELAY))
-    .await
-    .unwrap();
-  let s2 = Serf::<T>::new(transport_opts2, test_config()
-    .with_tombstone_timeout(TOMBSTONE_TIMEOUT)
-    .with_leave_propagate_delay(LEAVE_PROPAGATE_DELAY))
-    .await
-    .unwrap();
-  let s3 = Serf::<T>::new(transport_opts3, test_config()
-    .with_tombstone_timeout(TOMBSTONE_TIMEOUT)
-    .with_leave_propagate_delay(LEAVE_PROPAGATE_DELAY))
-    .await
-    .unwrap();
+  let s1 = Serf::<T>::new(
+    transport_opts1,
+    test_config()
+      .with_tombstone_timeout(TOMBSTONE_TIMEOUT)
+      .with_leave_propagate_delay(LEAVE_PROPAGATE_DELAY),
+  )
+  .await
+  .unwrap();
+  let s2 = Serf::<T>::new(
+    transport_opts2,
+    test_config()
+      .with_tombstone_timeout(TOMBSTONE_TIMEOUT)
+      .with_leave_propagate_delay(LEAVE_PROPAGATE_DELAY),
+  )
+  .await
+  .unwrap();
+  let s3 = Serf::<T>::new(
+    transport_opts3,
+    test_config()
+      .with_tombstone_timeout(TOMBSTONE_TIMEOUT)
+      .with_leave_propagate_delay(LEAVE_PROPAGATE_DELAY),
+  )
+  .await
+  .unwrap();
 
   let mut serfs = [s1, s2, s3];
   wait_until_num_nodes(1, &serfs).await;
@@ -104,9 +104,9 @@ where
   serfs[0].join(node, false).await.unwrap();
 
   let node = serfs[2]
-  .advertise_node()
-  .map_address(MaybeResolvedAddress::resolved);
-  serfs[0].join(node, false).await.unwrap(); 
+    .advertise_node()
+    .map_address(MaybeResolvedAddress::resolved);
+  serfs[0].join(node, false).await.unwrap();
 
   wait_until_num_nodes(3, &serfs).await;
 
@@ -120,13 +120,7 @@ where
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
     let members = serfs[0].inner.members.read().await;
-    if test_member_status(
-      members.states.clone(),
-      s2id.clone(),
-      MemberStatus::Left,
-    )
-    .is_ok()
-    {
+    if test_member_status(members.states.clone(), s2id.clone(), MemberStatus::Left).is_ok() {
       break;
     }
 
@@ -145,24 +139,29 @@ pub async fn serf_force_leave_left<T>(
   transport_opts1: T::Options,
   transport_opts2: T::Options,
   transport_opts3: T::Options,
-)
-where
+) where
   T: Transport,
 {
   const TOMBSTONE_TIMEOUT: Duration = Duration::from_secs(3600);
 
-  let s1 = Serf::<T>::new(transport_opts1, test_config()
-    .with_tombstone_timeout(TOMBSTONE_TIMEOUT))
-    .await
-    .unwrap();
-  let s2 = Serf::<T>::new(transport_opts2, test_config()
-    .with_tombstone_timeout(TOMBSTONE_TIMEOUT))
-    .await
-    .unwrap();
-  let s3 = Serf::<T>::new(transport_opts3, test_config()
-    .with_tombstone_timeout(TOMBSTONE_TIMEOUT))
-    .await
-    .unwrap();
+  let s1 = Serf::<T>::new(
+    transport_opts1,
+    test_config().with_tombstone_timeout(TOMBSTONE_TIMEOUT),
+  )
+  .await
+  .unwrap();
+  let s2 = Serf::<T>::new(
+    transport_opts2,
+    test_config().with_tombstone_timeout(TOMBSTONE_TIMEOUT),
+  )
+  .await
+  .unwrap();
+  let s3 = Serf::<T>::new(
+    transport_opts3,
+    test_config().with_tombstone_timeout(TOMBSTONE_TIMEOUT),
+  )
+  .await
+  .unwrap();
 
   let mut serfs = [s1, s2, s3];
   wait_until_num_nodes(1, &serfs).await;
@@ -173,9 +172,9 @@ where
   serfs[0].join(node, false).await.unwrap();
 
   let node = serfs[2]
-  .advertise_node()
-  .map_address(MaybeResolvedAddress::resolved);
-  serfs[0].join(node, false).await.unwrap(); 
+    .advertise_node()
+    .map_address(MaybeResolvedAddress::resolved);
+  serfs[0].join(node, false).await.unwrap();
 
   wait_until_num_nodes(3, &serfs).await;
 
@@ -189,13 +188,7 @@ where
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
     let members = serfs[0].inner.members.read().await;
-    if test_member_status(
-      members.states.clone(),
-      s2id.clone(),
-      MemberStatus::Left,
-    )
-    .is_ok()
-    {
+    if test_member_status(members.states.clone(), s2id.clone(), MemberStatus::Left).is_ok() {
       break;
     }
 
@@ -245,7 +238,9 @@ pub async fn serf_leave_rejoin_different_role<T>(
   let s3 = Serf::<T>::new(
     transport_opts2,
     test_config().with_tags([("role", "bar")].into_iter()),
-  ).await.unwrap();
+  )
+  .await
+  .unwrap();
 
   let node = serfs[0]
     .advertise_node()

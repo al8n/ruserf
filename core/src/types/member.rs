@@ -42,12 +42,3 @@ impl<I, A> Default for Members<I, A> {
     }
   }
 }
-
-impl<I: Eq + core::hash::Hash, A: Eq + core::hash::Hash> Members<I, A> {
-  pub(crate) fn recent_intent(&self, id: &I, ty: MessageType) -> Option<LamportTime> {
-    match self.recent_intents.get(id) {
-      Some(intent) if intent.ty == ty => Some(intent.ltime),
-      _ => None,
-    }
-  }
-}

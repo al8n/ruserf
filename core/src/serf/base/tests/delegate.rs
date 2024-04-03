@@ -156,14 +156,20 @@ where
 
   let members = s.inner.members.read().await;
   // Verify pending join for test
-  let ltime = members
-    .recent_intent(&SmolStr::new("test"), MessageType::Join)
-    .unwrap();
+  let ltime = recent_intent(
+    &members.recent_intents,
+    &SmolStr::new("test"),
+    MessageType::Join,
+  )
+  .unwrap();
   assert_eq!(ltime, 20.into(), "bad join ltime");
   // Verify pending leave for foo
-  let ltime = members
-    .recent_intent(&SmolStr::new("foo"), MessageType::Leave)
-    .unwrap();
+  let ltime = recent_intent(
+    &members.recent_intents,
+    &SmolStr::new("foo"),
+    MessageType::Leave,
+  )
+  .unwrap();
   assert_eq!(ltime, 16.into(), "bad leave ltime");
 
   // Verify event clock

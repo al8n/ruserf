@@ -12,6 +12,12 @@ pub mod leave;
 /// Unit tests for the reconnect related functionalities
 pub mod reconnect;
 
+/// Unit tests for the remove related functionalities
+pub mod remove;
+
+/// Unit tests for reap related functionalities
+pub mod reap;
+
 fn test_member_status<I: Id, A>(
   members: HashMap<I, MemberState<I, A>>,
   id: I,
@@ -666,4 +672,252 @@ where
   <T::Runtime as RuntimeLite>::sleep(reap_interval * 2).await;
 
   wait_until_num_nodes(1, &serfs).await;
+}
+
+/// Unit tests for the update
+pub async fn serf_update<T>(transport_opts1: T::Options, transport_opts2: T::Options)
+where
+  T: Transport,
+  T::Options: Clone,
+{
+  let (event_tx, event_rx) = async_channel::bounded(64);
+  let s1 = Serf::<T>::with_event_sender(transport_opts1, test_config(), event_tx)
+    .await
+    .unwrap();
+  let s2 = Serf::<T>::new(transport_opts2.clone(), test_config())
+    .await
+    .unwrap();
+
+  let mut serfs = [s1, s2];
+  wait_until_num_nodes(1, &serfs).await;
+
+  let node = serfs[1]
+    .inner
+    .memberlist
+    .advertise_node()
+    .map_address(MaybeResolvedAddress::resolved);
+  serfs[0].join(node.clone(), false).await.unwrap();
+
+  wait_until_num_nodes(2, &serfs).await;
+  // Now force the shutdown of s2 so it appears to fail.
+  serfs[1].shutdown().await.unwrap();
+
+  // Don't wait for a failure to be detected. Bring back s2 immediately
+  let start = Instant::now();
+  let s2 = loop {
+    match Serf::<T>::new(
+      transport_opts2.clone(),
+      test_config().with_tags([("foo", "bar")].into_iter()),
+    )
+    .await
+    {
+      Ok(s) => break s,
+      Err(e) => {
+        <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(1)).await;
+        if start.elapsed() > Duration::from_secs(2) {
+          panic!("timed out: {}", e);
+        }
+      }
+    }
+  };
+
+  let s1node = serfs[0].advertise_node();
+  s2.join(s1node.map_address(MaybeResolvedAddress::resolved), false)
+    .await
+    .unwrap();
+  serfs[1] = s2;
+  wait_until_num_nodes(2, &serfs).await;
+
+  test_events(
+    event_rx,
+    node.id().clone(),
+    [
+      EventType::Member(MemberEventType::Join),
+      EventType::Member(MemberEventType::Update),
+    ]
+    .into_iter()
+    .collect(),
+  )
+  .await;
+
+  // Verify that the member data got updated.
+  let mut found = false;
+  let members = serfs[0].inner.members.read().await;
+
+  for member in members.states.values() {
+    if member.member.node.id().eq(node.id())
+      && member.member.tags().get("foo").map(|v| v.as_str()) == Some("bar")
+    {
+      found = true;
+      break;
+    }
+  }
+  assert!(found, "did not found s2 in members");
+}
+
+/// Unit tests for the role
+pub async fn serf_role<T>(transport_opts1: T::Options, transport_opts2: T::Options)
+where
+  T: Transport,
+{
+  let s1 = Serf::<T>::new(
+    transport_opts1,
+    test_config().with_tags([("role", "web")].into_iter()),
+  )
+  .await
+  .unwrap();
+  let s2 = Serf::<T>::new(
+    transport_opts2,
+    test_config().with_tags([("role", "lb")].into_iter()),
+  )
+  .await
+  .unwrap();
+
+  let serfs = [s1, s2];
+  wait_until_num_nodes(1, &serfs).await;
+
+  let node = serfs[1]
+    .inner
+    .memberlist
+    .advertise_node()
+    .map_address(MaybeResolvedAddress::resolved);
+  serfs[0].join(node.clone(), false).await.unwrap();
+
+  wait_until_num_nodes(2, &serfs).await;
+
+  let mut roles = HashMap::new();
+
+  let start = Instant::now();
+  let mut cond1 = false;
+  let mut cond2 = false;
+  loop {
+    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
+
+    let members = serfs[0].inner.members.read().await;
+    for m in members.states.values() {
+      roles.insert(
+        m.member.node.id().clone(),
+        m.member.tags().get("role").cloned().unwrap(),
+      );
+    }
+
+    if let Some(role) = roles.get(node.id()) {
+      if role == "lb" {
+        cond1 = true;
+      }
+    }
+
+    if let Some(role) = roles.get(serfs[0].local_id()) {
+      if role == "web" {
+        cond2 = true;
+      }
+    }
+
+    if cond1 && cond2 {
+      break;
+    }
+
+    if start.elapsed() > Duration::from_secs(7) {
+      panic!("timed out");
+    }
+  }
+}
+
+/// Unit test for serf state
+pub async fn serf_state<T>(transport_opts1: T::Options)
+where
+  T: Transport,
+{
+  let s1 = Serf::<T>::new(transport_opts1, test_config())
+    .await
+    .unwrap();
+
+  assert_eq!(s1.state(), SerfState::Alive);
+
+  s1.leave().await.unwrap();
+
+  assert_eq!(s1.state(), SerfState::Left);
+
+  s1.shutdown().await.unwrap();
+
+  assert_eq!(s1.state(), SerfState::Shutdown);
+}
+
+#[test]
+fn test_recent_intent() {
+  assert!(recent_intent::<SmolStr>(&HashMap::new(), &"foo".into(), MessageType::Join).is_none());
+
+  let now = Instant::now();
+  let expire = || now - Duration::from_secs(2);
+  let save = || now;
+
+  let mut intents = HashMap::<SmolStr, _>::new();
+  assert!(recent_intent(&intents, &"foo".into(), MessageType::Join).is_none());
+
+  assert!(upsert_intent(
+    &mut intents,
+    &"foo".into(),
+    MessageType::Join,
+    1.into(),
+    expire
+  ));
+  assert!(upsert_intent(
+    &mut intents,
+    &"bar".into(),
+    MessageType::Leave,
+    2.into(),
+    expire
+  ));
+  assert!(upsert_intent(
+    &mut intents,
+    &"baz".into(),
+    MessageType::Join,
+    3.into(),
+    save
+  ));
+  assert!(upsert_intent(
+    &mut intents,
+    &"bar".into(),
+    MessageType::Join,
+    4.into(),
+    expire
+  ));
+  assert!(!upsert_intent(
+    &mut intents,
+    &"bar".into(),
+    MessageType::Join,
+    0.into(),
+    expire
+  ));
+  assert!(upsert_intent(
+    &mut intents,
+    &"bar".into(),
+    MessageType::Join,
+    5.into(),
+    expire
+  ));
+
+  let ltime = recent_intent(&intents, &"foo".into(), MessageType::Join).unwrap();
+  assert_eq!(ltime, 1.into());
+
+  let ltime = recent_intent(&intents, &"bar".into(), MessageType::Join).unwrap();
+  assert_eq!(ltime, 5.into());
+
+  let ltime = recent_intent(&intents, &"baz".into(), MessageType::Join).unwrap();
+  assert_eq!(ltime, 3.into());
+
+  assert!(recent_intent(&intents, &"tubez".into(), MessageType::Join).is_none());
+
+  reap_intents(&mut intents, Instant::now(), Duration::from_secs(1));
+  assert!(recent_intent(&intents, &"foo".into(), MessageType::Join).is_none());
+  assert!(recent_intent(&intents, &"bar".into(), MessageType::Join).is_none());
+  let ltime = recent_intent(&intents, &"baz".into(), MessageType::Join).unwrap();
+  assert_eq!(ltime, 3.into());
+  assert!(recent_intent(&intents, &"tubez".into(), MessageType::Join).is_none());
+  reap_intents(
+    &mut intents,
+    Instant::now() + Duration::from_secs(2),
+    Duration::from_secs(1),
+  );
+  assert!(recent_intent(&intents, &"baz".into(), MessageType::Join).is_none());
 }

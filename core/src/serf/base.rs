@@ -32,6 +32,11 @@ use self::internal_query::SerfQueries;
 
 use super::*;
 
+/// Re-export the unit tests
+#[cfg(any(test, feature = "test"))]
+#[cfg_attr(docsrs, doc(cfg(any(test, feature = "test"))))]
+pub mod tests;
+
 impl<T, D> Serf<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
@@ -581,21 +586,24 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  fn spawn(self) {
-    <T::Runtime as RuntimeLite>::spawn_detach(async move {
-      loop {
-        futures::select! {
-          _ = <T::Runtime as RuntimeLite>::sleep(self.reap_interval).fuse() => {
-            let mut ms = self.members.write().await;
-            Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
-            Self::reap_left(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.tombstone_timeout).await;
-            reap_intents(&mut ms.recent_intents, self.recent_intent_timeout);
-          }
-          _ = self.shutdown_rx.recv().fuse() => {
-            return;
-          }
+  async fn run(self) {
+    loop {
+      futures::select! {
+        _ = <T::Runtime as RuntimeLite>::sleep(self.reap_interval).fuse() => {
+          let mut ms = self.members.write().await;
+          Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
+          Self::reap_left(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.tombstone_timeout).await;
+          reap_intents(&mut ms.recent_intents, Instant::now(), self.recent_intent_timeout);
+        }
+        _ = self.shutdown_rx.recv().fuse() => {
+          return;
         }
       }
+    }
+  }
+  fn spawn(self) {
+    <T::Runtime as RuntimeLite>::spawn_detach(async move {
+      self.run().await;
     });
   }
 
@@ -1097,11 +1105,11 @@ where
       // one will take effect.
       let mut status = MemberStatus::Alive;
       let mut status_ltime = LamportTime::new(0);
-      if let Some(t) = members.recent_intent(n.id(), MessageType::Join) {
+      if let Some(t) = recent_intent(&members.recent_intents, n.id(), MessageType::Join) {
         status_ltime = t;
       }
 
-      if let Some(t) = members.recent_intent(n.id(), MessageType::Leave) {
+      if let Some(t) = recent_intent(&members.recent_intents, n.id(), MessageType::Leave) {
         status_ltime = t;
         status = MemberStatus::Leaving;
       }
@@ -1629,11 +1637,22 @@ fn remove_old_member<I: Eq, A>(old: &mut OneOrMore<MemberState<I, A>>, id: &I) {
 /// Clears out any intents that are older than the timeout. Make sure
 /// the memberLock is held when passing in the Serf instance's recentIntents
 /// member.
-fn reap_intents<I>(intents: &mut HashMap<I, NodeIntent>, timeout: Duration) {
-  intents.retain(|_, intent| intent.wall_time.elapsed() <= timeout);
+fn reap_intents<I>(intents: &mut HashMap<I, NodeIntent>, now: Instant, timeout: Duration) {
+  intents.retain(|_, intent| (now - intent.wall_time) <= timeout);
 }
 
-pub(crate) fn upsert_intent<I>(
+fn recent_intent<I: core::hash::Hash + Eq>(
+  intents: &HashMap<I, NodeIntent>,
+  id: &I,
+  ty: MessageType,
+) -> Option<LamportTime> {
+  match intents.get(id) {
+    Some(intent) if intent.ty == ty => Some(intent.ltime),
+    _ => None,
+  }
+}
+
+fn upsert_intent<I>(
   intents: &mut HashMap<I, NodeIntent>,
   node: &I,
   t: MessageType,

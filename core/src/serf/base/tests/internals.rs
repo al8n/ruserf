@@ -1,10 +1,3 @@
-use memberlist_core::types::{Meta, NodeState};
-use ruserf_types::{JoinMessage, LeaveMessage, Member, MemberStatus};
-
-use crate::types::MemberState;
-
-use self::base::upsert_intent;
-
 use super::*;
 
 /// Unit tests for the join leave ltime logic
@@ -197,9 +190,7 @@ where
   // Check that we buffered
   {
     let members = s1.inner.members.read().await;
-    let ltime = members
-      .recent_intent(&"test".into(), MessageType::Leave)
-      .unwrap();
+    let ltime = recent_intent(&members.recent_intents, &"test".into(), MessageType::Leave).unwrap();
     assert_eq!(ltime, 10.into(), "bad buffer");
   }
 
@@ -250,9 +241,7 @@ pub async fn leave_intent_old_message<T>(
   {
     let members = s1.inner.members.read().await;
     assert!(
-      members
-        .recent_intent(&"test".into(), MessageType::Leave)
-        .is_none(),
+      recent_intent(&members.recent_intents, &"test".into(), MessageType::Leave).is_none(),
       "should not have buffered intent"
     );
   }
@@ -300,9 +289,7 @@ pub async fn leave_intent_newer<T>(
   {
     let members = s1.inner.members.read().await;
     assert!(
-      members
-        .recent_intent(&"test".into(), MessageType::Leave)
-        .is_none(),
+      recent_intent(&members.recent_intents, &"test".into(), MessageType::Leave).is_none(),
       "should not have buffered intent"
     );
 
@@ -341,9 +328,7 @@ where
   // Check that we buffered
   {
     let members = s1.inner.members.read().await;
-    let ltime = members
-      .recent_intent(&"test".into(), MessageType::Join)
-      .unwrap();
+    let ltime = recent_intent(&members.recent_intents, &"test".into(), MessageType::Join).unwrap();
     assert_eq!(ltime, 10.into(), "bad buffer");
   }
 
@@ -394,9 +379,7 @@ pub async fn join_intent_old_message<T>(
   {
     let members = s1.inner.members.read().await;
     assert!(
-      members
-        .recent_intent(&"test".into(), MessageType::Join)
-        .is_none(),
+      recent_intent(&members.recent_intents, &"test".into(), MessageType::Join).is_none(),
       "should not have buffered intent"
     );
   }
@@ -443,9 +426,7 @@ pub async fn join_intent_newer<T>(
   {
     let members = s1.inner.members.read().await;
     assert!(
-      members
-        .recent_intent(&"test".into(), MessageType::Join)
-        .is_none(),
+      recent_intent(&members.recent_intents, &"test".into(), MessageType::Join).is_none(),
       "should not have buffered intent"
     );
 
@@ -497,9 +478,7 @@ pub async fn join_intent_reset_leaving<T>(
   {
     let members = s1.inner.members.read().await;
     assert!(
-      members
-        .recent_intent(&"test".into(), MessageType::Join)
-        .is_none(),
+      recent_intent(&members.recent_intents, &"test".into(), MessageType::Join).is_none(),
       "should not have buffered intent"
     );
 

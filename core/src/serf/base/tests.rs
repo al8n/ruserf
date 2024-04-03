@@ -1,7 +1,6 @@
 use std::time::{Duration, Instant};
 
 use async_channel::Receiver;
-use futures::FutureExt;
 use memberlist_core::{
   agnostic_lite::RuntimeLite,
   bytes::Bytes,
@@ -17,10 +16,8 @@ use smol_str::SmolStr;
 
 use crate::{
   delegate::TransformDelegate,
-  event::{EventKind, EventType, InternalQueryEvent, MemberEvent, MemberEventType},
+  event::{EventKind, EventType, MemberEvent, MemberEventType},
 };
-
-use self::internal_query::SerfQueries;
 
 use super::*;
 
