@@ -455,6 +455,20 @@ where
     Ok(())
   }
 
+  #[cfg(any(feature = "test", test))]
+  pub(crate) async fn get_queue_max(&self) -> usize {
+    let mut max = self.inner.opts.max_queue_depth;
+    if self.inner.opts.min_queue_depth > 0 {
+      let num_members = self.inner.members.read().await.states.len();
+      max = num_members * 2;
+
+      if max < self.inner.opts.min_queue_depth {
+        max = self.inner.opts.min_queue_depth;
+      }
+    }
+    max
+  }
+
   /// Forcibly removes a failed node from the cluster
   /// immediately, instead of waiting for the reaper to eventually reclaim it.
   /// This also has the effect that Serf will no longer attempt to reconnect

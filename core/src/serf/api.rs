@@ -100,6 +100,18 @@ where
     .await
   }
 
+  /// Returns the local node's ID
+  #[inline]
+  pub fn local_id(&self) -> &T::Id {
+    self.inner.memberlist.local_id()
+  }
+
+  /// Returns the local node's ID and the advertised address
+  #[inline]
+  pub fn advertise_node(&self) -> Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> {
+    self.inner.memberlist.advertise_node()
+  }
+
   /// A predicate that determines whether or not encryption
   /// is enabled, which can be possible in one of 2 cases:
   ///   - Single encryption key passed at agent start (no persistence)
