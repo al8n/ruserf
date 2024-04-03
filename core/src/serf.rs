@@ -22,7 +22,7 @@ use super::{
 };
 
 mod api;
-mod base;
+pub(crate) mod base;
 
 mod delegate;
 pub(crate) use delegate::*;
@@ -31,11 +31,6 @@ mod query;
 pub use query::*;
 
 mod internal_query;
-
-/// Re-export the unit tests
-#[cfg(any(test, feature = "test"))]
-#[cfg_attr(docsrs, doc(cfg(any(test, feature = "test"))))]
-pub mod tests;
 
 /// Maximum 128 KB snapshot
 pub(crate) const SNAPSHOT_SIZE_LIMIT: u64 = 128 * 1024;

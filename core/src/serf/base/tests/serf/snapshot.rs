@@ -1,10 +1,3 @@
-use ruserf_types::{Member, MemberStatus};
-
-use crate::{
-  event::{QueryContext, QueryEvent},
-  open_and_replay_snapshot, Snapshot,
-};
-
 use super::*;
 
 /// Unit test for the snapshoter.
@@ -470,7 +463,203 @@ pub async fn snapshoter_leave_rejoin<T>(
   assert!(!alive_nodes.is_empty());
 }
 
-/// Unit test for the snapshoter slow disk not blocking event_tx
+/// Unit tests for the serf snapshot recovery
+pub async fn serf_snapshot_recovery<T>(transport_opts1: T::Options, transport_opts2: T::Options)
+where
+  T: Transport,
+  T::Options: Clone,
+{
+  let td = tempfile::tempdir().unwrap();
+  let snap_path = td.path().join("serf_snapshot_recovery");
+  let s1 = Serf::<T>::new(transport_opts1, test_config())
+    .await
+    .unwrap();
+  let s2 = Serf::<T>::new(
+    transport_opts2.clone(),
+    test_config().with_snapshot_path(Some(snap_path.clone())),
+  )
+  .await
+  .unwrap();
+
+  let mut serfs = [s1, s2];
+  wait_until_num_nodes(1, &serfs).await;
+
+  let node = serfs[1]
+    .inner
+    .memberlist
+    .advertise_node()
+    .map_address(MaybeResolvedAddress::resolved);
+  serfs[0].join(node.clone(), false).await.unwrap();
+
+  wait_until_num_nodes(2, &serfs).await;
+
+  // Fire a user event
+  serfs[0]
+    .user_event("event!", Bytes::from_static(b"test"), false)
+    .await
+    .unwrap();
+  <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(10)).await;
+
+  // Now force the shutdown of s2 so it appears to fail.
+  serfs[1].shutdown().await.unwrap();
+  <T::Runtime as RuntimeLite>::sleep(serfs[1].inner.opts.memberlist_options.probe_interval * 10)
+    .await;
+
+  // Verify that s2 is "failed"
+  {
+    let members = serfs[0].inner.members.read().await;
+    test_member_status(&members.states, node.id().clone(), MemberStatus::Failed).unwrap();
+  }
+
+  // Now remove the failed node
+  serfs[0]
+    .remove_failed_node(node.id().clone())
+    .await
+    .unwrap();
+
+  // Verify that s2 is gone
+  {
+    let members = serfs[0].inner.members.read().await;
+    test_member_status(&members.states, node.id().clone(), MemberStatus::Left).unwrap();
+  }
+
+  // Listen for events
+  let (event_tx, event_rx) = async_channel::bounded(4);
+  let s2 = Serf::<T>::with_event_sender(
+    transport_opts2,
+    test_config().with_snapshot_path(Some(snap_path.clone())),
+    event_tx,
+  )
+  .await
+  .unwrap();
+
+  // Wait for the node to auto rejoin
+  let start = Instant::now();
+  while start.elapsed() < Duration::from_secs(1) {
+    let members = serfs[0].members().await;
+    if members.len() == 2
+      && members[0].status == MemberStatus::Alive
+      && members[1].status == MemberStatus::Alive
+    {
+      break;
+    }
+    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(10)).await;
+  }
+
+  serfs[1] = s2;
+
+  // Verify that s2 is "alive"
+  {
+    let node = serfs[1].local_id().clone();
+    let members = serfs[0].inner.members.read().await;
+    test_member_status(&members.states, node, MemberStatus::Alive).unwrap();
+  }
+  {
+    let node = serfs[0].local_id().clone();
+    let members = serfs[1].inner.members.read().await;
+    test_member_status(&members.states, node, MemberStatus::Alive).unwrap();
+  }
+
+  // Check the events to make sure we got nothing
+  test_user_events(event_rx, vec![], vec![]).await;
+
+  for s in serfs.iter() {
+    s.shutdown().await.unwrap();
+  }
+}
+
+/// Unit tests for the serf leave snapshot recovery
+pub async fn serf_leave_snapshot_recovery<T>(
+  transport_opts1: T::Options,
+  transport_opts2: T::Options,
+) where
+  T: Transport,
+  T::Options: Clone,
+{
+  let td = tempfile::tempdir().unwrap();
+  let snap_path = td.path().join("serf_leave_snapshot_recovery");
+
+  let s1 = Serf::<T>::new(
+    transport_opts1,
+    test_config().with_reap_interval(Duration::from_secs(30)),
+  )
+  .await
+  .unwrap();
+  let s2 = Serf::<T>::new(
+    transport_opts2.clone(),
+    test_config()
+      .with_snapshot_path(Some(snap_path.clone()))
+      .with_reap_interval(Duration::from_secs(30)),
+  )
+  .await
+  .unwrap();
+
+  let mut serfs = [s1, s2];
+  wait_until_num_nodes(1, &serfs).await;
+
+  let node = serfs[1]
+    .inner
+    .memberlist
+    .advertise_node()
+    .map_address(MaybeResolvedAddress::resolved);
+  serfs[0].join(node.clone(), false).await.unwrap();
+
+  wait_until_num_nodes(2, &serfs).await;
+
+  // Put s2 in left state
+  serfs[1].leave().await.unwrap();
+  serfs[1].shutdown().await.unwrap();
+
+  <T::Runtime as RuntimeLite>::sleep(serfs[1].inner.opts.memberlist_options.probe_interval * 5)
+    .await;
+
+  let s2id = serfs[1].local_id().clone();
+
+  let start = Instant::now();
+  loop {
+    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
+
+    let members = serfs[0].inner.members.read().await;
+    if test_member_status(&members.states, s2id.clone(), MemberStatus::Left).is_ok() {
+      break;
+    }
+
+    if start.elapsed() > Duration::from_secs(7) {
+      panic!("timed out");
+    }
+  }
+
+  // Restart s2 from the snapshot now!
+  let s2 = Serf::<T>::new(
+    transport_opts2.clone(),
+    test_config()
+      .with_snapshot_path(Some(snap_path.clone()))
+      .with_reap_interval(Duration::from_secs(30)),
+  )
+  .await
+  .unwrap();
+  serfs[1] = s2;
+
+  // Wait for the node to auto rejoin
+
+  // Verify that s2 did not join
+  let start = Instant::now();
+  loop {
+    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
+    let num = serfs[1].num_nodes().await;
+    if num != 1 && start.elapsed() > Duration::from_secs(7) {
+      panic!("bad members");
+    }
+
+    let members = serfs[0].inner.members.read().await;
+    if test_member_status(&members.states, s2id.clone(), MemberStatus::Left).is_err()
+      && start.elapsed() > Duration::from_secs(7)
+    {
+      panic!("timed out");
+    }
+  }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
   use memberlist_core::{
@@ -584,7 +773,6 @@ async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
   handle.wait().await;
 }
 
-/// Unit test for the snapshoter slow disk not blocking event_tx
 #[tokio::test]
 async fn test_snapshoter_slow_disk_not_blocking_memberlist() {
   use memberlist_core::{

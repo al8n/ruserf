@@ -8,6 +8,7 @@ use transformable::Transformable;
   Debug,
   Default,
   PartialEq,
+  Clone,
   derive_more::From,
   derive_more::Into,
   derive_more::Deref,

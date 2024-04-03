@@ -425,7 +425,8 @@ where
         }
         Filter::Tag { tag, expr: fexpr } => {
           // Check if we match this regex
-          if let Some(tags) = &*self.inner.opts.tags.load() {
+          let tags = self.inner.opts.tags.load();
+          if !tags.is_empty() {
             if let Some(expr) = tags.get(&tag) {
               match regex::Regex::new(&fexpr) {
                 Ok(re) => {

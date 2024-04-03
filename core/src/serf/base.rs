@@ -32,26 +32,52 @@ use self::internal_query::SerfQueries;
 
 use super::*;
 
+/// Re-export the unit tests
+#[cfg(any(test, feature = "test"))]
+#[cfg_attr(docsrs, doc(cfg(any(test, feature = "test"))))]
+pub mod tests;
+
 impl<T, D> Serf<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
+  #[cfg(any(test, feature = "test"))]
+  pub(crate) async fn with_message_dropper(
+    transport: T::Options,
+    opts: Options,
+    message_dropper: Box<dyn delegate::MessageDropper>,
+  ) -> Result<Self, Error<T, D>> {
+    Self::new_in(
+      None,
+      None,
+      transport,
+      opts,
+      #[cfg(any(test, feature = "test"))]
+      Some(message_dropper),
+    )
+    .await
+  }
+
   pub(crate) async fn new_in(
     ev: Option<async_channel::Sender<Event<T, D>>>,
     delegate: Option<D>,
     transport: T::Options,
     opts: Options,
+    #[cfg(any(test, feature = "test"))] message_dropper: Option<Box<dyn delegate::MessageDropper>>,
   ) -> Result<Self, Error<T, D>> {
     if opts.max_user_event_size > USER_EVENT_SIZE_LIMIT {
       return Err(Error::UserEventLimitTooLarge(USER_EVENT_SIZE_LIMIT));
     }
 
     // Check that the meta data length is okay
-    if let Some(tags) = opts.tags.load().as_ref() {
-      let len = <D as TransformDelegate>::tags_encoded_len(tags);
-      if len > Meta::MAX_SIZE {
-        return Err(Error::TagsTooLarge(len));
+    {
+      let tags = opts.tags.load();
+      if !tags.as_ref().is_empty() {
+        let len = <D as TransformDelegate>::tags_encoded_len(&tags);
+        if len > Meta::MAX_SIZE {
+          return Err(Error::TagsTooLarge(len));
+        }
       }
     }
 
@@ -176,7 +202,19 @@ where
     // Create the underlying memberlist that will manage membership
     // and failure detection for the Serf instance.
     let memberlist = Memberlist::with_delegate(
-      SerfDelegate::new(delegate),
+      {
+        #[cfg(any(test, feature = "test"))]
+        {
+          match message_dropper {
+            Some(dropper) => SerfDelegate::with_dropper(delegate, dropper),
+            None => SerfDelegate::new(delegate),
+          }
+        }
+        #[cfg(not(any(test, feature = "test")))]
+        {
+          SerfDelegate::new(delegate)
+        }
+      },
       transport,
       opts.memberlist_options.clone(),
     )
@@ -425,6 +463,20 @@ where
     Ok(())
   }
 
+  #[cfg(any(feature = "test", test))]
+  pub(crate) async fn get_queue_max(&self) -> usize {
+    let mut max = self.inner.opts.max_queue_depth;
+    if self.inner.opts.min_queue_depth > 0 {
+      let num_members = self.inner.members.read().await.states.len();
+      max = num_members * 2;
+
+      if max < self.inner.opts.min_queue_depth {
+        max = self.inner.opts.min_queue_depth;
+      }
+    }
+    max
+  }
+
   /// Forcibly removes a failed node from the cluster
   /// immediately, instead of waiting for the reaper to eventually reclaim it.
   /// This also has the effect that Serf will no longer attempt to reconnect
@@ -537,21 +589,24 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  fn spawn(self) {
-    <T::Runtime as RuntimeLite>::spawn_detach(async move {
-      loop {
-        futures::select! {
-          _ = <T::Runtime as RuntimeLite>::sleep(self.reap_interval).fuse() => {
-            let mut ms = self.members.write().await;
-            Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
-            Self::reap_left(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.tombstone_timeout).await;
-            reap_intents(&mut ms.recent_intents, self.recent_intent_timeout);
-          }
-          _ = self.shutdown_rx.recv().fuse() => {
-            return;
-          }
+  async fn run(self) {
+    loop {
+      futures::select! {
+        _ = <T::Runtime as RuntimeLite>::sleep(self.reap_interval).fuse() => {
+          let mut ms = self.members.write().await;
+          Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
+          Self::reap_left(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.tombstone_timeout).await;
+          reap_intents(&mut ms.recent_intents, Instant::now(), self.recent_intent_timeout);
+        }
+        _ = self.shutdown_rx.recv().fuse() => {
+          return;
         }
       }
+    }
+  }
+  fn spawn(self) {
+    <T::Runtime as RuntimeLite>::spawn_detach(async move {
+      self.run().await;
     });
   }
 
@@ -984,7 +1039,14 @@ where
   ) {
     let mut members = self.inner.members.write().await;
 
-    // TODO: message dropper?
+    #[cfg(any(test, feature = "test"))]
+    {
+      if let Some(ref dropper) = self.inner.memberlist.delegate().unwrap().message_dropper {
+        if dropper.should_drop(MessageType::Join) {
+          return;
+        }
+      }
+    }
 
     let node = n.node();
     let tags = match <D as TransformDelegate>::decode_tags(n.meta()) {
@@ -1046,11 +1108,11 @@ where
       // one will take effect.
       let mut status = MemberStatus::Alive;
       let mut status_ltime = LamportTime::new(0);
-      if let Some(t) = members.recent_intent(n.id(), MessageType::Join) {
+      if let Some(t) = recent_intent(&members.recent_intents, n.id(), MessageType::Join) {
         status_ltime = t;
       }
 
-      if let Some(t) = members.recent_intent(n.id(), MessageType::Leave) {
+      if let Some(t) = recent_intent(&members.recent_intents, n.id(), MessageType::Leave) {
         status_ltime = t;
         status = MemberStatus::Leaving;
       }
@@ -1578,11 +1640,22 @@ fn remove_old_member<I: Eq, A>(old: &mut OneOrMore<MemberState<I, A>>, id: &I) {
 /// Clears out any intents that are older than the timeout. Make sure
 /// the memberLock is held when passing in the Serf instance's recentIntents
 /// member.
-fn reap_intents<I>(intents: &mut HashMap<I, NodeIntent>, timeout: Duration) {
-  intents.retain(|_, intent| intent.wall_time.elapsed() <= timeout);
+fn reap_intents<I>(intents: &mut HashMap<I, NodeIntent>, now: Instant, timeout: Duration) {
+  intents.retain(|_, intent| (now - intent.wall_time) <= timeout);
 }
 
-pub(crate) fn upsert_intent<I>(
+fn recent_intent<I: core::hash::Hash + Eq>(
+  intents: &HashMap<I, NodeIntent>,
+  id: &I,
+  ty: MessageType,
+) -> Option<LamportTime> {
+  match intents.get(id) {
+    Some(intent) if intent.ty == ty => Some(intent.ltime),
+    _ => None,
+  }
+}
+
+fn upsert_intent<I>(
   intents: &mut HashMap<I, NodeIntent>,
   node: &I,
   t: MessageType,
