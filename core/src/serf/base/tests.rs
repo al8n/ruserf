@@ -30,8 +30,8 @@ pub use internals::*;
 mod query;
 pub use query::*;
 
-mod snapshot;
-pub use snapshot::*;
+// mod snapshot;
+// pub use snapshot::*;
 
 mod serf;
 pub use serf::*;

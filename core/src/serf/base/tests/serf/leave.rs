@@ -45,7 +45,7 @@ pub async fn serf_force_leave_failed<T>(
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
     let members = serfs[0].inner.members.read().await;
-    if test_member_status(members.states.clone(), s2id.clone(), MemberStatus::Failed).is_ok() {
+    if test_member_status(&members.states, s2id.clone(), MemberStatus::Failed).is_ok() {
       break;
     }
 
@@ -120,7 +120,7 @@ pub async fn serf_force_leave_leaving<T>(
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
     let members = serfs[0].inner.members.read().await;
-    if test_member_status(members.states.clone(), s2id.clone(), MemberStatus::Left).is_ok() {
+    if test_member_status(&members.states, s2id.clone(), MemberStatus::Left).is_ok() {
       break;
     }
 
@@ -188,7 +188,7 @@ pub async fn serf_force_leave_left<T>(
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
     let members = serfs[0].inner.members.read().await;
-    if test_member_status(members.states.clone(), s2id.clone(), MemberStatus::Left).is_ok() {
+    if test_member_status(&members.states, s2id.clone(), MemberStatus::Left).is_ok() {
       break;
     }
 

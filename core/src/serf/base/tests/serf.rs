@@ -7,19 +7,26 @@ use crate::types::MemberState;
 
 use super::*;
 
-/// Unit tests for the leave related functionalities
+/// Unit tests for the serf leave related functionalities
 pub mod leave;
-/// Unit tests for the reconnect related functionalities
+
+/// Unit tests for the serf join related functionalities
+pub mod join;
+
+/// Unit tests for the serf reconnect related functionalities
 pub mod reconnect;
 
-/// Unit tests for the remove related functionalities
+/// Unit tests for the serf remove related functionalities
 pub mod remove;
 
-/// Unit tests for reap related functionalities
+/// Unit tests for serf reap related functionalities
 pub mod reap;
 
+/// Unit tests for the serf snapshot related functionalities
+pub mod snapshot;
+
 fn test_member_status<I: Id, A>(
-  members: HashMap<I, MemberState<I, A>>,
+  members: &HashMap<I, MemberState<I, A>>,
   id: I,
   status: MemberStatus,
 ) -> Result<(), AnyError> {
@@ -160,13 +167,7 @@ where
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
     let members = serfs[0].inner.members.read().await;
-    if test_member_status(
-      members.states.clone(),
-      node.id().clone(),
-      MemberStatus::Left,
-    )
-    .is_ok()
-    {
+    if test_member_status(&members.states, node.id().clone(), MemberStatus::Left).is_ok() {
       break;
     }
 
@@ -314,39 +315,21 @@ pub async fn serf_events_leave_avoid_infinite_rebroadcast<T>(
 
     if !cond1 {
       let members = serfs[0].inner.members.read().await;
-      if test_member_status(
-        members.states.clone(),
-        node.id().clone(),
-        MemberStatus::Left,
-      )
-      .is_ok()
-      {
+      if test_member_status(&members.states, node.id().clone(), MemberStatus::Left).is_ok() {
         cond1 = true;
       }
     }
 
     if !cond2 {
       let members = serfs[1].inner.members.read().await;
-      if test_member_status(
-        members.states.clone(),
-        node.id().clone(),
-        MemberStatus::Left,
-      )
-      .is_ok()
-      {
+      if test_member_status(&members.states, node.id().clone(), MemberStatus::Left).is_ok() {
         cond2 = true;
       }
     }
 
     if !cond3 {
       let members = serfs[2].inner.members.read().await;
-      if test_member_status(
-        members.states.clone(),
-        node.id().clone(),
-        MemberStatus::Left,
-      )
-      .is_ok()
-      {
+      if test_member_status(&members.states, node.id().clone(), MemberStatus::Left).is_ok() {
         cond3 = true;
       }
     }
@@ -417,13 +400,7 @@ pub async fn serf_remove_failed_events_leave<T>(
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
     let members = serfs[0].inner.members.read().await;
-    if test_member_status(
-      members.states.clone(),
-      node.id().clone(),
-      MemberStatus::Left,
-    )
-    .is_ok()
-    {
+    if test_member_status(&members.states, node.id().clone(), MemberStatus::Left).is_ok() {
       break;
     }
 
@@ -642,38 +619,6 @@ pub async fn serf_get_queue_max<T>(
   assert_eq!(got, want);
 }
 
-/// Unit tests for the join leave
-pub async fn serf_join_leave<T>(transport_opts1: T::Options, transport_opts2: T::Options)
-where
-  T: Transport,
-{
-  let s1 = Serf::<T>::new(transport_opts1, test_config())
-    .await
-    .unwrap();
-  let reap_interval = s1.inner.opts.reap_interval();
-  let s2 = Serf::<T>::new(transport_opts2, test_config())
-    .await
-    .unwrap();
-
-  let serfs = [s1, s2];
-  wait_until_num_nodes(1, &serfs).await;
-
-  let node = serfs[1]
-    .inner
-    .memberlist
-    .advertise_node()
-    .map_address(MaybeResolvedAddress::resolved);
-  serfs[0].join(node.clone(), false).await.unwrap();
-
-  wait_until_num_nodes(2, &serfs).await;
-
-  serfs[1].leave().await.unwrap();
-
-  <T::Runtime as RuntimeLite>::sleep(reap_interval * 2).await;
-
-  wait_until_num_nodes(1, &serfs).await;
-}
-
 /// Unit tests for the update
 pub async fn serf_update<T>(transport_opts1: T::Options, transport_opts2: T::Options)
 where
@@ -841,6 +786,315 @@ where
   s1.shutdown().await.unwrap();
 
   assert_eq!(s1.state(), SerfState::Shutdown);
+}
+
+/// Unit tests for serf set tags
+pub async fn serf_set_tags<T>(transport_opts1: T::Options, transport_opts2: T::Options)
+where
+  T: Transport,
+{
+  let (event_tx, event_rx) = async_channel::bounded(4);
+  let s1 = Serf::<T>::with_event_sender(transport_opts1, test_config(), event_tx)
+    .await
+    .unwrap();
+  let s2 = Serf::<T>::new(transport_opts2, test_config())
+    .await
+    .unwrap();
+
+  let serfs = [s1, s2];
+
+  wait_until_num_nodes(1, &serfs).await;
+
+  let node = serfs[1]
+    .inner
+    .memberlist
+    .advertise_node()
+    .map_address(MaybeResolvedAddress::resolved);
+  serfs[0].join(node.clone(), false).await.unwrap();
+
+  wait_until_num_nodes(2, &serfs).await;
+
+  // Update the tags
+  serfs[0]
+    .set_tags([("port", "8080")].into_iter().collect())
+    .await
+    .unwrap();
+
+  serfs[1]
+    .set_tags([("datacenter", "east-aws")].into_iter().collect())
+    .await
+    .unwrap();
+
+  let start = Instant::now();
+  let mut cond1 = false;
+  let mut cond2 = false;
+  let mut cond3 = false;
+  let mut cond4 = false;
+
+  loop {
+    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
+
+    let m1m = serfs[0].members().await;
+    let mut m1m_tags = HashMap::with_capacity(2);
+    for m in m1m {
+      m1m_tags.insert(m.node.id().clone(), m.tags.clone());
+    }
+
+    if m1m_tags.get(node.id()).map(|t| t.get("port")) == Some(Some(&"8080".into())) {
+      cond1 = true;
+    }
+
+    if m1m_tags.get(serfs[0].local_id()).map(|t| t.get("port")) == Some(Some(&"8080".into())) {
+      cond2 = true;
+    }
+
+    let m2m = serfs[1].members().await;
+    let mut m2m_tags = HashMap::with_capacity(2);
+    for m in m2m {
+      m2m_tags.insert(m.node.id().clone(), m.tags.clone());
+    }
+
+    if m2m_tags.get(node.id()).map(|t| t.get("datacenter")) == Some(Some(&"east-aws".into())) {
+      cond3 = true;
+    }
+
+    if m2m_tags
+      .get(serfs[1].local_id())
+      .map(|t| t.get("datacenter"))
+      == Some(Some(&"east-aws".into()))
+    {
+      cond4 = true;
+    }
+
+    if cond1 && cond2 && cond3 && cond4 {
+      break;
+    }
+
+    if start.elapsed() > Duration::from_secs(7) {
+      panic!("timed out");
+    }
+  }
+
+  // we check the events to make sure we got failures.
+  test_events(
+    event_rx,
+    node.id().clone(),
+    [
+      EventType::Member(MemberEventType::Join),
+      EventType::Member(MemberEventType::Update),
+    ]
+    .into_iter()
+    .collect(),
+  )
+  .await;
+
+  for s in serfs.iter() {
+    s.shutdown().await.unwrap();
+  }
+}
+
+/// Unit tests for serf num nodes
+pub async fn serf_num_nodes<T>(transport_opts1: T::Options, transport_opts2: T::Options)
+where
+  T: Transport,
+{
+  let s1 = Serf::<T>::new(transport_opts1, test_config())
+    .await
+    .unwrap();
+  let s2 = Serf::<T>::new(transport_opts2, test_config())
+    .await
+    .unwrap();
+
+  assert_eq!(s1.num_nodes().await, 1);
+
+  let serfs = [s1, s2];
+  wait_until_num_nodes(1, &serfs).await;
+
+  let node = serfs[1]
+    .inner
+    .memberlist
+    .advertise_node()
+    .map_address(MaybeResolvedAddress::resolved);
+  serfs[0].join(node.clone(), false).await.unwrap();
+
+  wait_until_num_nodes(2, &serfs).await;
+}
+
+/// Unit tests for serf coordinates
+pub async fn serf_coordinates<T>(
+  transport_opts1: T::Options,
+  transport_opts2: T::Options,
+  transport_opts3: T::Options,
+) where
+  T: Transport,
+{
+  const PROBE_INTERVAL: Duration = Duration::from_millis(2);
+
+  let opts = test_config()
+    .with_disable_coordinates(false)
+    .with_memberlist_options(memberlist_core::Options::lan().with_probe_interval(PROBE_INTERVAL));
+  let s1 = Serf::<T>::new(transport_opts1, opts.clone()).await.unwrap();
+  let s2 = Serf::<T>::new(transport_opts2, opts).await.unwrap();
+
+  let mut serfs = [s1, s2];
+  wait_until_num_nodes(1, &serfs).await;
+
+  // Make sure both nodes start out the origin so we can prove they did
+  // an update later.
+  let c1 = serfs[0].cooridate().unwrap();
+  let c2 = serfs[1].cooridate().unwrap();
+
+  const ZERO_THRESHOLD: f64 = 20.0e-6;
+
+  assert!(
+    c1.distance_to(&c2).as_secs_f64() <= ZERO_THRESHOLD,
+    "coordinates didn't start at the origin"
+  );
+
+  // Join the two nodes together and give them time to probe each other.
+  let node = serfs[1]
+    .inner
+    .memberlist
+    .advertise_node()
+    .map_address(MaybeResolvedAddress::resolved);
+  serfs[0].join(node.clone(), false).await.unwrap();
+
+  wait_until_num_nodes(2, &serfs).await;
+
+  let start = Instant::now();
+  let mut cond1 = false;
+  let mut cond2 = false;
+  let mut cond3 = false;
+  let mut cond4 = false;
+  let s2id = serfs[1].local_id().clone();
+  let s1id = serfs[0].local_id().clone();
+  loop {
+    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
+
+    // See if they know about each other.
+
+    if serfs[0].cached_coordinate(&s2id.clone()).is_ok() {
+      cond1 = true;
+    } else if start.elapsed() > Duration::from_secs(7) {
+      panic!("s1 didn't get a coordinate for s2");
+    }
+
+    if serfs[1].cached_coordinate(&s1id.clone()).is_ok() {
+      cond2 = true;
+    } else if start.elapsed() > Duration::from_secs(7) {
+      panic!("s2 didn't get a coordinate for s1");
+    }
+
+    // With only one ping they won't have a good estimate of the other node's
+    // coordinate, but they should both have updated their own coordinate.
+    let c1 = serfs[0].cooridate().unwrap();
+    let c2 = serfs[1].cooridate().unwrap();
+
+    if c1.distance_to(&c2).as_secs_f64() >= ZERO_THRESHOLD {
+      cond3 = true;
+    } else if start.elapsed() > Duration::from_secs(7) {
+      panic!("coordinates didn't update after probes");
+    }
+
+    // Make sure they cached their own current coordinate after the update.
+    let c1c = serfs[0].cached_coordinate(&s1id.clone()).unwrap();
+    match c1c {
+      None => {
+        if start.elapsed() > Duration::from_secs(7) {
+          panic!("s1 didn't cache its own coordinate");
+        }
+      }
+      Some(c1c) => {
+        if c1 == c1c {
+          cond4 = true;
+        } else if start.elapsed() > Duration::from_secs(7) {
+          panic!("s1 coordinates are not equal");
+        }
+      }
+    }
+
+    if cond1 && cond2 && cond3 && cond4 {
+      break;
+    }
+
+    if start.elapsed() > Duration::from_secs(7) {
+      panic!("timed out");
+    }
+  }
+
+  // Break up the cluster and make sure the coordinates get removed by
+  // the reaper.
+  serfs[1].shutdown().await.unwrap();
+
+  <T::Runtime as RuntimeLite>::sleep(serfs[1].inner.opts.reap_interval * 2).await;
+
+  wait_until_num_nodes(1, &serfs[..1]).await;
+
+  let start = Instant::now();
+  loop {
+    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
+
+    if serfs[0].cached_coordinate(&s2id.clone()).is_err() {
+      break;
+    }
+
+    if start.elapsed() > Duration::from_secs(7) {
+      panic!("s1 should have removed s2's cached coordinate");
+    }
+  }
+
+  // Try a setup with coordinates disabled.
+  let s3 = Serf::<T>::new(
+    transport_opts3,
+    test_config()
+      .with_disable_coordinates(true)
+      .with_memberlist_options(memberlist_core::Options::lan().with_probe_interval(PROBE_INTERVAL)),
+  )
+  .await
+  .unwrap();
+
+  serfs[1] = s3;
+  wait_until_num_nodes(1, &serfs).await;
+
+  let node = serfs[0]
+    .inner
+    .memberlist
+    .advertise_node()
+    .map_address(MaybeResolvedAddress::resolved);
+  serfs[1].join(node.clone(), false).await.unwrap();
+
+  wait_until_num_nodes(2, &serfs).await;
+
+  let start = Instant::now();
+  let mut cond1 = false;
+  let mut cond2 = false;
+  loop {
+    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
+
+    // See if they know about each other.
+
+    if let Err(e) = serfs[1].cooridate() {
+      if e.to_string().contains("coordinates are disabled") {
+        cond1 = true;
+      }
+    }
+
+    if serfs[1].cached_coordinate(&s1id.clone()).is_err() {
+      cond2 = true;
+    }
+
+    if cond1 && cond2 {
+      break;
+    }
+
+    if start.elapsed() > Duration::from_secs(7) {
+      panic!("timed out");
+    }
+  }
+
+  for s in serfs.iter() {
+    s.shutdown().await.unwrap();
+  }
 }
 
 #[test]

@@ -6,7 +6,7 @@ use memberlist_core::{
   bytes::{BufMut, Bytes, BytesMut},
   tracing,
   transport::{MaybeResolvedAddress, Node},
-  types::{Meta, SmallVec},
+  types::{Meta, OneOrMore, SmallVec},
   CheapClone,
 };
 use smol_str::SmolStr;
@@ -138,8 +138,18 @@ where
 
   /// Returns a point-in-time snapshot of the members of this cluster.
   #[inline]
-  pub async fn num_members(&self) -> usize {
-    self.inner.members.read().await.states.len()
+  pub async fn members(
+    &self,
+  ) -> OneOrMore<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>> {
+    self
+      .inner
+      .members
+      .read()
+      .await
+      .states
+      .values()
+      .map(|s| s.member.cheap_clone())
+      .collect()
   }
 
   /// Used to provide operator debugging information
