@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use memberlist_core::{tests::AnyError, transport::Id};
-use ruserf_types::{Member, MemberStatus};
+use ruserf_types::{Member, MemberStatus, Tags};
 
 use crate::types::MemberState;
 
@@ -12,6 +12,9 @@ pub mod leave;
 
 /// Unit tests for the serf join related functionalities
 pub mod join;
+
+/// Unit tests for the serf ping delegate related functionalities
+pub mod ping_delegate;
 
 /// Unit tests for the serf reconnect related functionalities
 pub mod reconnect;
@@ -1095,6 +1098,130 @@ pub async fn serf_coordinates<T>(
   for s in serfs.iter() {
     s.shutdown().await.unwrap();
   }
+}
+
+/// Unit tests for serf name resolution
+///
+/// set_id is a function that takes the transport options and the id of the node, and returns the
+/// transport options with the id set to the given id.
+pub async fn serf_name_resolution<T>(
+  transport_opts1: T::Options,
+  transport_opts2: T::Options,
+  transport_opts3: T::Options,
+  set_id: impl FnOnce(T::Options, T::Id) -> T::Options,
+) where
+  T: Transport,
+{
+  let s1 = Serf::<T>::new(transport_opts1, test_config())
+    .await
+    .unwrap();
+  let s2 = Serf::<T>::new(transport_opts2, test_config())
+    .await
+    .unwrap();
+  let s3 = Serf::<T>::new(
+    set_id(transport_opts3, s1.local_id().clone()),
+    test_config(),
+  )
+  .await
+  .unwrap();
+
+  let serfs = [s1, s2, s3];
+  wait_until_num_nodes(1, &serfs).await;
+
+  // Join s1 to s2 first. s2 should vote for s1 in conflict
+  let node = serfs[1]
+    .inner
+    .memberlist
+    .advertise_node()
+    .map_address(MaybeResolvedAddress::resolved);
+  serfs[0].join(node.clone(), false).await.unwrap();
+
+  wait_until_num_nodes(2, &serfs[..2]).await;
+  wait_until_num_nodes(1, &serfs[2..]).await;
+
+  let node = serfs[2]
+    .inner
+    .memberlist
+    .advertise_node()
+    .map_address(MaybeResolvedAddress::resolved);
+  serfs[0].join(node.clone(), false).await.unwrap();
+
+  // Wait for the query period to end
+  <T::Runtime as RuntimeLite>::sleep(serfs[0].default_query_timeout().await * 2).await;
+
+  let start = Instant::now();
+  let mut cond1 = false;
+  let mut cond2 = false;
+  let mut cond3 = false;
+  loop {
+    // s3 should have shutdown, while s1 is running
+    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
+
+    if serfs[0].state() == SerfState::Alive {
+      cond1 = true;
+    }
+
+    if serfs[1].state() == SerfState::Alive {
+      cond2 = true;
+    }
+
+    if serfs[2].state() == SerfState::Shutdown {
+      cond3 = true;
+    }
+
+    if cond1 && cond2 && cond3 {
+      break;
+    }
+
+    if start.elapsed() > Duration::from_secs(7) {
+      panic!("timed out");
+    }
+  }
+
+  for s in serfs.iter() {
+    s.shutdown().await.unwrap();
+  }
+}
+
+/// Unit test for serf local member
+pub async fn serf_local_member<T>(opts: T::Options)
+where
+  T: Transport,
+{
+  let s = Serf::<T>::new(opts, test_config()).await.unwrap();
+
+  let local = s.local_member().await;
+  assert_eq!(local.node.id(), s.local_id());
+
+  assert_eq!(local.tags, s.inner.opts.tags());
+  assert_eq!(local.status, MemberStatus::Alive);
+
+  let new_tags = [("foo", "bar"), ("test", "ing")]
+    .into_iter()
+    .collect::<Tags>();
+  s.set_tags(new_tags.clone()).await.unwrap();
+
+  let local = s.local_member().await;
+  assert_eq!(&*local.tags, &new_tags);
+}
+
+/// Unit test for serf stats
+pub async fn serf_stats<T>(opts: T::Options)
+where
+  T: Transport,
+{
+  let s = Serf::<T>::new(opts, test_config()).await.unwrap();
+
+  let stats = s.stats().await;
+  assert_eq!(stats.get_event_queue(), 0);
+  assert_eq!(stats.get_event_time(), 1);
+  assert_eq!(stats.get_failed(), 0);
+  assert_eq!(stats.get_intent_queue(), 0);
+  assert_eq!(stats.get_left(), 0);
+  assert_eq!(stats.get_health_score(), 0);
+  assert_eq!(stats.get_member_time(), 1);
+  assert_eq!(stats.get_members(), 1);
+  assert!(!stats.get_encrypted());
 }
 
 #[test]

@@ -224,11 +224,7 @@ where
       return Err(Error::TagsTooLarge(tags_encoded_len));
     }
     // update the config
-    if !tags.is_empty() {
-      self.inner.opts.tags.store(Some(Arc::new(tags)));
-    } else {
-      self.inner.opts.tags.store(None);
-    }
+    self.inner.opts.tags.store(Arc::new(tags));
 
     // trigger a memberlist update
     self

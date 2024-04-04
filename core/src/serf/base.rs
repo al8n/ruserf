@@ -71,10 +71,13 @@ where
     }
 
     // Check that the meta data length is okay
-    if let Some(tags) = opts.tags.load().as_ref() {
-      let len = <D as TransformDelegate>::tags_encoded_len(tags);
-      if len > Meta::MAX_SIZE {
-        return Err(Error::TagsTooLarge(len));
+    {
+      let tags = opts.tags.load();
+      if !tags.as_ref().is_empty() {
+        let len = <D as TransformDelegate>::tags_encoded_len(&tags);
+        if len > Meta::MAX_SIZE {
+          return Err(Error::TagsTooLarge(len));
+        }
       }
     }
 

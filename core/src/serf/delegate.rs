@@ -44,6 +44,11 @@ where
   delegate: Option<D>,
   #[cfg(any(test, feature = "test"))]
   pub(crate) message_dropper: Option<Box<dyn MessageDropper>>,
+  /// Only used for testing purposes
+  #[cfg(any(test, feature = "test"))]
+  pub(crate) ping_versioning_test: core::sync::atomic::AtomicBool,
+  #[cfg(any(test, feature = "test"))]
+  pub(crate) ping_dimension_test: core::sync::atomic::AtomicBool,
 }
 
 impl<D, T> SerfDelegate<T, D>
@@ -57,6 +62,10 @@ where
       delegate: d,
       #[cfg(any(test, feature = "test"))]
       message_dropper: None,
+      #[cfg(any(test, feature = "test"))]
+      ping_versioning_test: core::sync::atomic::AtomicBool::new(false),
+      #[cfg(any(test, feature = "test"))]
+      ping_dimension_test: core::sync::atomic::AtomicBool::new(false),
     }
   }
 
@@ -67,6 +76,10 @@ where
       delegate: d,
       #[cfg(any(test, feature = "test"))]
       message_dropper: Some(dropper),
+      #[cfg(any(test, feature = "test"))]
+      ping_versioning_test: core::sync::atomic::AtomicBool::new(false),
+      #[cfg(any(test, feature = "test"))]
+      ping_dimension_test: core::sync::atomic::AtomicBool::new(false),
     }
   }
 
@@ -90,8 +103,9 @@ where
   T: Transport,
 {
   async fn node_meta(&self, limit: usize) -> Meta {
-    match self.this().inner.opts.tags() {
-      Some(tags) => {
+    let tags = self.this().inner.opts.tags();
+    match tags.is_empty() {
+      false => {
         let encoded_len = <D as TransformDelegate>::tags_encoded_len(&tags);
         let limit = limit.min(Meta::MAX_SIZE);
         if encoded_len > limit {
@@ -125,7 +139,7 @@ where
           }
         }
       }
-      None => Meta::empty(),
+      true => Meta::empty(),
     }
   }
 
@@ -621,6 +635,35 @@ where
   type Address = <T::Resolver as AddressResolver>::ResolvedAddress;
 
   async fn ack_payload(&self) -> Bytes {
+    #[cfg(any(feature = "test", test))]
+    if self.ping_versioning_test.load(Ordering::SeqCst) {
+      // Send back the next ping version, which is bad by default.
+      let mut buf = BytesMut::new();
+      buf.put_u8(PING_VERSION + 1);
+      buf.put_slice(b"this is bad and not a real message");
+      return buf.freeze();
+    }
+
+    #[cfg(any(feature = "test", test))]
+    if self.ping_dimension_test.load(Ordering::SeqCst) {
+      let mut buf = BytesMut::new();
+      buf.put_u8(PING_VERSION);
+
+      // Make a bad coordinate with the wrong number of dimensions.
+      let coord = crate::coordinate::Coordinate::with_options(
+        crate::coordinate::CoordinateOptions::new()
+          .with_dimensionality(crate::coordinate::CoordinateOptions::new().dimensionality() * 2),
+      );
+
+      // The rest of the message is the serialized coordinate.
+      let len = <D as TransformDelegate>::cooradinate_encoded_len(&coord);
+      buf.resize(len + 1, 0);
+      if let Err(e) = <D as TransformDelegate>::encode_coordinate(&coord, &mut buf[1..]) {
+        panic!("failed to encode coordinate: {}", e);
+      }
+      return buf.freeze();
+    }
+
     if let Some(c) = self.this().inner.coord_core.as_ref() {
       let mut buf = Vec::new();
       buf.put_u8(PING_VERSION);

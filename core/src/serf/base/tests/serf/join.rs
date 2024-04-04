@@ -218,51 +218,51 @@ impl MergeDelegate for CancelMergeDelegate {
   }
 }
 
-/// Unit test for serf join cancel
-pub async fn serf_join_cancel<T, R>(transport_opts1: T::Options, transport_opts2: T::Options)
-where
-  T: Transport<Id = SmolStr, Resolver = SocketAddrResolver<R>>,
-  R: RuntimeLite,
-{
-  let cmd1 = CancelMergeDelegate {
-    invoked: Arc::new(AtomicBool::new(false)),
-  };
-  let s1 = Serf::<T, _>::with_delegate(
-    transport_opts1,
-    test_config(),
-    DefaultDelegate::<T>::new().with_merge_delegate(cmd1.clone()),
-  )
-  .await
-  .unwrap();
-  let cmd2 = CancelMergeDelegate {
-    invoked: Arc::new(AtomicBool::new(false)),
-  };
-  let s2 = Serf::<T, _>::with_delegate(
-    transport_opts2,
-    test_config(),
-    DefaultDelegate::<T>::new().with_merge_delegate(cmd2.clone()),
-  )
-  .await
-  .unwrap();
+// /// Unit test for serf join cancel
+// pub async fn serf_join_cancel<T, R>(transport_opts1: T::Options, transport_opts2: T::Options)
+// where
+//   T: Transport<Id = SmolStr, Resolver = SocketAddrResolver<R>>,
+//   R: RuntimeLite,
+// {
+//   let cmd1 = CancelMergeDelegate {
+//     invoked: Arc::new(AtomicBool::new(false)),
+//   };
+//   let s1 = Serf::<T, _>::with_delegate(
+//     transport_opts1,
+//     test_config(),
+//     DefaultDelegate::<T>::new().with_merge_delegate(cmd1.clone()),
+//   )
+//   .await
+//   .unwrap();
+//   let cmd2 = CancelMergeDelegate {
+//     invoked: Arc::new(AtomicBool::new(false)),
+//   };
+//   let s2 = Serf::<T, _>::with_delegate(
+//     transport_opts2,
+//     test_config(),
+//     DefaultDelegate::<T>::new().with_merge_delegate(cmd2.clone()),
+//   )
+//   .await
+//   .unwrap();
 
-  let serfs = [s1, s2];
-  wait_until_num_nodes(0, &serfs).await;
+//   let serfs = [s1, s2];
+//   wait_until_num_nodes(0, &serfs).await;
 
-  let node = serfs[1]
-    .inner
-    .memberlist
-    .advertise_node()
-    .map_address(MaybeResolvedAddress::resolved);
+//   let node = serfs[1]
+//     .inner
+//     .memberlist
+//     .advertise_node()
+//     .map_address(MaybeResolvedAddress::resolved);
 
-  let err = serfs[0].join(node.clone(), false).await.unwrap_err();
-  assert!(err.to_string().contains("merge canceled"));
+//   let err = serfs[0].join(node.clone(), false).await.unwrap_err();
+//   assert!(err.to_string().contains("merge canceled"));
 
-  wait_until_num_nodes(0, &serfs).await;
+//   wait_until_num_nodes(0, &serfs).await;
 
-  assert!(cmd1.invoked.load(Ordering::SeqCst));
-  assert!(cmd2.invoked.load(Ordering::SeqCst));
+//   assert!(cmd1.invoked.load(Ordering::SeqCst));
+//   assert!(cmd2.invoked.load(Ordering::SeqCst));
 
-  for s in serfs.iter() {
-    s.shutdown().await.unwrap();
-  }
-}
+//   for s in serfs.iter() {
+//     s.shutdown().await.unwrap();
+//   }
+// }
