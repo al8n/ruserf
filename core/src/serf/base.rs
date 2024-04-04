@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures::{FutureExt, StreamExt};
 use memberlist_core::{
@@ -21,7 +21,7 @@ use crate::{
   event::{InternalQueryEvent, MemberEvent, MemberEventType, QueryContext, QueryEvent},
   snapshot::{open_and_replay_snapshot, Snapshot},
   types::{
-    DelegateVersion, JoinMessage, LeaveMessage, Member, MemberState, MemberStatus,
+    DelegateVersion, Epoch, JoinMessage, LeaveMessage, Member, MemberState, MemberStatus,
     MemberlistDelegateVersion, MemberlistProtocolVersion, MessageType, NodeIntent, ProtocolVersion,
     QueryFlag, QueryMessage, QueryResponseMessage, SerfMessage, UserEvent, UserEventMessage,
   },
@@ -60,7 +60,7 @@ where
   }
 
   pub(crate) async fn new_in(
-    ev: Option<async_channel::Sender<Event<T, D>>>,
+    ev: Option<async_channel::Sender<CrateEvent<T, D>>>,
     delegate: Option<D>,
     transport: T::Options,
     opts: Options,
@@ -518,7 +518,7 @@ where
   coord_core: Option<Arc<CoordCore<T::Id>>>,
   memberlist: Memberlist<T, SerfDelegate<T, D>>,
   members: Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
-  event_tx: Option<async_channel::Sender<Event<T, D>>>,
+  event_tx: Option<async_channel::Sender<CrateEvent<T, D>>>,
   shutdown_rx: async_channel::Receiver<()>,
   reap_interval: Duration,
   reconnect_timeout: Duration,
@@ -541,9 +541,9 @@ macro_rules! erase_node {
     // Send out event
     if let Some(tx) = $tx {
       let _ = tx
-        .send(Event::from(MemberEvent {
+        .send(CrateEvent::from(MemberEvent {
           ty: MemberEventType::Reap,
-          members: TinyVec::from($m.member.clone()),
+          members: Arc::new(TinyVec::from($m.member.clone())),
         }))
         .await;
     }
@@ -596,7 +596,7 @@ where
           let mut ms = self.members.write().await;
           Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
           Self::reap_left(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.tombstone_timeout).await;
-          reap_intents(&mut ms.recent_intents, Instant::now(), self.recent_intent_timeout);
+          reap_intents(&mut ms.recent_intents, Epoch::now(), self.recent_intent_timeout);
         }
         _ = self.shutdown_rx.recv().fuse() => {
           return;
@@ -612,7 +612,7 @@ where
 
   async fn reap_failed(
     old: &mut Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-    event_tx: Option<&async_channel::Sender<Event<T, D>>>,
+    event_tx: Option<&async_channel::Sender<CrateEvent<T, D>>>,
     reconnector: Option<&D>,
     coord: Option<&CoordCore<T::Id>>,
     timeout: Duration,
@@ -622,7 +622,7 @@ where
 
   async fn reap_left(
     old: &mut Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-    event_tx: Option<&async_channel::Sender<Event<T, D>>>,
+    event_tx: Option<&async_channel::Sender<CrateEvent<T, D>>>,
     reconnector: Option<&D>,
     coord: Option<&CoordCore<T::Id>>,
     timeout: Duration,
@@ -841,7 +841,7 @@ where
       payload: q.payload,
       ctx: Arc::new(QueryContext {
         query_timeout: q.timeout,
-        span: Mutex::new(Some(Instant::now())),
+        span: Mutex::new(Some(Epoch::now())),
         this: self.clone(),
       }),
       id: q.id,
@@ -1096,7 +1096,7 @@ where
           tx.send(
             MemberEvent {
               ty: MemberEventType::Join,
-              members: TinyVec::from(member.member.clone()),
+              members: Arc::new(TinyVec::from(member.member.clone())),
             }
             .into(),
           )
@@ -1138,7 +1138,7 @@ where
           tx.send(
             MemberEvent {
               ty: MemberEventType::Join,
-              members: TinyVec::from(member),
+              members: Arc::new(TinyVec::from(member)),
             }
             .into(),
           )
@@ -1200,7 +1200,7 @@ where
           join_msg.id(),
           MessageType::Join,
           join_msg.ltime,
-          Instant::now,
+          Epoch::now,
         )
       }
     }
@@ -1222,7 +1222,7 @@ where
         member_state.member.status = MemberStatus::Left;
 
         ms = MemberStatus::Left;
-        member_state.leave_time = Some(Instant::now());
+        member_state.leave_time = Some(Epoch::now());
         let member_state = member_state.clone();
         let member = member_state.member.clone();
         members.left_members.push(member_state);
@@ -1231,7 +1231,7 @@ where
       MemberStatus::Alive => {
         member_state.member.status = MemberStatus::Failed;
         ms = MemberStatus::Failed;
-        member_state.leave_time = Some(Instant::now());
+        member_state.leave_time = Some(Epoch::now());
         let member_state = member_state.clone();
         let member = member_state.member.clone();
         members.failed_members.push(member_state);
@@ -1265,7 +1265,7 @@ where
         .send(
           MemberEvent {
             ty,
-            members: TinyVec::from(member),
+            members: Arc::new(TinyVec::from(member)),
           }
           .into(),
         )
@@ -1290,7 +1290,7 @@ where
         msg.id(),
         MessageType::Leave,
         msg.ltime,
-        Instant::now,
+        Epoch::now,
       );
     }
 
@@ -1373,7 +1373,7 @@ where
             .send(
               MemberEvent {
                 ty: MemberEventType::Leave,
-                members: TinyVec::from(owned.member.clone()),
+                members: Arc::new(TinyVec::from(owned.member.clone())),
               }
               .into(),
             )
@@ -1435,7 +1435,7 @@ where
           .send(
             MemberEvent {
               ty: MemberEventType::Update,
-              members: TinyVec::from(ms.member.clone()),
+              members: Arc::new(TinyVec::from(ms.member.clone())),
             }
             .into(),
           )
@@ -1640,7 +1640,7 @@ fn remove_old_member<I: Eq, A>(old: &mut OneOrMore<MemberState<I, A>>, id: &I) {
 /// Clears out any intents that are older than the timeout. Make sure
 /// the memberLock is held when passing in the Serf instance's recentIntents
 /// member.
-fn reap_intents<I>(intents: &mut HashMap<I, NodeIntent>, now: Instant, timeout: Duration) {
+fn reap_intents<I>(intents: &mut HashMap<I, NodeIntent>, now: Epoch, timeout: Duration) {
   intents.retain(|_, intent| (now - intent.wall_time) <= timeout);
 }
 
@@ -1660,7 +1660,7 @@ fn upsert_intent<I>(
   node: &I,
   t: MessageType,
   ltime: LamportTime,
-  stamper: impl FnOnce() -> Instant,
+  stamper: impl FnOnce() -> Epoch,
 ) -> bool
 where
   I: CheapClone + Eq + core::hash::Hash,

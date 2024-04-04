@@ -58,7 +58,8 @@ pub async fn snapshoter<T>(
       Node::new("foo".into(), addr.clone()),
       Default::default(),
       MemberStatus::None,
-    )),
+    ))
+    .into(),
   };
 
   let mefail = MemberEvent {
@@ -67,7 +68,8 @@ pub async fn snapshoter<T>(
       Node::new("foo".into(), addr.clone()),
       Default::default(),
       MemberStatus::None,
-    )),
+    ))
+    .into(),
   };
 
   event_tx.send(mejoin.clone().into()).await.unwrap();
@@ -78,9 +80,9 @@ pub async fn snapshoter<T>(
   futures::select! {
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
-      match e.kind() {
-        EventKind::User(e) => {
-          assert_eq!(e, &ue);
+      match e {
+        CrateEvent::User(e) => {
+          assert_eq!(e, ue);
         },
         _ => panic!("expected user event"),
       }
@@ -93,9 +95,9 @@ pub async fn snapshoter<T>(
   futures::select! {
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
-      match e.kind() {
-        EventKind::Query(e) => {
-          if qe.ne(e) {
+      match e {
+        CrateEvent::Query(e) => {
+          if qe.ne(&e) {
             panic!("expected query event mismatch");
           }
         },
@@ -110,9 +112,9 @@ pub async fn snapshoter<T>(
   futures::select! {
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
-      match e.kind() {
-        EventKind::Member(e) => {
-          assert_eq!(e, &mejoin);
+      match e {
+        CrateEvent::Member(e) => {
+          assert_eq!(e, mejoin);
         },
         _ => panic!("expected member event"),
       }
@@ -125,9 +127,9 @@ pub async fn snapshoter<T>(
   futures::select! {
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
-      match e.kind() {
-        EventKind::Member(e) => {
-          assert_eq!(e, &mefail);
+      match e {
+        CrateEvent::Member(e) => {
+          assert_eq!(e, mefail);
         },
         _ => panic!("expected member event"),
       }
@@ -140,9 +142,9 @@ pub async fn snapshoter<T>(
   futures::select! {
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
-      match e.kind() {
-        EventKind::Member(e) => {
-          assert_eq!(e, &mejoin);
+      match e {
+        CrateEvent::Member(e) => {
+          assert_eq!(e, mejoin);
         },
         _ => panic!("expected member event"),
       }
@@ -332,7 +334,8 @@ pub async fn snapshoter_leave<T>(
       Node::new("foo".into(), addr.clone()),
       Default::default(),
       MemberStatus::None,
-    )),
+    ))
+    .into(),
   };
   event_tx.send(mejoin.clone().into()).await.unwrap();
 
@@ -426,7 +429,8 @@ pub async fn snapshoter_leave_rejoin<T>(
       Node::new("foo".into(), addr.clone()),
       Default::default(),
       MemberStatus::None,
-    )),
+    ))
+    .into(),
   };
   event_tx.send(mejoin.clone().into()).await.unwrap();
 
@@ -524,8 +528,8 @@ where
   }
 
   // Listen for events
-  let (event_tx, event_rx) = async_channel::bounded(4);
-  let s2 = Serf::<T>::with_event_sender(
+  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let s2 = Serf::<T>::with_event_producer(
     transport_opts2,
     test_config().with_snapshot_path(Some(snap_path.clone())),
     event_tx,
@@ -534,7 +538,7 @@ where
   .unwrap();
 
   // Wait for the node to auto rejoin
-  let start = Instant::now();
+  let start = Epoch::now();
   while start.elapsed() < Duration::from_secs(1) {
     let members = serfs[0].members().await;
     if members.len() == 2
@@ -561,7 +565,7 @@ where
   }
 
   // Check the events to make sure we got nothing
-  test_user_events(event_rx, vec![], vec![]).await;
+  test_user_events(event_rx.rx, vec![], vec![]).await;
 
   for s in serfs.iter() {
     s.shutdown().await.unwrap();
@@ -615,7 +619,7 @@ pub async fn serf_leave_snapshot_recovery<T>(
 
   let s2id = serfs[1].local_id().clone();
 
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
@@ -643,7 +647,7 @@ pub async fn serf_leave_snapshot_recovery<T>(
   // Wait for the node to auto rejoin
 
   // Verify that s2 did not join
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
     let num = serfs[1].num_nodes().await;
@@ -723,7 +727,8 @@ async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
           ),
           Default::default(),
           MemberStatus::None,
-        )),
+        ))
+        .into(),
       };
 
       if i % 10 == 0 {
@@ -749,10 +754,10 @@ async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
   // 115ms on my machine so this should give plenty of headroom for slower CI
   // environments while still being low enough that actual disk IO would
   // reliably blow it.
-  let deadline = TokioRuntime::sleep_until(Instant::now() + Duration::from_millis(500));
+  let deadline = TokioRuntime::sleep_until(std::time::Instant::now() + Duration::from_millis(500));
   futures::pin_mut!(deadline);
   let mut num_recvd = 0;
-  let start = Instant::now();
+  let start = Epoch::now();
 
   while num_recvd < num_events {
     futures::select! {
@@ -826,7 +831,8 @@ async fn test_snapshoter_slow_disk_not_blocking_memberlist() {
         ),
         Default::default(),
         MemberStatus::None,
-      )),
+      ))
+      .into(),
     };
 
     if i % 10 == 0 {

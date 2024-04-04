@@ -40,7 +40,7 @@ pub async fn serf_force_leave_failed<T>(
 
   let s2id = serfs[1].local_id().clone();
 
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
@@ -115,7 +115,7 @@ pub async fn serf_force_leave_leaving<T>(
 
   let s2id = serfs[1].local_id().clone();
 
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
@@ -183,7 +183,7 @@ pub async fn serf_force_leave_left<T>(
 
   let s2id = serfs[1].local_id().clone();
 
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
@@ -252,7 +252,7 @@ pub async fn serf_leave_rejoin_different_role<T>(
 
   wait_until_num_nodes(2, &serfs).await;
 
-  let start = Instant::now();
+  let start = Epoch::now();
   let s3id = serfs[1].local_id().clone();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;

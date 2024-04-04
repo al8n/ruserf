@@ -227,7 +227,7 @@ pub async fn serf_ping_delegate_versioning<T>(
   // in the cache, since s1 spoke an alien ping protocol.
   wait_until_num_nodes(2, &serfs).await;
 
-  let start = Instant::now();
+  let start = Epoch::now();
   let mut cond1 = false;
   let mut cond2 = false;
   let s1id = serfs[0].local_id().clone();
@@ -309,7 +309,7 @@ pub async fn serf_ping_delegate_rogue_coordinate<T>(
   // in the cache, since s1 spoke an alien ping protocol.
   wait_until_num_nodes(2, &serfs).await;
 
-  let start = Instant::now();
+  let start = Epoch::now();
   let mut cond1 = false;
   let mut cond2 = false;
   let s1id = serfs[0].local_id().clone();

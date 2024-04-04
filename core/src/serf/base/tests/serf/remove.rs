@@ -42,7 +42,7 @@ pub async fn serf_remove_failed_node<T>(
 
   let s2id = serfs[1].local_id().clone();
 
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
@@ -61,7 +61,7 @@ pub async fn serf_remove_failed_node<T>(
 
   serfs.swap(1, 2);
 
-  let start = Instant::now();
+  let start = Epoch::now();
   let mut cond1 = false;
   let mut cond2 = false;
   loop {
@@ -133,7 +133,7 @@ pub async fn serf_remove_failed_node_prune<T>(
 
   let s2id = serfs[1].local_id().clone();
 
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
@@ -155,7 +155,7 @@ pub async fn serf_remove_failed_node_prune<T>(
 
   serfs.swap(1, 2);
 
-  let start = Instant::now();
+  let start = Epoch::now();
   let mut cond1 = false;
   let mut cond2 = false;
   loop {
@@ -225,7 +225,7 @@ fn test_remove_old_member() {
         MemberStatus::None,
       ),
       status_time: 0.into(),
-      leave_time: Some(Instant::now() - Duration::from_secs(5)),
+      leave_time: Some(Epoch::now() - Duration::from_secs(5)),
     },
     MemberState {
       member: Member::new(
@@ -234,7 +234,7 @@ fn test_remove_old_member() {
         MemberStatus::None,
       ),
       status_time: 0.into(),
-      leave_time: Some(Instant::now() - Duration::from_secs(5)),
+      leave_time: Some(Epoch::now() - Duration::from_secs(5)),
     },
   ]
   .into_iter()

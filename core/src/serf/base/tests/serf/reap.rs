@@ -60,45 +60,45 @@ pub async fn serf_reap_handler<T>(
     members.left_members.push(MemberState {
       member: Member::new(n.clone(), Default::default(), MemberStatus::None),
       status_time: 0.into(),
-      leave_time: Some(Instant::now()),
+      leave_time: Some(Epoch::now()),
     });
     members.left_members.push(MemberState {
       member: Member::new(n.clone(), Default::default(), MemberStatus::None),
       status_time: 0.into(),
-      leave_time: Some(Instant::now() - Duration::from_secs(5)),
+      leave_time: Some(Epoch::now() - Duration::from_secs(5)),
     });
     members.left_members.push(MemberState {
       member: Member::new(n.clone(), Default::default(), MemberStatus::None),
       status_time: 0.into(),
-      leave_time: Some(Instant::now() - Duration::from_secs(10)),
+      leave_time: Some(Epoch::now() - Duration::from_secs(10)),
     });
     upsert_intent::<SmolStr>(
       &mut members.recent_intents,
       &"alice".into(),
       MessageType::Join,
       1.into(),
-      Instant::now,
+      Epoch::now,
     );
     upsert_intent::<SmolStr>(
       &mut members.recent_intents,
       &"bob".into(),
       MessageType::Join,
       2.into(),
-      || Instant::now() - Duration::from_secs(10),
+      || Epoch::now() - Duration::from_secs(10),
     );
     upsert_intent::<SmolStr>(
       &mut members.recent_intents,
       &"carol".into(),
       MessageType::Leave,
       1.into(),
-      Instant::now,
+      Epoch::now,
     );
     upsert_intent::<SmolStr>(
       &mut members.recent_intents,
       &"doug".into(),
       MessageType::Leave,
       2.into(),
-      || Instant::now() - Duration::from_secs(10),
+      || Epoch::now() - Duration::from_secs(10),
     );
   }
 
@@ -143,17 +143,17 @@ where
     members.left_members.push(MemberState {
       member: Member::new(n.clone(), Default::default(), MemberStatus::None),
       status_time: 0.into(),
-      leave_time: Some(Instant::now()),
+      leave_time: Some(Epoch::now()),
     });
     members.left_members.push(MemberState {
       member: Member::new(n.clone(), Default::default(), MemberStatus::None),
       status_time: 0.into(),
-      leave_time: Some(Instant::now() - Duration::from_secs(5)),
+      leave_time: Some(Epoch::now() - Duration::from_secs(5)),
     });
     members.left_members.push(MemberState {
       member: Member::new(n.clone(), Default::default(), MemberStatus::None),
       status_time: 0.into(),
-      leave_time: Some(Instant::now() - Duration::from_secs(10)),
+      leave_time: Some(Epoch::now() - Duration::from_secs(10)),
     });
 
     Reaper::<T, DefaultDelegate<T>>::reap_left(

@@ -1,325 +1,29 @@
-use std::{
-  sync::Arc,
-  time::{Duration, Instant},
-};
+use std::{pin::Pin, sync::Arc, task::Poll, time::Duration};
+
+use crate::delegate::TransformDelegate;
+
+use self::error::Error;
+
+use super::{delegate::Delegate, types::Epoch, *};
+
+mod crate_event;
+
+use async_channel::Sender;
+pub use async_channel::{RecvError, TryRecvError};
 
 use async_lock::Mutex;
-use either::Either;
+pub(crate) use crate_event::*;
+use futures::Stream;
 use memberlist_core::{
   bytes::{BufMut, Bytes, BytesMut},
-  transport::{AddressResolver, Node, Transport},
+  transport::{AddressResolver, Transport},
   types::TinyVec,
   CheapClone,
 };
-use ruserf_types::{QueryFlag, UserEventMessage};
-use smol_str::SmolStr;
-
-use super::{
-  delegate::{Delegate, TransformDelegate},
-  error::Error,
-  types::{LamportTime, Member, MessageType, QueryResponseMessage},
-  Serf,
+use ruserf_types::{
+  LamportTime, Member, MessageType, Node, QueryFlag, QueryResponseMessage, UserEventMessage,
 };
-
-const INTERNAL_PING: &str = "ruserf-ping";
-const INTERNAL_CONFLICT: &str = "ruserf-conflict";
-#[cfg(feature = "encryption")]
-pub(crate) const INTERNAL_INSTALL_KEY: &str = "ruserf-install-key";
-#[cfg(feature = "encryption")]
-pub(crate) const INTERNAL_USE_KEY: &str = "ruserf-use-key";
-#[cfg(feature = "encryption")]
-pub(crate) const INTERNAL_REMOVE_KEY: &str = "ruserf-remove-key";
-#[cfg(feature = "encryption")]
-pub(crate) const INTERNAL_LIST_KEYS: &str = "ruserf-list-keys";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]
-pub enum EventType {
-  Member(MemberEventType),
-  User,
-  Query,
-  InternalQuery,
-}
-
-pub struct Event<T, D>(pub(crate) Either<EventKind<T, D>, Arc<EventKind<T, D>>>)
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport;
-
-impl<D, T> Clone for Event<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn clone(&self) -> Self {
-    Self(self.0.clone())
-  }
-}
-
-impl<D, T> Event<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  /// Returns the type of the event
-  #[inline]
-  pub fn ty(&self) -> EventType {
-    match self.kind() {
-      EventKind::Member(e) => EventType::Member(e.ty),
-      EventKind::User(_) => EventType::User,
-      EventKind::Query(_) => EventType::Query,
-      EventKind::InternalQuery { .. } => EventType::InternalQuery,
-    }
-  }
-
-  pub(crate) fn into_right(self) -> Self {
-    match self.0 {
-      Either::Left(e) => Self(Either::Right(Arc::new(e))),
-      Either::Right(e) => Self(Either::Right(e)),
-    }
-  }
-
-  pub(crate) fn kind(&self) -> &EventKind<T, D> {
-    match &self.0 {
-      Either::Left(e) => e,
-      Either::Right(e) => e,
-    }
-  }
-
-  pub(crate) fn is_internal_query(&self) -> bool {
-    matches!(self.kind(), EventKind::InternalQuery { .. })
-  }
-}
-
-impl<D, T> From<MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>
-  for Event<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn from(value: MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>) -> Self {
-    Self(Either::Left(EventKind::Member(value)))
-  }
-}
-
-impl<D, T> From<UserEventMessage> for Event<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn from(value: UserEventMessage) -> Self {
-    Self(Either::Left(EventKind::User(value)))
-  }
-}
-
-impl<D, T> From<QueryEvent<T, D>> for Event<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn from(value: QueryEvent<T, D>) -> Self {
-    Self(Either::Left(EventKind::Query(value)))
-  }
-}
-
-impl<D, T> From<(InternalQueryEvent<T::Id>, QueryEvent<T, D>)> for Event<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn from(value: (InternalQueryEvent<T::Id>, QueryEvent<T, D>)) -> Self {
-    Self(Either::Left(EventKind::InternalQuery {
-      kind: value.0,
-      query: value.1,
-    }))
-  }
-}
-
-pub(crate) enum EventKind<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  Member(MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>),
-  User(UserEventMessage),
-  Query(QueryEvent<T, D>),
-  InternalQuery {
-    kind: InternalQueryEvent<T::Id>,
-    query: QueryEvent<T, D>,
-  },
-}
-
-impl<D, T> Clone for EventKind<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn clone(&self) -> Self {
-    match self {
-      Self::Member(e) => Self::Member(e.clone()),
-      Self::User(e) => Self::User(e.clone()),
-      Self::Query(e) => Self::Query(e.clone()),
-      Self::InternalQuery { kind, query } => Self::InternalQuery {
-        kind: kind.clone(),
-        query: query.clone(),
-      },
-    }
-  }
-}
-
-impl<D, T> From<MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>
-  for EventKind<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn from(event: MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>) -> Self {
-    Self::Member(event)
-  }
-}
-
-impl<D, T> From<UserEventMessage> for EventKind<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn from(event: UserEventMessage) -> Self {
-    Self::User(event)
-  }
-}
-
-impl<D, T> From<QueryEvent<T, D>> for EventKind<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn from(event: QueryEvent<T, D>) -> Self {
-    Self::Query(event)
-  }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]
-pub enum MemberEventType {
-  #[cfg_attr(feature = "serde", serde(rename = "member-join"))]
-  Join,
-  #[cfg_attr(feature = "serde", serde(rename = "member-leave"))]
-  Leave,
-  #[cfg_attr(feature = "serde", serde(rename = "member-failed"))]
-  Failed,
-  #[cfg_attr(feature = "serde", serde(rename = "member-update"))]
-  Update,
-  #[cfg_attr(feature = "serde", serde(rename = "member-reap"))]
-  Reap,
-}
-
-impl MemberEventType {
-  pub const fn as_str(&self) -> &'static str {
-    match self {
-      Self::Join => "member-join",
-      Self::Leave => "member-leave",
-      Self::Failed => "member-failed",
-      Self::Update => "member-update",
-      Self::Reap => "member-reap",
-    }
-  }
-}
-
-impl core::fmt::Display for MemberEventType {
-  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    match self {
-      Self::Join => write!(f, "member-join"),
-      Self::Leave => write!(f, "member-leave"),
-      Self::Failed => write!(f, "member-failed"),
-      Self::Update => write!(f, "member-update"),
-      Self::Reap => write!(f, "member-reap"),
-    }
-  }
-}
-
-/// MemberEvent is the struct used for member related events
-/// Because Serf coalesces events, an event may contain multiple members.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MemberEvent<I, A> {
-  pub(crate) ty: MemberEventType,
-  pub(crate) members: TinyVec<Member<I, A>>,
-}
-
-impl<I, A> core::fmt::Display for MemberEvent<I, A> {
-  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-    write!(f, "{}", self.ty)
-  }
-}
-
-impl<I, A> MemberEvent<I, A> {
-  pub fn new(ty: MemberEventType, members: TinyVec<Member<I, A>>) -> Self {
-    Self { ty, members }
-  }
-
-  pub fn ty(&self) -> MemberEventType {
-    self.ty
-  }
-
-  pub fn members(&self) -> &[Member<I, A>] {
-    &self.members
-  }
-}
-
-impl<I, A> From<MemberEvent<I, A>> for (MemberEventType, TinyVec<Member<I, A>>) {
-  fn from(event: MemberEvent<I, A>) -> Self {
-    (event.ty, event.members)
-  }
-}
-
-pub enum InternalQueryEvent<I> {
-  Ping,
-  Conflict(I),
-  #[cfg(feature = "encryption")]
-  InstallKey,
-  #[cfg(feature = "encryption")]
-  UseKey,
-  #[cfg(feature = "encryption")]
-  RemoveKey,
-  #[cfg(feature = "encryption")]
-  ListKey,
-}
-
-impl<I: Clone> Clone for InternalQueryEvent<I> {
-  fn clone(&self) -> Self {
-    match self {
-      Self::Ping => Self::Ping,
-      Self::Conflict(e) => Self::Conflict(e.clone()),
-      #[cfg(feature = "encryption")]
-      Self::InstallKey => Self::InstallKey,
-      #[cfg(feature = "encryption")]
-      Self::UseKey => Self::UseKey,
-      #[cfg(feature = "encryption")]
-      Self::RemoveKey => Self::RemoveKey,
-      #[cfg(feature = "encryption")]
-      Self::ListKey => Self::ListKey,
-    }
-  }
-}
-
-impl<I> InternalQueryEvent<I> {
-  #[inline]
-  pub(crate) const fn as_str(&self) -> &'static str {
-    match self {
-      Self::Ping => INTERNAL_PING,
-      Self::Conflict(_) => INTERNAL_CONFLICT,
-      #[cfg(feature = "encryption")]
-      Self::InstallKey => INTERNAL_INSTALL_KEY,
-      #[cfg(feature = "encryption")]
-      Self::UseKey => INTERNAL_USE_KEY,
-      #[cfg(feature = "encryption")]
-      Self::RemoveKey => INTERNAL_REMOVE_KEY,
-      #[cfg(feature = "encryption")]
-      Self::ListKey => INTERNAL_LIST_KEYS,
-    }
-  }
-}
+use smol_str::SmolStr;
 
 pub(crate) struct QueryContext<T, D>
 where
@@ -327,7 +31,7 @@ where
   T: Transport,
 {
   pub(crate) query_timeout: Duration,
-  pub(crate) span: Mutex<Option<Instant>>,
+  pub(crate) span: Mutex<Option<Epoch>>,
   pub(crate) this: Serf<T, D>,
 }
 
@@ -417,7 +121,7 @@ where
   }
 }
 
-/// Query is the struct used by EventQuery type events
+/// Query event
 pub struct QueryEvent<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
@@ -433,6 +137,42 @@ where
   pub(crate) from: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
   /// Number of duplicate responses to relay back to sender
   pub(crate) relay_factor: u8,
+}
+
+impl<D, T> QueryEvent<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  /// Returns the lamport time of the query
+  #[inline]
+  pub const fn lamport_time(&self) -> LamportTime {
+    self.ltime
+  }
+
+  /// Returns the name of the query
+  #[inline]
+  pub const fn name(&self) -> &SmolStr {
+    &self.name
+  }
+
+  /// Returns the payload of the query
+  #[inline]
+  pub const fn payload(&self) -> &Bytes {
+    &self.payload
+  }
+
+  /// Returns the id of the query
+  #[inline]
+  pub const fn id(&self) -> u32 {
+    self.id
+  }
+
+  /// Returns the source node of the query
+  #[inline]
+  pub const fn from(&self) -> &Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> {
+    &self.from
+  }
 }
 
 impl<D, T> PartialEq for QueryEvent<T, D>
@@ -533,5 +273,257 @@ where
         msg,
       )
       .await
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]
+pub enum MemberEventType {
+  #[cfg_attr(feature = "serde", serde(rename = "member-join"))]
+  Join,
+  #[cfg_attr(feature = "serde", serde(rename = "member-leave"))]
+  Leave,
+  #[cfg_attr(feature = "serde", serde(rename = "member-failed"))]
+  Failed,
+  #[cfg_attr(feature = "serde", serde(rename = "member-update"))]
+  Update,
+  #[cfg_attr(feature = "serde", serde(rename = "member-reap"))]
+  Reap,
+}
+
+impl MemberEventType {
+  pub const fn as_str(&self) -> &'static str {
+    match self {
+      Self::Join => "member-join",
+      Self::Leave => "member-leave",
+      Self::Failed => "member-failed",
+      Self::Update => "member-update",
+      Self::Reap => "member-reap",
+    }
+  }
+}
+
+impl core::fmt::Display for MemberEventType {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    match self {
+      Self::Join => write!(f, "member-join"),
+      Self::Leave => write!(f, "member-leave"),
+      Self::Failed => write!(f, "member-failed"),
+      Self::Update => write!(f, "member-update"),
+      Self::Reap => write!(f, "member-reap"),
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MemberEventMut<I, A> {
+  pub(crate) ty: MemberEventType,
+  pub(crate) members: TinyVec<Member<I, A>>,
+}
+
+impl<I, A> MemberEventMut<I, A> {
+  pub(crate) fn freeze(self) -> MemberEvent<I, A> {
+    MemberEvent {
+      ty: self.ty,
+      members: Arc::new(self.members),
+    }
+  }
+}
+
+/// MemberEvent is the struct used for member related events
+/// Because Serf coalesces events, an event may contain multiple members.
+#[derive(Debug, PartialEq)]
+pub struct MemberEvent<I, A> {
+  pub(crate) ty: MemberEventType,
+  pub(crate) members: Arc<TinyVec<Member<I, A>>>,
+}
+
+impl<I, A> Clone for MemberEvent<I, A> {
+  fn clone(&self) -> Self {
+    Self {
+      ty: self.ty,
+      members: self.members.clone(),
+    }
+  }
+}
+
+impl<I, A> CheapClone for MemberEvent<I, A> {}
+
+impl<I, A> core::fmt::Display for MemberEvent<I, A> {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    write!(f, "{}", self.ty)
+  }
+}
+
+impl<I, A> MemberEvent<I, A> {
+  pub fn new(ty: MemberEventType, members: TinyVec<Member<I, A>>) -> Self {
+    Self {
+      ty,
+      members: Arc::new(members),
+    }
+  }
+
+  pub fn ty(&self) -> MemberEventType {
+    self.ty
+  }
+
+  pub fn members(&self) -> &[Member<I, A>] {
+    &self.members
+  }
+}
+
+impl<I, A> From<MemberEvent<I, A>> for (MemberEventType, Arc<TinyVec<Member<I, A>>>) {
+  fn from(event: MemberEvent<I, A>) -> Self {
+    (event.ty, event.members)
+  }
+}
+
+/// The event produced by the Serf instance.
+#[derive(derive_more::From)]
+pub enum Event<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  /// Member related events
+  Member(MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>),
+  /// User events
+  User(UserEventMessage),
+  /// Query events
+  Query(QueryEvent<T, D>),
+}
+
+impl<D, T> Clone for Event<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  fn clone(&self) -> Self {
+    match self {
+      Self::Member(e) => Self::Member(e.cheap_clone()),
+      Self::User(e) => Self::User(e.cheap_clone()),
+      Self::Query(e) => Self::Query(e.clone()),
+    }
+  }
+}
+
+/// The producer of the Serf events.
+#[derive(Debug)]
+pub struct EventProducer<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  pub(crate) tx: Sender<CrateEvent<T, D>>,
+}
+
+impl<T, D> EventProducer<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  /// Creates a bounded producer and subscriber.
+  ///
+  /// The created subscriber has space to hold at most cap events at a time.
+  /// Users must actively consume the events from the subscriber to prevent the producer from blocking.
+  pub fn bounded(size: usize) -> (Self, EventSubscriber<T, D>) {
+    let (tx, rx) = async_channel::bounded(size);
+    (Self { tx }, EventSubscriber { rx })
+  }
+
+  /// Creates an unbounded producer and subscriber.
+  ///
+  /// The created subscriber has no limit on the number of events it can hold.
+  pub fn unbounded() -> (Self, EventSubscriber<T, D>) {
+    let (tx, rx) = async_channel::unbounded();
+    (Self { tx }, EventSubscriber { rx })
+  }
+}
+
+/// Subscribe the events from the Serf instance.
+#[pin_project::pin_project]
+#[derive(Debug)]
+pub struct EventSubscriber<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  #[pin]
+  pub(crate) rx: async_channel::Receiver<CrateEvent<T, D>>,
+}
+
+impl<T, D> EventSubscriber<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  /// Receives a event from the subscriber.
+  ///
+  /// If the subscriber is empty, this method waits until there is a event.
+  ///
+  /// If the subscriber is closed, this method receives a event or returns an error if there are no more events
+  pub async fn recv(&self) -> Result<Event<T, D>, RecvError> {
+    loop {
+      match self.rx.recv().await {
+        Ok(CrateEvent::InternalQuery { .. }) => continue,
+        Ok(CrateEvent::Member(e)) => return Ok(Event::Member(e)),
+        Ok(CrateEvent::User(e)) => return Ok(Event::User(e)),
+        Ok(CrateEvent::Query(e)) => return Ok(Event::Query(e)),
+        Err(e) => return Err(e),
+      }
+    }
+  }
+
+  /// Tries to receive a event from the subscriber.
+  ///
+  /// If the subscriber is empty, this method returns an error.
+  /// If the subscriber is closed, this method receives a event or returns an error if there are no more events
+  pub fn try_recv(&self) -> Result<Event<T, D>, TryRecvError> {
+    loop {
+      match self.rx.try_recv() {
+        Ok(CrateEvent::InternalQuery { .. }) => continue,
+        Ok(CrateEvent::Member(e)) => return Ok(Event::Member(e)),
+        Ok(CrateEvent::User(e)) => return Ok(Event::User(e)),
+        Ok(CrateEvent::Query(e)) => return Ok(Event::Query(e)),
+        Err(e) => return Err(e),
+      }
+    }
+  }
+
+  /// Returns `true` if the subscriber is empty.
+  pub fn is_empty(&self) -> bool {
+    self.rx.is_empty()
+  }
+
+  /// Returns `true` if the channel is closed.
+  pub fn is_closed(&self) -> bool {
+    self.rx.is_closed()
+  }
+
+  /// Returns the number of events in the subscriber.
+  pub fn len(&self) -> usize {
+    self.rx.len()
+  }
+}
+
+impl<T, D> Stream for EventSubscriber<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  type Item = Event<T, D>;
+
+  fn poll_next(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
+    match <async_channel::Receiver<CrateEvent<T, D>> as Stream>::poll_next(self.project().rx, cx) {
+      Poll::Ready(Some(event)) => match event {
+        CrateEvent::Member(e) => Poll::Ready(Some(Event::Member(e))),
+        CrateEvent::User(e) => Poll::Ready(Some(Event::User(e))),
+        CrateEvent::Query(e) => Poll::Ready(Some(Event::Query(e))),
+        CrateEvent::InternalQuery { .. } => Poll::Pending,
+      },
+      Poll::Ready(None) => Poll::Ready(None),
+      Poll::Pending => Poll::Pending,
+    }
   }
 }

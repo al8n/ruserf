@@ -39,6 +39,7 @@ either = "1"
 indexmap.workspace = true
 once_cell = "1" # remove this dependency when [feature(lazy_cell)] is stabilized
 parking_lot = { version = "0.12", features = ["send_guard"] }
+pin-project = "1"
 rand.workspace = true
 regex = "1"
 scopeguard = "1"

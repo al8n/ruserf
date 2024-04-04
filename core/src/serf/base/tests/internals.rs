@@ -1,3 +1,5 @@
+use crate::event::EventProducer;
+
 use super::*;
 
 /// Unit tests for the join leave ltime logic
@@ -21,7 +23,7 @@ where
 
   wait_until_num_nodes(2, &serfs).await;
 
-  let now = Instant::now();
+  let now = Epoch::now();
 
   loop {
     let members = serfs[1].inner.members.read().await;
@@ -95,7 +97,7 @@ pub async fn join_pending_intent<T>(
       &"test".into(),
       MessageType::Join,
       5.into(),
-      Instant::now,
+      Epoch::now,
     );
   }
 
@@ -135,14 +137,14 @@ pub async fn join_pending_intents<T>(
       &"test".into(),
       MessageType::Join,
       5.into(),
-      Instant::now,
+      Epoch::now,
     );
     upsert_intent::<SmolStr>(
       &mut members.recent_intents,
       &"test".into(),
       MessageType::Leave,
       6.into(),
-      Instant::now,
+      Epoch::now,
     );
   }
 
@@ -523,8 +525,8 @@ where
   T: Transport,
 {
   let opts = test_config();
-  let (event_tx, event_rx) = async_channel::bounded(4);
-  let s1 = Serf::<T>::with_event_sender(transport_opts, opts, event_tx)
+  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let s1 = Serf::<T>::with_event_producer(transport_opts, opts, event_tx)
     .await
     .unwrap();
 
@@ -547,7 +549,7 @@ where
   assert!(s1.handle_user_event(msg).await, "should rebroadcast");
 
   test_user_events(
-    event_rx,
+    event_rx.rx,
     ["first", "first", "second"]
       .into_iter()
       .map(Into::into)
@@ -607,8 +609,8 @@ pub async fn query_same_clock<T>(
   T: Transport,
 {
   let opts = test_config();
-  let (event_tx, event_rx) = async_channel::bounded(4);
-  let s1 = Serf::<T>::with_event_sender(transport_opts, opts, event_tx)
+  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let s1 = Serf::<T>::with_event_producer(transport_opts, opts, event_tx)
     .await
     .unwrap();
 
@@ -675,7 +677,7 @@ pub async fn query_same_clock<T>(
   );
 
   test_query_events(
-    event_rx,
+    event_rx.rx,
     ["foo", "bar", "baz"].into_iter().map(Into::into).collect(),
     ["test", "newpayload", "other"]
       .into_iter()

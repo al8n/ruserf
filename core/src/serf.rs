@@ -15,7 +15,7 @@ use super::{
   broadcast::SerfBroadcast,
   coordinate::{Coordinate, CoordinateClient},
   delegate::{CompositeDelegate, Delegate},
-  event::Event,
+  event::CrateEvent,
   snapshot::SnapshotHandle,
   types::{LamportClock, LamportTime, Members, UserEvents},
   Options,
@@ -151,7 +151,7 @@ where
   pub(crate) memberlist: Memberlist<T, SerfDelegate<T, D>>,
   pub(crate) members:
     Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
-  event_tx: Option<async_channel::Sender<Event<T, D>>>,
+  event_tx: Option<async_channel::Sender<CrateEvent<T, D>>>,
   pub(crate) event_join_ignore: AtomicBool,
 
   pub(crate) event_core: RwLock<EventCore>,

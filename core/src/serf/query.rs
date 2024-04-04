@@ -1,8 +1,4 @@
-use std::{
-  collections::HashSet,
-  sync::Arc,
-  time::{Duration, Instant},
-};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use async_channel::{Receiver, Sender};
 use async_lock::Mutex;
@@ -22,7 +18,8 @@ use crate::{
   delegate::{Delegate, TransformDelegate},
   error::Error,
   types::{
-    Filter, LamportTime, Member, MemberStatus, MessageType, QueryMessage, QueryResponseMessage,
+    Epoch, Filter, LamportTime, Member, MemberStatus, MessageType, QueryMessage,
+    QueryResponseMessage,
   },
 };
 
@@ -94,7 +91,7 @@ pub(crate) struct QueryResponseInner<I, A> {
 #[derive(Clone)]
 pub struct QueryResponse<I, A> {
   /// The duration of the query
-  deadline: Instant,
+  deadline: Epoch,
 
   /// The query id
   id: u32,
@@ -112,7 +109,7 @@ impl<I, A> QueryResponse<I, A> {
       q.id(),
       q.ltime(),
       num_nodes,
-      Instant::now() + q.timeout(),
+      Epoch::now() + q.timeout(),
       q.ack(),
     )
   }
@@ -120,7 +117,13 @@ impl<I, A> QueryResponse<I, A> {
 
 impl<I, A> QueryResponse<I, A> {
   #[inline]
-  pub fn new(id: u32, ltime: LamportTime, num_nodes: usize, deadline: Instant, ack: bool) -> Self {
+  pub(crate) fn new(
+    id: u32,
+    ltime: LamportTime,
+    num_nodes: usize,
+    deadline: Epoch,
+    ack: bool,
+  ) -> Self {
     let (ack_ch, acks) = if ack {
       (
         Some(async_channel::bounded(num_nodes)),
@@ -167,7 +170,7 @@ impl<I, A> QueryResponse<I, A> {
   #[inline]
   pub async fn finished(&self) -> bool {
     let c = self.inner.core.lock().await;
-    c.closed || (Instant::now() > self.deadline)
+    c.closed || (Epoch::now() > self.deadline)
   }
 
   /// Used to close the query, which will close the underlying
@@ -201,7 +204,7 @@ impl<I, A> QueryResponse<I, A> {
   {
     // Check if the query is closed
     let mut c = self.inner.core.lock().await;
-    if c.closed || (Instant::now() > self.deadline) {
+    if c.closed || (Epoch::now() > self.deadline) {
       return;
     }
 
