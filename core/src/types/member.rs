@@ -1,9 +1,9 @@
 use memberlist_core::types::OneOrMore;
 use ruserf_types::Member;
 
-use std::{collections::HashMap, time::Instant};
+use std::collections::HashMap;
 
-use super::{LamportTime, MessageType};
+use super::{Epoch, LamportTime, MessageType};
 
 /// Used to track members that are no longer active due to
 /// leaving, failing, partitioning, etc. It tracks the member along with
@@ -15,13 +15,13 @@ pub(crate) struct MemberState<I, A> {
   /// lamport clock time of last received message
   status_time: LamportTime,
   /// wall clock time of leave
-  leave_time: Option<Instant>,
+  leave_time: Option<Epoch>,
 }
 
 /// Used to buffer intents for out-of-order deliveries.
 pub(crate) struct NodeIntent {
   pub(crate) ty: MessageType,
-  pub(crate) wall_time: Instant,
+  pub(crate) wall_time: Epoch,
   pub(crate) ltime: LamportTime,
 }
 

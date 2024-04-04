@@ -100,7 +100,7 @@ where
             std::collections::hash_map::Entry::Vacant(ent) => {
               ent.insert(MemberEventMut {
                 ty: cev.ty,
-                members: TinyVec::from(cev.member).into(),
+                members: TinyVec::from(cev.member),
               });
             }
           }
@@ -119,6 +119,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::collapsible_match)]
 mod tests {
   use std::{net::SocketAddr, time::Duration};
 

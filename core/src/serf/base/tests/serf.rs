@@ -168,7 +168,7 @@ where
 
   serfs[1].leave().await.unwrap();
 
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
@@ -312,7 +312,7 @@ pub async fn serf_events_leave_avoid_infinite_rebroadcast<T>(
   let s2 = serfs.remove(1);
   wait_until_intent_queue_len(0, &serfs).await;
 
-  let start = Instant::now();
+  let start = Epoch::now();
   let mut cond1 = false;
   let mut cond2 = false;
   let mut cond3 = false;
@@ -401,7 +401,7 @@ pub async fn serf_remove_failed_events_leave<T>(
     .await
     .unwrap();
 
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
@@ -654,7 +654,7 @@ where
   serfs[1].shutdown().await.unwrap();
 
   // Don't wait for a failure to be detected. Bring back s2 immediately
-  let start = Instant::now();
+  let start = Epoch::now();
   let s2 = loop {
     match Serf::<T>::new(
       transport_opts2.clone(),
@@ -738,7 +738,7 @@ where
 
   let mut roles = HashMap::new();
 
-  let start = Instant::now();
+  let start = Epoch::now();
   let mut cond1 = false;
   let mut cond2 = false;
   loop {
@@ -831,7 +831,7 @@ where
     .await
     .unwrap();
 
-  let start = Instant::now();
+  let start = Epoch::now();
   let mut cond1 = false;
   let mut cond2 = false;
   let mut cond3 = false;
@@ -967,7 +967,7 @@ pub async fn serf_coordinates<T>(
 
   wait_until_num_nodes(2, &serfs).await;
 
-  let start = Instant::now();
+  let start = Epoch::now();
   let mut cond1 = false;
   let mut cond2 = false;
   let mut cond3 = false;
@@ -1036,7 +1036,7 @@ pub async fn serf_coordinates<T>(
 
   wait_until_num_nodes(1, &serfs[..1]).await;
 
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
@@ -1071,7 +1071,7 @@ pub async fn serf_coordinates<T>(
 
   wait_until_num_nodes(2, &serfs).await;
 
-  let start = Instant::now();
+  let start = Epoch::now();
   let mut cond1 = false;
   let mut cond2 = false;
   loop {
@@ -1152,7 +1152,7 @@ pub async fn serf_name_resolution<T>(
   // Wait for the query period to end
   <T::Runtime as RuntimeLite>::sleep(serfs[0].default_query_timeout().await * 2).await;
 
-  let start = Instant::now();
+  let start = Epoch::now();
   let mut cond1 = false;
   let mut cond2 = false;
   let mut cond3 = false;
@@ -1309,7 +1309,7 @@ pub async fn serf_write_keying_file<T>(
 fn test_recent_intent() {
   assert!(recent_intent::<SmolStr>(&HashMap::new(), &"foo".into(), MessageType::Join).is_none());
 
-  let now = Instant::now();
+  let now = Epoch::now();
   let expire = || now - Duration::from_secs(2);
   let save = || now;
 
@@ -1370,7 +1370,7 @@ fn test_recent_intent() {
 
   assert!(recent_intent(&intents, &"tubez".into(), MessageType::Join).is_none());
 
-  reap_intents(&mut intents, Instant::now(), Duration::from_secs(1));
+  reap_intents(&mut intents, Epoch::now(), Duration::from_secs(1));
   assert!(recent_intent(&intents, &"foo".into(), MessageType::Join).is_none());
   assert!(recent_intent(&intents, &"bar".into(), MessageType::Join).is_none());
   let ltime = recent_intent(&intents, &"baz".into(), MessageType::Join).unwrap();
@@ -1378,7 +1378,7 @@ fn test_recent_intent() {
   assert!(recent_intent(&intents, &"tubez".into(), MessageType::Join).is_none());
   reap_intents(
     &mut intents,
-    Instant::now() + Duration::from_secs(2),
+    Epoch::now() + Duration::from_secs(2),
     Duration::from_secs(1),
   );
   assert!(recent_intent(&intents, &"baz".into(), MessageType::Join).is_none());

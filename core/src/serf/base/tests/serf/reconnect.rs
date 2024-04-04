@@ -176,7 +176,7 @@ pub async fn serf_per_node_reconnect_timeout<T>(
     .await
     .unwrap();
 
-  let start = Instant::now();
+  let start = Epoch::now();
   let mut cond1 = false;
   let mut cond2 = false;
   loop {
@@ -207,7 +207,7 @@ pub async fn serf_per_node_reconnect_timeout<T>(
     .map_address(MaybeResolvedAddress::resolved);
   s1.join(node, false).await.unwrap();
 
-  let start = Instant::now();
+  let start = Epoch::now();
   let mut cond1 = false;
   let mut cond2 = false;
   loop {

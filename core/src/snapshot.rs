@@ -5,7 +5,7 @@ use std::{
   io::{BufReader, BufWriter, Read, Seek, Write},
   mem,
   path::PathBuf,
-  time::{Duration, Instant},
+  time::Duration,
 };
 
 #[cfg(unix)]
@@ -29,7 +29,7 @@ use crate::{
   delegate::{Delegate, TransformDelegate},
   event::{CrateEvent, MemberEvent, MemberEventType},
   invalid_data_io_error,
-  types::{LamportClock, LamportTime},
+  types::{Epoch, LamportClock, LamportTime},
 };
 
 /// How often we force a flush of the snapshot file
@@ -369,7 +369,7 @@ where
   alive_nodes: HashSet<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
   clock: LamportClock,
   fh: Option<BufWriter<File>>,
-  last_flush: Instant,
+  last_flush: Epoch,
   last_clock: LamportTime,
   last_event_clock: LamportTime,
   last_query_clock: LamportTime,
@@ -382,7 +382,7 @@ where
   stream_rx: Receiver<CrateEvent<T, D>>,
   shutdown_rx: Receiver<()>,
   wait_tx: Sender<()>,
-  last_attempted_compaction: Instant,
+  last_attempted_compaction: Epoch,
   #[cfg(feature = "metrics")]
   metric_labels: std::sync::Arc<memberlist_core::types::MetricLabels>,
 }
@@ -429,7 +429,7 @@ where
       alive_nodes,
       clock,
       fh: Some(BufWriter::new(fh)),
-      last_flush: Instant::now(),
+      last_flush: Epoch::now(),
       last_clock,
       last_event_clock,
       last_query_clock,
@@ -442,7 +442,7 @@ where
       stream_rx,
       shutdown_rx: shutdown_rx.clone(),
       wait_tx,
-      last_attempted_compaction: Instant::now(),
+      last_attempted_compaction: Epoch::now(),
       #[cfg(feature = "metrics")]
       metric_labels,
     };
@@ -705,7 +705,7 @@ where
     if let Err(e) = self.append_line(l) {
       tracing::error!(err = %e, "ruserf: failed to update snapshot");
       if self.last_attempted_compaction.elapsed() > SNAPSHOT_ERROR_RECOVERY_INTERVAL {
-        self.last_attempted_compaction = Instant::now();
+        self.last_attempted_compaction = Epoch::now();
         tracing::info!("ruserf: attempting compaction to recover from error...");
         if let Err(e) = self.compact() {
           tracing::error!(err = %e, "ruserf: compaction failed, will reattempt after {}s", SNAPSHOT_ERROR_RECOVERY_INTERVAL.as_secs());
@@ -721,7 +721,7 @@ where
     l: SnapshotRecord<'_, T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
   ) -> Result<(), SnapshotError> {
     #[cfg(feature = "metrics")]
-    let start = std::time::Instant::now();
+    let start = crate::types::Epoch::now();
 
     #[cfg(feature = "metrics")]
     let metric_labels = self.metric_labels.clone();
@@ -736,7 +736,7 @@ where
 
     // check if we should flush
     if self.last_flush.elapsed() > FLUSH_INTERVAL {
-      self.last_flush = Instant::now();
+      self.last_flush = Epoch::now();
       self
         .fh
         .as_mut()
@@ -764,7 +764,7 @@ where
   /// Used to compact the snapshot once it is too large
   fn compact(&mut self) -> Result<(), SnapshotError> {
     #[cfg(feature = "metrics")]
-    let start = std::time::Instant::now();
+    let start = crate::types::Epoch::now();
 
     #[cfg(feature = "metrics")]
     let metric_labels = self.metric_labels.clone();
@@ -864,7 +864,7 @@ where
 
     self.fh = Some(BufWriter::new(fh));
     self.offset = offset;
-    self.last_flush = Instant::now();
+    self.last_flush = Epoch::now();
     Ok(())
   }
 }

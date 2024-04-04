@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures::{FutureExt, StreamExt};
 use memberlist_core::{
@@ -21,7 +21,7 @@ use crate::{
   event::{InternalQueryEvent, MemberEvent, MemberEventType, QueryContext, QueryEvent},
   snapshot::{open_and_replay_snapshot, Snapshot},
   types::{
-    DelegateVersion, JoinMessage, LeaveMessage, Member, MemberState, MemberStatus,
+    DelegateVersion, Epoch, JoinMessage, LeaveMessage, Member, MemberState, MemberStatus,
     MemberlistDelegateVersion, MemberlistProtocolVersion, MessageType, NodeIntent, ProtocolVersion,
     QueryFlag, QueryMessage, QueryResponseMessage, SerfMessage, UserEvent, UserEventMessage,
   },
@@ -596,7 +596,7 @@ where
           let mut ms = self.members.write().await;
           Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
           Self::reap_left(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.tombstone_timeout).await;
-          reap_intents(&mut ms.recent_intents, Instant::now(), self.recent_intent_timeout);
+          reap_intents(&mut ms.recent_intents, Epoch::now(), self.recent_intent_timeout);
         }
         _ = self.shutdown_rx.recv().fuse() => {
           return;
@@ -841,7 +841,7 @@ where
       payload: q.payload,
       ctx: Arc::new(QueryContext {
         query_timeout: q.timeout,
-        span: Mutex::new(Some(Instant::now())),
+        span: Mutex::new(Some(Epoch::now())),
         this: self.clone(),
       }),
       id: q.id,
@@ -1200,7 +1200,7 @@ where
           join_msg.id(),
           MessageType::Join,
           join_msg.ltime,
-          Instant::now,
+          Epoch::now,
         )
       }
     }
@@ -1222,7 +1222,7 @@ where
         member_state.member.status = MemberStatus::Left;
 
         ms = MemberStatus::Left;
-        member_state.leave_time = Some(Instant::now());
+        member_state.leave_time = Some(Epoch::now());
         let member_state = member_state.clone();
         let member = member_state.member.clone();
         members.left_members.push(member_state);
@@ -1231,7 +1231,7 @@ where
       MemberStatus::Alive => {
         member_state.member.status = MemberStatus::Failed;
         ms = MemberStatus::Failed;
-        member_state.leave_time = Some(Instant::now());
+        member_state.leave_time = Some(Epoch::now());
         let member_state = member_state.clone();
         let member = member_state.member.clone();
         members.failed_members.push(member_state);
@@ -1290,7 +1290,7 @@ where
         msg.id(),
         MessageType::Leave,
         msg.ltime,
-        Instant::now,
+        Epoch::now,
       );
     }
 
@@ -1640,7 +1640,7 @@ fn remove_old_member<I: Eq, A>(old: &mut OneOrMore<MemberState<I, A>>, id: &I) {
 /// Clears out any intents that are older than the timeout. Make sure
 /// the memberLock is held when passing in the Serf instance's recentIntents
 /// member.
-fn reap_intents<I>(intents: &mut HashMap<I, NodeIntent>, now: Instant, timeout: Duration) {
+fn reap_intents<I>(intents: &mut HashMap<I, NodeIntent>, now: Epoch, timeout: Duration) {
   intents.retain(|_, intent| (now - intent.wall_time) <= timeout);
 }
 
@@ -1660,7 +1660,7 @@ fn upsert_intent<I>(
   node: &I,
   t: MessageType,
   ltime: LamportTime,
-  stamper: impl FnOnce() -> Instant,
+  stamper: impl FnOnce() -> Epoch,
 ) -> bool
 where
   I: CheapClone + Eq + core::hash::Hash,

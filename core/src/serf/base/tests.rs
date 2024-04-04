@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_channel::Receiver;
 use memberlist_core::{
@@ -17,6 +17,7 @@ use smol_str::SmolStr;
 use crate::{
   delegate::TransformDelegate,
   event::{CrateEvent, CrateEventType, MemberEvent, MemberEventType},
+  types::Epoch,
 };
 
 use super::*;
@@ -47,7 +48,7 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
     let mut conds = Vec::with_capacity(serfs.len());
@@ -73,7 +74,7 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
     let mut conds = Vec::with_capacity(serfs.len());

@@ -538,7 +538,7 @@ where
   .unwrap();
 
   // Wait for the node to auto rejoin
-  let start = Instant::now();
+  let start = Epoch::now();
   while start.elapsed() < Duration::from_secs(1) {
     let members = serfs[0].members().await;
     if members.len() == 2
@@ -619,7 +619,7 @@ pub async fn serf_leave_snapshot_recovery<T>(
 
   let s2id = serfs[1].local_id().clone();
 
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
@@ -647,7 +647,7 @@ pub async fn serf_leave_snapshot_recovery<T>(
   // Wait for the node to auto rejoin
 
   // Verify that s2 did not join
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
     let num = serfs[1].num_nodes().await;
@@ -754,10 +754,10 @@ async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
   // 115ms on my machine so this should give plenty of headroom for slower CI
   // environments while still being low enough that actual disk IO would
   // reliably blow it.
-  let deadline = TokioRuntime::sleep_until(Instant::now() + Duration::from_millis(500));
+  let deadline = TokioRuntime::sleep_until(std::time::Instant::now() + Duration::from_millis(500));
   futures::pin_mut!(deadline);
   let mut num_recvd = 0;
-  let start = Instant::now();
+  let start = Epoch::now();
 
   while num_recvd < num_events {
     futures::select! {

@@ -1,18 +1,16 @@
-use std::{
-  pin::Pin,
-  sync::Arc,
-  task::Poll,
-  time::{Duration, Instant},
-};
+use std::{pin::Pin, sync::Arc, task::Poll, time::Duration};
 
 use crate::delegate::TransformDelegate;
 
 use self::error::Error;
 
-use super::{delegate::Delegate, *};
+use super::{delegate::Delegate, types::Epoch, *};
 
 mod crate_event;
+
 use async_channel::Sender;
+pub use async_channel::{RecvError, TryRecvError};
+
 use async_lock::Mutex;
 pub(crate) use crate_event::*;
 use futures::Stream;
@@ -33,7 +31,7 @@ where
   T: Transport,
 {
   pub(crate) query_timeout: Duration,
-  pub(crate) span: Mutex<Option<Instant>>,
+  pub(crate) span: Mutex<Option<Epoch>>,
   pub(crate) this: Serf<T, D>,
 }
 
@@ -123,7 +121,7 @@ where
   }
 }
 
-/// Query is the struct used by EventQuery type events
+/// Query event
 pub struct QueryEvent<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
@@ -139,6 +137,42 @@ where
   pub(crate) from: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
   /// Number of duplicate responses to relay back to sender
   pub(crate) relay_factor: u8,
+}
+
+impl<D, T> QueryEvent<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  /// Returns the lamport time of the query
+  #[inline]
+  pub const fn lamport_time(&self) -> LamportTime {
+    self.ltime
+  }
+
+  /// Returns the name of the query
+  #[inline]
+  pub const fn name(&self) -> &SmolStr {
+    &self.name
+  }
+
+  /// Returns the payload of the query
+  #[inline]
+  pub const fn payload(&self) -> &Bytes {
+    &self.payload
+  }
+
+  /// Returns the id of the query
+  #[inline]
+  pub const fn id(&self) -> u32 {
+    self.id
+  }
+
+  /// Returns the source node of the query
+  #[inline]
+  pub const fn from(&self) -> &Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> {
+    &self.from
+  }
 }
 
 impl<D, T> PartialEq for QueryEvent<T, D>
@@ -345,13 +379,18 @@ impl<I, A> From<MemberEvent<I, A>> for (MemberEventType, Arc<TinyVec<Member<I, A
   }
 }
 
+/// The event produced by the Serf instance.
+#[derive(derive_more::From)]
 pub enum Event<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
+  /// Member related events
   Member(MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>),
+  /// User events
   User(UserEventMessage),
+  /// Query events
   Query(QueryEvent<T, D>),
 }
 
@@ -369,6 +408,8 @@ where
   }
 }
 
+/// The producer of the Serf events.
+#[derive(Debug)]
 pub struct EventProducer<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
@@ -382,11 +423,18 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
+  /// Creates a bounded producer and subscriber.
+  ///
+  /// The created subscriber has space to hold at most cap events at a time.
+  /// Users must actively consume the events from the subscriber to prevent the producer from blocking.
   pub fn bounded(size: usize) -> (Self, EventSubscriber<T, D>) {
     let (tx, rx) = async_channel::bounded(size);
     (Self { tx }, EventSubscriber { rx })
   }
 
+  /// Creates an unbounded producer and subscriber.
+  ///
+  /// The created subscriber has no limit on the number of events it can hold.
   pub fn unbounded() -> (Self, EventSubscriber<T, D>) {
     let (tx, rx) = async_channel::unbounded();
     (Self { tx }, EventSubscriber { rx })
@@ -395,6 +443,7 @@ where
 
 /// Subscribe the events from the Serf instance.
 #[pin_project::pin_project]
+#[derive(Debug)]
 pub struct EventSubscriber<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
@@ -402,6 +451,60 @@ where
 {
   #[pin]
   pub(crate) rx: async_channel::Receiver<CrateEvent<T, D>>,
+}
+
+impl<T, D> EventSubscriber<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  /// Receives a event from the subscriber.
+  ///
+  /// If the subscriber is empty, this method waits until there is a event.
+  ///
+  /// If the subscriber is closed, this method receives a event or returns an error if there are no more events
+  pub async fn recv(&self) -> Result<Event<T, D>, RecvError> {
+    loop {
+      match self.rx.recv().await {
+        Ok(CrateEvent::InternalQuery { .. }) => continue,
+        Ok(CrateEvent::Member(e)) => return Ok(Event::Member(e)),
+        Ok(CrateEvent::User(e)) => return Ok(Event::User(e)),
+        Ok(CrateEvent::Query(e)) => return Ok(Event::Query(e)),
+        Err(e) => return Err(e),
+      }
+    }
+  }
+
+  /// Tries to receive a event from the subscriber.
+  ///
+  /// If the subscriber is empty, this method returns an error.
+  /// If the subscriber is closed, this method receives a event or returns an error if there are no more events
+  pub fn try_recv(&self) -> Result<Event<T, D>, TryRecvError> {
+    loop {
+      match self.rx.try_recv() {
+        Ok(CrateEvent::InternalQuery { .. }) => continue,
+        Ok(CrateEvent::Member(e)) => return Ok(Event::Member(e)),
+        Ok(CrateEvent::User(e)) => return Ok(Event::User(e)),
+        Ok(CrateEvent::Query(e)) => return Ok(Event::Query(e)),
+        Err(e) => return Err(e),
+      }
+    }
+  }
+
+  /// Returns `true` if the subscriber is empty.
+  pub fn is_empty(&self) -> bool {
+    self.rx.is_empty()
+  }
+
+  /// Returns `true` if the channel is closed.
+  pub fn is_closed(&self) -> bool {
+    self.rx.is_closed()
+  }
+
+  /// Returns the number of events in the subscriber.
+  pub fn len(&self) -> usize {
+    self.rx.len()
+  }
 }
 
 impl<T, D> Stream for EventSubscriber<T, D>

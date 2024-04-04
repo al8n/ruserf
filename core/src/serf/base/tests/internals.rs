@@ -23,7 +23,7 @@ where
 
   wait_until_num_nodes(2, &serfs).await;
 
-  let now = Instant::now();
+  let now = Epoch::now();
 
   loop {
     let members = serfs[1].inner.members.read().await;
@@ -97,7 +97,7 @@ pub async fn join_pending_intent<T>(
       &"test".into(),
       MessageType::Join,
       5.into(),
-      Instant::now,
+      Epoch::now,
     );
   }
 
@@ -137,14 +137,14 @@ pub async fn join_pending_intents<T>(
       &"test".into(),
       MessageType::Join,
       5.into(),
-      Instant::now,
+      Epoch::now,
     );
     upsert_intent::<SmolStr>(
       &mut members.recent_intents,
       &"test".into(),
       MessageType::Leave,
       6.into(),
-      Instant::now,
+      Epoch::now,
     );
   }
 

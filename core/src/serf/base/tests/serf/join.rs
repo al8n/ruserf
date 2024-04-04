@@ -75,7 +75,7 @@ where
   <T::Runtime as RuntimeLite>::sleep(t).await;
 
   // s1 should see the node as having left
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
@@ -116,7 +116,7 @@ where
     .map_address(MaybeResolvedAddress::resolved);
   serfs[0].join(node.clone(), false).await.unwrap();
 
-  let start = Instant::now();
+  let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
