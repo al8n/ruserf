@@ -1,13 +1,13 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use arc_swap::ArcSwapOption;
+use arc_swap::ArcSwap;
 pub use memberlist_core::Options as MemberlistOptions;
 use smol_str::SmolStr;
 
 use super::types::{DelegateVersion, ProtocolVersion, Tags};
 
-fn tags(tags: &Arc<ArcSwapOption<Tags>>) -> Option<Arc<Tags>> {
-  tags.load().as_ref().map(Arc::clone)
+fn tags(tags: &Arc<ArcSwap<Tags>>) -> Arc<Tags> {
+  tags.load().clone()
 }
 
 /// The configuration for creating a Serf instance.
@@ -24,17 +24,28 @@ pub struct Options {
     getter(
       vis = "pub",
       style = "ref",
-      result(converter(style = "ref", fn = "tags",), type = "Option<Arc<Tags>>",)
+      result(converter(style = "ref", fn = "tags",), type = "Arc<Tags>",),
+      attrs(
+        doc = "Returns the tags for this role, if any. This is used to provide arbitrary key/value metadata per-node. For example, a \"role\" tag may be used to differentiate \"load-balancer\" from a \"web\" role as parts of the same cluster."
+      )
     ),
     setter(skip)
   )]
   #[cfg_attr(feature = "serde", serde(with = "tags_serde"))]
-  tags: Arc<ArcSwapOption<Tags>>,
+  tags: Arc<ArcSwap<Tags>>,
 
   /// The protocol version to speak
+  #[viewit(
+    getter(const, attrs(doc = "Returns the protocol version to speak")),
+    setter(attrs(doc = "Sets the protocol version to speak"))
+  )]
   protocol_version: ProtocolVersion,
 
   /// The delegate version to speak
+  #[viewit(
+    getter(const, attrs(doc = "Returns the delegate version to speak")),
+    setter(attrs(doc = "Sets the delegate version to speak"))
+  )]
   delegate_version: DelegateVersion,
 
   /// The amount of time to wait for a broadcast
@@ -263,10 +274,11 @@ impl Clone for Options {
 }
 
 impl Options {
+  /// Returns a new instance of `Options` with default configurations.
   #[inline]
   pub fn new() -> Self {
     Self {
-      tags: Arc::new(ArcSwapOption::from_pointee(None)),
+      tags: Arc::new(ArcSwap::from_pointee(Tags::default())),
       protocol_version: ProtocolVersion::V1,
       delegate_version: DelegateVersion::V1,
       broadcast_timeout: Duration::from_secs(5),
@@ -305,9 +317,9 @@ impl Options {
     self,
     tags: impl Iterator<Item = (K, V)>,
   ) -> Self {
-    self.tags.store(Some(Arc::new(
-      tags.map(|(k, v)| (k.into(), v.into())).collect(),
-    )));
+    self
+      .tags
+      .store(Arc::new(tags.map(|(k, v)| (k.into(), v.into())).collect()));
     self
   }
 
@@ -338,35 +350,23 @@ pub(crate) struct QueueOptions {
 mod tags_serde {
   use std::sync::Arc;
 
-  use arc_swap::ArcSwapOption;
-  use serde::{ser::SerializeMap, Deserialize, Deserializer, Serializer};
+  use arc_swap::ArcSwap;
+  use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
   use crate::types::Tags;
 
-  pub fn serialize<S>(tags: &Arc<ArcSwapOption<Tags>>, serializer: S) -> Result<S::Ok, S::Error>
+  pub fn serialize<S>(tags: &Arc<ArcSwap<Tags>>, serializer: S) -> Result<S::Ok, S::Error>
   where
     S: Serializer,
   {
-    match &*tags.load() {
-      Some(tags) => {
-        if !tags.is_empty() {
-          let mut ser = serializer.serialize_map(Some(tags.len()))?;
-          for (k, v) in tags.iter() {
-            ser.serialize_entry(k, v)?;
-          }
-          ser.end()
-        } else {
-          serializer.serialize_unit()
-        }
-      }
-      None => serializer.serialize_unit(),
-    }
+    let tags = tags.load();
+    Tags::serialize(&**tags, serializer)
   }
 
-  pub fn deserialize<'de, D>(deserializer: D) -> Result<Arc<ArcSwapOption<Tags>>, D::Error>
+  pub fn deserialize<'de, D>(deserializer: D) -> Result<Arc<ArcSwap<Tags>>, D::Error>
   where
     D: Deserializer<'de>,
   {
-    Tags::deserialize(deserializer).map(|map| Arc::new(ArcSwapOption::from_pointee(Some(map))))
+    Tags::deserialize(deserializer).map(|map| Arc::new(ArcSwap::from_pointee(map)))
   }
 }

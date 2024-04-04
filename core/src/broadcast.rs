@@ -44,25 +44,34 @@ impl Broadcast for SerfBroadcast {
   }
 }
 
-// #[tokio::test]
-// async fn test_broadcast_finished() {
-//   use std::time::Duration;
-//   use memberlist_core::futures_util::{self, FutureExt};
+#[tokio::test]
+async fn test_broadcast_finished() {
+  use futures::{self, FutureExt};
+  use std::time::Duration;
 
-//   let (tx, rx) = async_channel::unbounded();
+  let (tx, rx) = async_channel::unbounded();
 
-//   let b = SerfBroadcast {
-//     name: "ruserf".try_into().unwrap(),
-//     msg: Message::new(),
-//     notify_tx: ArcSwapOption::from_pointee(Some(tx)),
-//   };
+  let b = SerfBroadcast {
+    msg: Bytes::new(),
+    notify_tx: Some(tx),
+  };
 
-//   b.finished().await;
+  b.finished().await;
 
-//   futures_util::select! {
-//     _ = rx.recv().fuse() => {}
-//     _ = tokio::time::sleep(Duration::from_millis(10)).fuse() => {
-//       panic!("expected broadcast to be finished")
-//     }
-//   }
-// }
+  futures::select! {
+    _ = rx.recv().fuse() => {}
+    _ = tokio::time::sleep(Duration::from_millis(10)).fuse() => {
+      panic!("expected broadcast to be finished")
+    }
+  }
+}
+
+#[tokio::test]
+async fn test_broadcast_finished_no_sender() {
+  let b = SerfBroadcast {
+    msg: Bytes::new(),
+    notify_tx: None,
+  };
+
+  b.finished().await;
+}

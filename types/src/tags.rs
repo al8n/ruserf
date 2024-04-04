@@ -8,6 +8,7 @@ use transformable::Transformable;
   Debug,
   Default,
   PartialEq,
+  Clone,
   derive_more::From,
   derive_more::Into,
   derive_more::Deref,
@@ -29,6 +30,17 @@ impl IntoIterator for Tags {
 impl FromIterator<(SmolStr, SmolStr)> for Tags {
   fn from_iter<T: IntoIterator<Item = (SmolStr, SmolStr)>>(iter: T) -> Self {
     Self(iter.into_iter().collect())
+  }
+}
+
+impl<'a> FromIterator<(&'a str, &'a str)> for Tags {
+  fn from_iter<T: IntoIterator<Item = (&'a str, &'a str)>>(iter: T) -> Self {
+    Self(
+      iter
+        .into_iter()
+        .map(|(k, v)| (SmolStr::new(k), SmolStr::new(v)))
+        .collect(),
+    )
   }
 }
 

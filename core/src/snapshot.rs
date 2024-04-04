@@ -2,17 +2,17 @@ use std::{
   borrow::Cow,
   collections::HashSet,
   fs::{File, OpenOptions},
-  io::{BufRead, BufReader, BufWriter, Seek, Write},
+  io::{BufReader, BufWriter, Read, Seek, Write},
   mem,
   path::PathBuf,
-  time::{Duration, Instant},
+  time::Duration,
 };
 
 #[cfg(unix)]
 use std::os::unix::prelude::OpenOptionsExt;
 
 use async_channel::{Receiver, Sender};
-use either::Either;
+use byteorder::{LittleEndian, ReadBytesExt};
 use futures::FutureExt;
 use memberlist_core::{
   agnostic_lite::RuntimeLite,
@@ -27,9 +27,9 @@ use ruserf_types::UserEventMessage;
 
 use crate::{
   delegate::{Delegate, TransformDelegate},
-  event::{Event, EventKind, MemberEvent, MemberEventType},
+  event::{CrateEvent, MemberEvent, MemberEventType},
   invalid_data_io_error,
-  types::{LamportClock, LamportTime},
+  types::{Epoch, LamportClock, LamportTime},
 };
 
 /// How often we force a flush of the snapshot file
@@ -87,6 +87,45 @@ pub enum SnapshotError {
   SeekEnd(std::io::Error),
   #[error("failed to replay snapshot: {0}")]
   Replay(std::io::Error),
+  #[error(transparent)]
+  UnknownRecordType(#[from] UnknownRecordType),
+}
+
+/// UnknownRecordType is used to indicate that we encountered an unknown
+/// record type while reading a snapshot file.
+#[derive(Debug, thiserror::Error)]
+#[error("unrecognized snapshot record type: {0}")]
+pub struct UnknownRecordType(u8);
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(u8)]
+enum SnapshotRecordType {
+  Alive = 0,
+  NotAlive = 1,
+  Clock = 2,
+  EventClock = 3,
+  QueryClock = 4,
+  Coordinate = 5,
+  Leave = 6,
+  Comment = 7,
+}
+
+impl TryFrom<u8> for SnapshotRecordType {
+  type Error = UnknownRecordType;
+
+  fn try_from(value: u8) -> Result<Self, Self::Error> {
+    match value {
+      0 => Ok(Self::Alive),
+      1 => Ok(Self::NotAlive),
+      2 => Ok(Self::Clock),
+      3 => Ok(Self::EventClock),
+      4 => Ok(Self::QueryClock),
+      5 => Ok(Self::Coordinate),
+      6 => Ok(Self::Leave),
+      7 => Ok(Self::Comment),
+      v => Err(UnknownRecordType(v)),
+    }
+  }
 }
 
 #[allow(dead_code)]
@@ -125,31 +164,30 @@ where
       ($node: ident::$status: ident) => {{
         let node = $node.as_ref();
         let encoded_node_len = T::node_encoded_len(node);
-        let encoded_len = 2 + encoded_node_len;
+        let encoded_len = 4 + 1 + encoded_node_len;
         if encoded_len <= MAX_INLINED_BYTES {
           let mut buf = [0u8; MAX_INLINED_BYTES];
           buf[0] = Self::$status;
-          T::encode_node(node, &mut buf[1..]).map_err(invalid_data_io_error)?;
-          buf[1 + encoded_node_len] = b'\n';
+          buf[1..5].copy_from_slice(&(encoded_node_len as u32).to_le_bytes());
+          T::encode_node(node, &mut buf[5..]).map_err(invalid_data_io_error)?;
           w.write_all(&buf[..encoded_len]).map(|_| encoded_len)
         } else {
           let mut buf = BytesMut::with_capacity(encoded_len);
           buf.put_u8(Self::$status);
+          buf.put_u32_le(encoded_node_len as u32);
           T::encode_node(node, &mut buf).map_err(invalid_data_io_error)?;
-          buf.put_u8(b'\n');
           w.write_all(&buf).map(|_| encoded_len)
         }
       }};
       ($t: ident($status: ident)) => {{
-        const N: usize = 2 * mem::size_of::<u8>() + mem::size_of::<u64>();
+        const N: usize = mem::size_of::<u8>() + mem::size_of::<u64>();
         let mut data = [0u8; N];
         data[0] = Self::$status;
-        data[1..N - 1].copy_from_slice(&$t.to_be_bytes());
-        data[N - 1] = b'\n';
+        data[1..N].copy_from_slice(&$t.to_le_bytes());
         w.write_all(&data).map(|_| N)
       }};
       ($ident: ident) => {{
-        w.write_all(&[Self::$ident, b'\n']).map(|_| 2)
+        w.write_all(&[Self::$ident]).map(|_| 1)
       }};
     }
 
@@ -216,46 +254,59 @@ pub(crate) fn open_and_replay_snapshot<
   let mut last_query_clock = LamportTime::ZERO;
 
   loop {
-    if reader.read_until(b'\n', &mut buf).is_err() {
-      break;
-    }
+    let kind = match reader.read_u8() {
+      Ok(b) => SnapshotRecordType::try_from(b)?,
+      Err(e) => {
+        if e.kind() == std::io::ErrorKind::UnexpectedEof {
+          break;
+        }
+        return Err(SnapshotError::Replay(e));
+      }
+    };
 
-    // Skip the newline
-    let src = &buf[..buf.len() - 1];
-    // Match on the prefix
-    match src[0] {
-      SnapshotRecord::<I, A>::ALIVE => {
+    match kind {
+      SnapshotRecordType::Alive => {
+        let len = reader
+          .read_u32::<LittleEndian>()
+          .map_err(SnapshotError::Replay)? as usize;
+        buf.resize(len, 0);
+        reader.read_exact(&mut buf).map_err(SnapshotError::Replay)?;
+
         let (_, node) =
-          T::decode_node(&src[1..]).map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
+          T::decode_node(&buf).map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
         alive_nodes.insert(node);
       }
-      SnapshotRecord::<I, A>::NOT_ALIVE => {
+      SnapshotRecordType::NotAlive => {
+        let len = reader
+          .read_u32::<LittleEndian>()
+          .map_err(SnapshotError::Replay)? as usize;
+        buf.resize(len, 0);
+        reader.read_exact(&mut buf).map_err(SnapshotError::Replay)?;
+
         let (_, node) =
-          T::decode_node(&src[1..]).map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
+          T::decode_node(&buf).map_err(|e| SnapshotError::Replay(invalid_data_io_error(e)))?;
         alive_nodes.remove(&node);
       }
-      SnapshotRecord::<I, A>::CLOCK => {
-        let t = u64::from_be_bytes([
-          src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
-        ]);
+      SnapshotRecordType::Clock => {
+        let t = reader
+          .read_u64::<LittleEndian>()
+          .map_err(SnapshotError::Replay)?;
         last_clock = LamportTime::new(t);
       }
-      SnapshotRecord::<I, A>::EVENT_CLOCK => {
-        let t = u64::from_be_bytes([
-          src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
-        ]);
+      SnapshotRecordType::EventClock => {
+        let t = reader
+          .read_u64::<LittleEndian>()
+          .map_err(SnapshotError::Replay)?;
         last_event_clock = LamportTime::new(t);
       }
-      SnapshotRecord::<I, A>::QUERY_CLOCK => {
-        let t = u64::from_be_bytes([
-          src[1], src[2], src[3], src[4], src[5], src[6], src[7], src[8],
-        ]);
+      SnapshotRecordType::QueryClock => {
+        let t = reader
+          .read_u64::<LittleEndian>()
+          .map_err(SnapshotError::Replay)?;
         last_query_clock = LamportTime::new(t);
       }
-      SnapshotRecord::<I, A>::COORDINATE => {
-        continue;
-      }
-      SnapshotRecord::<I, A>::LEAVE => {
+      SnapshotRecordType::Coordinate => continue,
+      SnapshotRecordType::Leave => {
         // Ignore a leave if we plan on re-joining
         if rejoin_after_leave {
           tracing::info!("ruserf: ignoring previous leave in snapshot");
@@ -266,12 +317,7 @@ pub(crate) fn open_and_replay_snapshot<
         last_event_clock = LamportTime::ZERO;
         last_query_clock = LamportTime::ZERO;
       }
-      SnapshotRecord::<I, A>::COMMENT => {
-        continue;
-      }
-      v => {
-        tracing::warn!("ruserf: unrecognized snapshot record {v}: {:?}", buf);
-      }
+      SnapshotRecordType::Comment => continue,
     }
   }
 
@@ -323,7 +369,7 @@ where
   alive_nodes: HashSet<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
   clock: LamportClock,
   fh: Option<BufWriter<File>>,
-  last_flush: Instant,
+  last_flush: Epoch,
   last_clock: LamportTime,
   last_event_clock: LamportTime,
   last_query_clock: LamportTime,
@@ -333,10 +379,10 @@ where
   path: PathBuf,
   offset: u64,
   rejoin_after_leave: bool,
-  stream_rx: Receiver<Event<T, D>>,
+  stream_rx: Receiver<CrateEvent<T, D>>,
   shutdown_rx: Receiver<()>,
   wait_tx: Sender<()>,
-  last_attempted_compaction: Instant,
+  last_attempted_compaction: Epoch,
   #[cfg(feature = "metrics")]
   metric_labels: std::sync::Arc<memberlist_core::types::MetricLabels>,
 }
@@ -352,12 +398,12 @@ where
     min_compact_size: u64,
     rejoin_after_leave: bool,
     clock: LamportClock,
-    out_tx: Option<Sender<Event<T, D>>>,
+    out_tx: Option<Sender<CrateEvent<T, D>>>,
     shutdown_rx: Receiver<()>,
     #[cfg(feature = "metrics")] metric_labels: std::sync::Arc<memberlist_core::types::MetricLabels>,
   ) -> Result<
     (
-      Sender<Event<T, D>>,
+      Sender<CrateEvent<T, D>>,
       TinyVec<Node<T::Id, MaybeResolvedAddress<T>>>,
       SnapshotHandle,
     ),
@@ -383,7 +429,7 @@ where
       alive_nodes,
       clock,
       fh: Some(BufWriter::new(fh)),
-      last_flush: Instant::now(),
+      last_flush: Epoch::now(),
       last_clock,
       last_event_clock,
       last_query_clock,
@@ -396,7 +442,7 @@ where
       stream_rx,
       shutdown_rx: shutdown_rx.clone(),
       wait_tx,
-      last_attempted_compaction: Instant::now(),
+      last_attempted_compaction: Epoch::now(),
       #[cfg(feature = "metrics")]
       metric_labels,
     };
@@ -435,9 +481,9 @@ where
   /// A long running routine that is used to copy events
   /// to the output channel and the internal event handler.
   async fn tee_stream(
-    in_rx: Receiver<Event<T, D>>,
-    stream_tx: Sender<Event<T, D>>,
-    out_tx: Option<Sender<Event<T, D>>>,
+    in_rx: Receiver<CrateEvent<T, D>>,
+    stream_tx: Sender<CrateEvent<T, D>>,
+    out_tx: Option<Sender<CrateEvent<T, D>>>,
     shutdown_rx: Receiver<()>,
   ) {
     macro_rules! flush_event {
@@ -463,7 +509,6 @@ where
         ev = in_rx.recv().fuse() => {
           match ev {
             Ok(ev) => {
-              let ev = ev.into_right();
               flush_event!(ev)
             },
             Err(e) => {
@@ -484,7 +529,6 @@ where
         ev = in_rx.recv().fuse() => {
           match ev {
             Ok(ev) => {
-              let ev = ev.into_right();
               flush_event!(ev)
             },
             Err(e) => {
@@ -510,19 +554,11 @@ where
           return;
         }
 
-        match $event.0 {
-          Either::Left(e) => match &e {
-            EventKind::Member(e) => $this.process_member_event(e),
-            EventKind::User(e) => $this.process_user_event(e),
-            EventKind::Query(e) => $this.process_query_event(e.ltime),
-            EventKind::InternalQuery { query, .. } => $this.process_query_event(query.ltime),
-          },
-          Either::Right(e) => match &*e {
-            EventKind::Member(e) => $this.process_member_event(e),
-            EventKind::User(e) => $this.process_user_event(e),
-            EventKind::Query(e) => $this.process_query_event(e.ltime),
-            EventKind::InternalQuery { query, .. } => $this.process_query_event(query.ltime),
-          },
+        match &$event {
+          CrateEvent::Member(e) => $this.process_member_event(e),
+          CrateEvent::User(e) => $this.process_user_event(e),
+          CrateEvent::Query(e) => $this.process_query_event(e.ltime),
+          CrateEvent::InternalQuery { query, .. } => $this.process_query_event(query.ltime),
         }
       }};
     }
@@ -605,7 +641,7 @@ where
   /// Used to handle a single user event
   fn process_user_event(&mut self, e: &UserEventMessage) {
     // Ignore old clocks
-    let ltime = *e.ltime();
+    let ltime = e.ltime();
     if ltime <= self.last_event_clock {
       return;
     }
@@ -654,7 +690,8 @@ where
   /// clock value. This is done after member events but should also be done
   /// periodically due to race conditions with join and leave intents
   fn update_clock(&mut self) {
-    let last_seen = self.clock.time() - LamportTime::new(1);
+    let t: u64 = self.clock.time().into();
+    let last_seen = LamportTime::from(t.wrapping_sub(1));
     if last_seen > self.last_clock {
       self.last_clock = last_seen;
       self.try_append(SnapshotRecord::Clock(self.last_clock));
@@ -668,7 +705,7 @@ where
     if let Err(e) = self.append_line(l) {
       tracing::error!(err = %e, "ruserf: failed to update snapshot");
       if self.last_attempted_compaction.elapsed() > SNAPSHOT_ERROR_RECOVERY_INTERVAL {
-        self.last_attempted_compaction = Instant::now();
+        self.last_attempted_compaction = Epoch::now();
         tracing::info!("ruserf: attempting compaction to recover from error...");
         if let Err(e) = self.compact() {
           tracing::error!(err = %e, "ruserf: compaction failed, will reattempt after {}s", SNAPSHOT_ERROR_RECOVERY_INTERVAL.as_secs());
@@ -684,7 +721,7 @@ where
     l: SnapshotRecord<'_, T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
   ) -> Result<(), SnapshotError> {
     #[cfg(feature = "metrics")]
-    let start = std::time::Instant::now();
+    let start = crate::types::Epoch::now();
 
     #[cfg(feature = "metrics")]
     let metric_labels = self.metric_labels.clone();
@@ -699,7 +736,7 @@ where
 
     // check if we should flush
     if self.last_flush.elapsed() > FLUSH_INTERVAL {
-      self.last_flush = Instant::now();
+      self.last_flush = Epoch::now();
       self
         .fh
         .as_mut()
@@ -727,7 +764,7 @@ where
   /// Used to compact the snapshot once it is too large
   fn compact(&mut self) -> Result<(), SnapshotError> {
     #[cfg(feature = "metrics")]
-    let start = std::time::Instant::now();
+    let start = crate::types::Epoch::now();
 
     #[cfg(feature = "metrics")]
     let metric_labels = self.metric_labels.clone();
@@ -827,7 +864,7 @@ where
 
     self.fh = Some(BufWriter::new(fh));
     self.offset = offset;
-    self.last_flush = Instant::now();
+    self.last_flush = Epoch::now();
     Ok(())
   }
 }

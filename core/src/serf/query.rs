@@ -1,8 +1,4 @@
-use std::{
-  collections::HashSet,
-  sync::Arc,
-  time::{Duration, Instant},
-};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use async_channel::{Receiver, Sender};
 use async_lock::Mutex;
@@ -22,7 +18,8 @@ use crate::{
   delegate::{Delegate, TransformDelegate},
   error::Error,
   types::{
-    Filter, LamportTime, Member, MemberStatus, MessageType, QueryMessage, QueryResponseMessage,
+    Epoch, Filter, LamportTime, Member, MemberStatus, MessageType, QueryMessage,
+    QueryResponseMessage,
   },
 };
 
@@ -33,9 +30,9 @@ use super::Serf;
 #[viewit::viewit]
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct QueryParam<I, A> {
+pub struct QueryParam<I> {
   /// The filters to apply to the query.
-  filters: OneOrMore<Filter<I, A>>,
+  filters: OneOrMore<Filter<I>>,
 
   /// If true, we are requesting an delivery acknowledgement from
   /// every node that meets the filter requirement. This means nodes
@@ -53,13 +50,12 @@ pub struct QueryParam<I, A> {
   timeout: Duration,
 }
 
-impl<I, A> QueryParam<I, A>
+impl<I> QueryParam<I>
 where
   I: Id,
-  A: CheapClone + Send + 'static,
 {
   /// Used to convert the filters into the wire format
-  pub(crate) fn encode_filters<W: TransformDelegate<Id = I, Address = A>>(
+  pub(crate) fn encode_filters<W: TransformDelegate<Id = I>>(
     &self,
   ) -> Result<TinyVec<Bytes>, W::Error> {
     let mut filters = TinyVec::with_capacity(self.filters.len());
@@ -95,7 +91,7 @@ pub(crate) struct QueryResponseInner<I, A> {
 #[derive(Clone)]
 pub struct QueryResponse<I, A> {
   /// The duration of the query
-  deadline: Instant,
+  deadline: Epoch,
 
   /// The query id
   id: u32,
@@ -113,7 +109,7 @@ impl<I, A> QueryResponse<I, A> {
       q.id(),
       q.ltime(),
       num_nodes,
-      Instant::now() + q.timeout(),
+      Epoch::now() + q.timeout(),
       q.ack(),
     )
   }
@@ -121,7 +117,13 @@ impl<I, A> QueryResponse<I, A> {
 
 impl<I, A> QueryResponse<I, A> {
   #[inline]
-  pub fn new(id: u32, ltime: LamportTime, num_nodes: usize, deadline: Instant, ack: bool) -> Self {
+  pub(crate) fn new(
+    id: u32,
+    ltime: LamportTime,
+    num_nodes: usize,
+    deadline: Epoch,
+    ack: bool,
+  ) -> Self {
     let (ack_ch, acks) = if ack {
       (
         Some(async_channel::bounded(num_nodes)),
@@ -168,7 +170,7 @@ impl<I, A> QueryResponse<I, A> {
   #[inline]
   pub async fn finished(&self) -> bool {
     let c = self.inner.core.lock().await;
-    c.closed || (Instant::now() > self.deadline)
+    c.closed || (Epoch::now() > self.deadline)
   }
 
   /// Used to close the query, which will close the underlying
@@ -202,7 +204,7 @@ impl<I, A> QueryResponse<I, A> {
   {
     // Check if the query is closed
     let mut c = self.inner.core.lock().await;
-    if c.closed || (Instant::now() > self.deadline) {
+    if c.closed || (Epoch::now() > self.deadline) {
       return;
     }
 
@@ -386,9 +388,7 @@ where
   }
 
   /// Used to return the default query parameters
-  pub async fn default_query_param(
-    &self,
-  ) -> QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> {
+  pub async fn default_query_param(&self) -> QueryParam<T::Id> {
     QueryParam {
       filters: OneOrMore::new(),
       request_ack: false,
@@ -419,18 +419,17 @@ where
       };
 
       match filter {
-        Filter::Node(nodes) => {
+        Filter::Id(nodes) => {
           // Check if we are being targeted
-          let found = nodes
-            .iter()
-            .any(|n| n.id().eq(self.inner.memberlist.local_id()));
+          let found = nodes.iter().any(|n| n.eq(self.inner.memberlist.local_id()));
           if !found {
             return false;
           }
         }
         Filter::Tag { tag, expr: fexpr } => {
           // Check if we match this regex
-          if let Some(tags) = &*self.inner.opts.tags.load() {
+          let tags = self.inner.opts.tags.load();
+          if !tags.is_empty() {
             if let Some(expr) = tags.get(&tag) {
               match regex::Regex::new(&fexpr) {
                 Ok(re) => {

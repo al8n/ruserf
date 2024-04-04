@@ -6,7 +6,7 @@ use memberlist_core::{
   bytes::{BufMut, Bytes, BytesMut},
   tracing,
   transport::{MaybeResolvedAddress, Node},
-  types::{Meta, SmallVec},
+  types::{Meta, OneOrMore, SmallVec},
   CheapClone,
 };
 use smol_str::SmolStr;
@@ -14,7 +14,7 @@ use smol_str::SmolStr;
 use crate::{
   delegate::TransformDelegate,
   error::{Error, JoinError},
-  event::InternalQueryEvent,
+  event::{EventProducer, InternalQueryEvent},
   types::{
     LeaveMessage, Member, MessageType, QueryFlag, QueryMessage, SerfMessage, Tags, UserEventMessage,
   },
@@ -22,18 +22,94 @@ use crate::{
 
 use super::*;
 
+impl<T> Serf<T>
+where
+  T: Transport,
+{
+  /// Creates a new Serf instance with the given transport and options.
+  pub async fn new(
+    transport: T::Options,
+    opts: Options,
+  ) -> Result<Self, Error<T, DefaultDelegate<T>>> {
+    Self::new_in(
+      None,
+      None,
+      transport,
+      opts,
+      #[cfg(any(test, feature = "test"))]
+      None,
+    )
+    .await
+  }
+
+  /// Creates a new Serf instance with the given transport and options.
+  pub async fn with_event_producer(
+    transport: T::Options,
+    opts: Options,
+    ev: EventProducer<T, DefaultDelegate<T>>,
+  ) -> Result<Self, Error<T, DefaultDelegate<T>>> {
+    Self::new_in(
+      Some(ev.tx),
+      None,
+      transport,
+      opts,
+      #[cfg(any(test, feature = "test"))]
+      None,
+    )
+    .await
+  }
+}
+
 impl<T, D> Serf<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  pub async fn with_event_sender_and_delegate(
+  /// Creates a new Serf instance with the given transport and options.
+  pub async fn with_delegate(
     transport: T::Options,
     opts: Options,
-    ev: async_channel::Sender<Event<T, D>>,
     delegate: D,
   ) -> Result<Self, Error<T, D>> {
-    Self::new_in(Some(ev), Some(delegate), transport, opts).await
+    Self::new_in(
+      None,
+      Some(delegate),
+      transport,
+      opts,
+      #[cfg(any(test, feature = "test"))]
+      None,
+    )
+    .await
+  }
+
+  /// Creates a new Serf instance with the given transport, options, event sender, and delegate.
+  pub async fn with_event_producer_and_delegate(
+    transport: T::Options,
+    opts: Options,
+    ev: EventProducer<T, D>,
+    delegate: D,
+  ) -> Result<Self, Error<T, D>> {
+    Self::new_in(
+      Some(ev.tx),
+      Some(delegate),
+      transport,
+      opts,
+      #[cfg(any(test, feature = "test"))]
+      None,
+    )
+    .await
+  }
+
+  /// Returns the local node's ID
+  #[inline]
+  pub fn local_id(&self) -> &T::Id {
+    self.inner.memberlist.local_id()
+  }
+
+  /// Returns the local node's ID and the advertised address
+  #[inline]
+  pub fn advertise_node(&self) -> Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> {
+    self.inner.memberlist.advertise_node()
   }
 
   /// A predicate that determines whether or not encryption
@@ -62,8 +138,18 @@ where
 
   /// Returns a point-in-time snapshot of the members of this cluster.
   #[inline]
-  pub async fn members(&self) -> usize {
-    self.inner.members.read().await.states.len()
+  pub async fn members(
+    &self,
+  ) -> OneOrMore<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>> {
+    self
+      .inner
+      .members
+      .read()
+      .await
+      .states
+      .values()
+      .map(|s| s.member.cheap_clone())
+      .collect()
   }
 
   /// Used to provide operator debugging information
@@ -110,6 +196,13 @@ where
     self.inner.members.read().await.states.len()
   }
 
+  /// Returns the key manager for the current serf instance
+  #[cfg(feature = "encryption")]
+  #[inline]
+  pub fn key_manager(&self) -> &crate::key_manager::KeyManager<T, D> {
+    &self.inner.key_manager
+  }
+
   /// Returns the Member information for the local node
   #[inline]
   pub async fn local_member(
@@ -138,11 +231,7 @@ where
       return Err(Error::TagsTooLarge(tags_encoded_len));
     }
     // update the config
-    if !tags.is_empty() {
-      self.inner.opts.tags.store(Some(Arc::new(tags)));
-    } else {
-      self.inner.opts.tags.store(None);
-    }
+    self.inner.opts.tags.store(Arc::new(tags));
 
     // trigger a memberlist update
     self
@@ -159,10 +248,12 @@ where
   #[inline]
   pub async fn user_event(
     &self,
-    name: SmolStr,
-    payload: Bytes,
+    name: impl Into<SmolStr>,
+    payload: impl Into<Bytes>,
     coalesce: bool,
   ) -> Result<(), Error<T, D>> {
+    let name: SmolStr = name.into();
+    let payload: Bytes = payload.into();
     let payload_size_before_encoding = name.len() + payload.len();
 
     // Check size before encoding to prevent needless encoding and return early if it's over the specified limit.
@@ -229,19 +320,21 @@ where
   /// and if not provided, a sane set of defaults will be used.
   pub async fn query(
     &self,
-    name: SmolStr,
-    payload: Bytes,
-    params: Option<QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+    name: impl Into<SmolStr>,
+    payload: impl Into<Bytes>,
+    params: Option<QueryParam<T::Id>>,
   ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
   {
-    self.query_in(name, payload, params, None).await
+    self
+      .query_in(name.into(), payload.into(), params, None)
+      .await
   }
 
   pub(crate) async fn internal_query(
     &self,
     name: SmolStr,
     payload: Bytes,
-    params: Option<QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+    params: Option<QueryParam<T::Id>>,
     ty: InternalQueryEvent<T::Id>,
   ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
   {
@@ -252,7 +345,7 @@ where
     &self,
     name: SmolStr,
     payload: Bytes,
-    params: Option<QueryParam<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
+    params: Option<QueryParam<T::Id>>,
     ty: Option<InternalQueryEvent<T::Id>>,
   ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
   {
@@ -287,7 +380,6 @@ where
       name: name.clone(),
       payload,
     };
-    // let msg_ref = SerfMessageRef::Query(&q);
 
     // Encode the query
     let len = <D as TransformDelegate>::message_encoded_len(&q);
@@ -329,6 +421,47 @@ where
     Ok(resp)
   }
 
+  /// Joins an existing Serf cluster. Returns the id of node
+  /// successfully contacted. If `ignore_old` is true, then any
+  /// user messages sent prior to the join will be ignored.
+  pub async fn join(
+    &self,
+    node: Node<T::Id, MaybeResolvedAddress<T>>,
+    ignore_old: bool,
+  ) -> Result<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>> {
+    // Do a quick state check
+    let current_state = self.state();
+    if current_state != SerfState::Alive {
+      return Err(Error::BadJoinStatus(current_state));
+    }
+
+    // Hold the joinLock, this is to make eventJoinIgnore safe
+    let _join_lock = self.inner.join_lock.lock().await;
+
+    // Ignore any events from a potential join. This is safe since we hold
+    // the joinLock and nobody else can be doing a Join
+    if ignore_old {
+      self.inner.event_join_ignore.store(true, Ordering::SeqCst);
+    }
+
+    // Have memberlist attempt to join
+    match self.inner.memberlist.join(node).await {
+      Ok(node) => {
+        // Start broadcasting the update
+        if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
+          self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+          return Err(e);
+        }
+        self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+        Ok(node)
+      }
+      Err(e) => {
+        self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+        Err(Error::Memberlist(e.into()))
+      }
+    }
+  }
+
   /// Joins an existing Serf cluster. Returns the id of nodes
   /// successfully contacted. If `ignore_old` is true, then any
   /// user messages sent prior to the join will be ignored.
@@ -360,7 +493,6 @@ where
     // the joinLock and nobody else can be doing a Join
     if ignore_old {
       self.inner.event_join_ignore.store(true, Ordering::SeqCst);
-      scopeguard::defer!(self.inner.event_join_ignore.store(false, Ordering::SeqCst));
     }
 
     // Have memberlist attempt to join
@@ -368,12 +500,14 @@ where
       Ok(joined) => {
         // Start broadcasting the update
         if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
+          self.inner.event_join_ignore.store(false, Ordering::SeqCst);
           return Err(JoinError {
             joined,
             errors: Default::default(),
             broadcast_error: Some(e),
           });
         }
+        self.inner.event_join_ignore.store(false, Ordering::SeqCst);
         Ok(joined)
       }
       Err(e) => {
@@ -382,6 +516,7 @@ where
         if !joined.is_empty() {
           // Start broadcasting the update
           if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
+            self.inner.event_join_ignore.store(false, Ordering::SeqCst);
             return Err(JoinError {
               joined,
               errors: errors
@@ -392,6 +527,7 @@ where
             });
           }
 
+          self.inner.event_join_ignore.store(false, Ordering::SeqCst);
           Err(JoinError {
             joined,
             errors: errors
@@ -401,6 +537,7 @@ where
             broadcast_error: None,
           })
         } else {
+          self.inner.event_join_ignore.store(false, Ordering::SeqCst);
           Err(JoinError {
             joined,
             errors: errors
@@ -440,7 +577,7 @@ where
     // Construct the message for the graceful leave
     let msg = LeaveMessage {
       ltime: self.inner.clock.time(),
-      node: self.inner.memberlist.advertise_node(),
+      id: self.inner.memberlist.local_id().cheap_clone(),
       prune: false,
     };
 
@@ -501,22 +638,16 @@ where
   /// immediately, instead of waiting for the reaper to eventually reclaim it.
   /// This also has the effect that Serf will no longer attempt to reconnect
   /// to this node.
-  pub async fn remove_failed_node(
-    &self,
-    node: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  ) -> Result<(), Error<T, D>> {
-    self.force_leave(node, false).await
+  pub async fn remove_failed_node(&self, id: T::Id) -> Result<(), Error<T, D>> {
+    self.force_leave(id, false).await
   }
 
   /// Forcibly removes a failed node from the cluster
   /// immediately, instead of waiting for the reaper to eventually reclaim it.
   /// This also has the effect that Serf will no longer attempt to reconnect
   /// to this node.
-  pub async fn remove_failed_node_prune(
-    &self,
-    node: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  ) -> Result<(), Error<T, D>> {
-    self.force_leave(node, true).await
+  pub async fn remove_failed_node_prune(&self, id: T::Id) -> Result<(), Error<T, D>> {
+    self.force_leave(id, true).await
   }
 
   /// Forcefully shuts down the Serf instance, stopping all network

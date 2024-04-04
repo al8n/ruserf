@@ -22,6 +22,9 @@ futures = "=0.3.29"
 serde = { version = "1", features = ["derive"] }
 humantime-serde = "1"
 indexmap = "2"
+memberlist-types = { path = "../memberlist/types", default-features = false }
+memberlist-core = { path = "../memberlist/core", default-features = false }
+memberlist = { path = "../memberlist/memberlist", default-features = false }
 thiserror = "1"
 viewit = "0.1.5"
 smol_str = "0.2"

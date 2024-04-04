@@ -1,13 +1,13 @@
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{LamportTime, LamportTimeTransformError, Node, NodeTransformError, Transformable};
+use super::{LamportTime, LamportTimeTransformError, Transformable};
 
 /// The message broadcasted to signal the intentional to
 /// leave.
 #[viewit::viewit(setters(prefix = "with"))]
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LeaveMessage<I, A> {
+pub struct LeaveMessage<I> {
   /// The lamport time
   #[viewit(
     getter(const, attrs(doc = "Returns the lamport time for this message")),
@@ -17,12 +17,12 @@ pub struct LeaveMessage<I, A> {
     )
   )]
   ltime: LamportTime,
-  /// The node
+  /// The id of the node
   #[viewit(
     getter(const, style = "ref", attrs(doc = "Returns the node")),
     setter(attrs(doc = "Sets the node (Builder pattern)"))
   )]
-  node: Node<I, A>,
+  id: I,
 
   /// If prune or not
   #[viewit(
@@ -34,7 +34,7 @@ pub struct LeaveMessage<I, A> {
 
 /// Error that can occur when transforming a [`LeaveMessage`].
 #[derive(thiserror::Error)]
-pub enum LeaveMessageTransformError<I: Transformable, A: Transformable> {
+pub enum LeaveMessageTransformError<I: Transformable> {
   /// Not enough bytes to decode LeaveMessage
   #[error("not enough bytes to decode LeaveMessage")]
   NotEnoughBytes,
@@ -43,24 +43,23 @@ pub enum LeaveMessageTransformError<I: Transformable, A: Transformable> {
   EncodeBufferTooSmall,
   /// Error transforming Node
   #[error(transparent)]
-  Node(#[from] NodeTransformError<I, A>),
+  Id(I::Error),
   /// Error transforming LamportTime
   #[error(transparent)]
   LamportTime(#[from] LamportTimeTransformError),
 }
 
-impl<I: Transformable, A: Transformable> core::fmt::Debug for LeaveMessageTransformError<I, A> {
+impl<I: Transformable> core::fmt::Debug for LeaveMessageTransformError<I> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "{}", self)
   }
 }
 
-impl<I, A> Transformable for LeaveMessage<I, A>
+impl<I> Transformable for LeaveMessage<I>
 where
   I: Transformable,
-  A: Transformable,
 {
-  type Error = LeaveMessageTransformError<I, A>;
+  type Error = LeaveMessageTransformError<I>;
 
   fn encode(&self, dst: &mut [u8]) -> Result<usize, Self::Error> {
     let encoded_len = self.encoded_len();
@@ -74,7 +73,10 @@ where
     dst[offset] = self.prune as u8;
     offset += 1;
     offset += self.ltime.encode(&mut dst[offset..])?;
-    offset += self.node.encode(&mut dst[offset..])?;
+    offset += self
+      .id
+      .encode(&mut dst[offset..])
+      .map_err(Self::Error::Id)?;
 
     debug_assert_eq!(
       offset, encoded_len,
@@ -86,7 +88,7 @@ where
   }
 
   fn encoded_len(&self) -> usize {
-    4 + 1 + self.node.encoded_len() + self.ltime.encoded_len()
+    4 + 1 + self.id.encoded_len() + self.ltime.encoded_len()
   }
 
   fn decode(src: &[u8]) -> Result<(usize, Self), Self::Error>
@@ -109,7 +111,7 @@ where
     let (read, ltime) = LamportTime::decode(&src[offset..])?;
     offset += read;
 
-    let (read, node) = Node::decode(&src[offset..])?;
+    let (read, id) = I::decode(&src[offset..]).map_err(Self::Error::Id)?;
     offset += read;
 
     debug_assert_eq!(
@@ -118,31 +120,29 @@ where
       len, offset
     );
 
-    Ok((offset, Self { ltime, node, prune }))
+    Ok((offset, Self { ltime, id, prune }))
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use std::net::SocketAddr;
 
-  use rand::{distributions::Alphanumeric, random, thread_rng, Rng};
+  use rand::{distributions::Alphanumeric, thread_rng, Rng};
   use smol_str::SmolStr;
 
   use super::*;
 
-  impl LeaveMessage<SmolStr, SocketAddr> {
+  impl LeaveMessage<SmolStr> {
     fn random(size: usize) -> Self {
       let id = thread_rng()
         .sample_iter(Alphanumeric)
         .take(size)
         .collect::<Vec<u8>>();
       let id = String::from_utf8(id).unwrap().into();
-      let addr = SocketAddr::from(([127, 0, 0, 1], random::<u16>()));
 
       Self {
         ltime: LamportTime::random(),
-        node: Node::new(id, addr),
+        id,
         prune: thread_rng().gen(),
       }
     }
@@ -157,21 +157,19 @@ mod tests {
         let encoded_len = filter.encode(&mut buf).unwrap();
         assert_eq!(encoded_len, filter.encoded_len());
 
-        let (decoded_len, decoded) = LeaveMessage::<SmolStr, SocketAddr>::decode(&buf).unwrap();
+        let (decoded_len, decoded) = LeaveMessage::<SmolStr>::decode(&buf).unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, filter);
 
         let (decoded_len, decoded) =
-          LeaveMessage::<SmolStr, SocketAddr>::decode_from_reader(&mut std::io::Cursor::new(&buf))
-            .unwrap();
+          LeaveMessage::<SmolStr>::decode_from_reader(&mut std::io::Cursor::new(&buf)).unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, filter);
 
-        let (decoded_len, decoded) = LeaveMessage::<SmolStr, SocketAddr>::decode_from_async_reader(
-          &mut futures::io::Cursor::new(&buf),
-        )
-        .await
-        .unwrap();
+        let (decoded_len, decoded) =
+          LeaveMessage::<SmolStr>::decode_from_async_reader(&mut futures::io::Cursor::new(&buf))
+            .await
+            .unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, filter);
       }

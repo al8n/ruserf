@@ -12,7 +12,6 @@ homepage.workspace = true
 default = ["metrics", "async-graphql"]
 metrics = ["memberlist-core/metrics", "dep:metrics"]
 encryption = ["memberlist-core/encryption", "ruserf-types/encryption", "base64"]
-
 async-graphql = ["dep:async-graphql"]
 
 serde = [
@@ -24,6 +23,8 @@ serde = [
   "smallvec/serde",
   "indexmap/serde",
 ]
+
+test = ["memberlist-core/test", "paste", "tracing-subscriber", "tempfile"]
 
 [dependencies]
 atomic_refcell = "0.1"
@@ -38,6 +39,7 @@ either = "1"
 indexmap.workspace = true
 once_cell = "1" # remove this dependency when [feature(lazy_cell)] is stabilized
 parking_lot = { version = "0.12", features = ["send_guard"] }
+pin-project = "1"
 rand.workspace = true
 regex = "1"
 scopeguard = "1"
@@ -45,7 +47,7 @@ smol_str.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 viewit.workspace = true
-memberlist-core = { path = "../../memberlist/core", default-features = false }
+memberlist-core.workspace = true
 ruserf-types.workspace = true
 
 metrics = { version = "0.22", optional = true }
@@ -56,8 +58,19 @@ serde_json = "1"
 
 base64 = { version = "0.22", optional = true }
 
+# test features
+paste = { version = "1", optional = true }
+tracing-subscriber = { version = "0.3", optional = true, features = [
+  "env-filter",
+  "tracing-log",
+] }
+tempfile = { version = "3", optional = true }
+
 [dev-dependencies]
+agnostic-lite = { version = "0.3", features = ["tokio"] }
 tokio = { version = "1", features = ["full"] }
+futures = { workspace = true, features = ["executor"] }
+tempfile = "3"
 
 [package.metadata.docs.rs]
 all-features = true

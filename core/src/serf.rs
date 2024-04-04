@@ -15,14 +15,14 @@ use super::{
   broadcast::SerfBroadcast,
   coordinate::{Coordinate, CoordinateClient},
   delegate::{CompositeDelegate, Delegate},
-  event::Event,
+  event::CrateEvent,
   snapshot::SnapshotHandle,
   types::{LamportClock, LamportTime, Members, UserEvents},
   Options,
 };
 
 mod api;
-mod base;
+pub(crate) mod base;
 
 mod delegate;
 pub(crate) use delegate::*;
@@ -33,7 +33,7 @@ pub use query::*;
 mod internal_query;
 
 /// Maximum 128 KB snapshot
-const SNAPSHOT_SIZE_LIMIT: u64 = 128 * 1024;
+pub(crate) const SNAPSHOT_SIZE_LIMIT: u64 = 128 * 1024;
 
 /// Maximum 9KB for event name and payload
 const USER_EVENT_SIZE_LIMIT: usize = 9 * 1024;
@@ -151,7 +151,7 @@ where
   pub(crate) memberlist: Memberlist<T, SerfDelegate<T, D>>,
   pub(crate) members:
     Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
-  event_tx: Option<async_channel::Sender<Event<T, D>>>,
+  event_tx: Option<async_channel::Sender<CrateEvent<T, D>>>,
   pub(crate) event_join_ignore: AtomicBool,
 
   pub(crate) event_core: RwLock<EventCore>,
@@ -197,6 +197,3 @@ where
     }
   }
 }
-
-#[test]
-fn test_() {}

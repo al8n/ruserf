@@ -23,9 +23,9 @@ pub trait TransformDelegate: Send + Sync + 'static {
   /// The Address type.
   type Address: CheapClone + Send + Sync + 'static;
 
-  fn encode_filter(filter: &Filter<Self::Id, Self::Address>) -> Result<Bytes, Self::Error>;
+  fn encode_filter(filter: &Filter<Self::Id>) -> Result<Bytes, Self::Error>;
 
-  fn decode_filter(bytes: &[u8]) -> Result<(usize, Filter<Self::Id, Self::Address>), Self::Error>;
+  fn decode_filter(bytes: &[u8]) -> Result<(usize, Filter<Self::Id>), Self::Error>;
 
   fn node_encoded_len(node: &Node<Self::Id, Self::Address>) -> usize;
 
@@ -105,7 +105,7 @@ where
   Node(#[from] NodeTransformError<I, A>),
   /// Filter transformation error.
   #[error(transparent)]
-  Filter(#[from] FilterTransformError<I, A>),
+  Filter(#[from] FilterTransformError<I>),
   /// Tags transformation error.
   #[error(transparent)]
   Tags(#[from] TagsTransformError),
@@ -155,14 +155,14 @@ where
   type Id = I;
   type Address = A;
 
-  fn encode_filter(filter: &Filter<Self::Id, Self::Address>) -> Result<Bytes, Self::Error> {
+  fn encode_filter(filter: &Filter<Self::Id>) -> Result<Bytes, Self::Error> {
     filter
       .encode_to_vec()
       .map(Bytes::from)
       .map_err(Self::Error::Filter)
   }
 
-  fn decode_filter(bytes: &[u8]) -> Result<(usize, Filter<Self::Id, Self::Address>), Self::Error> {
+  fn decode_filter(bytes: &[u8]) -> Result<(usize, Filter<Self::Id>), Self::Error> {
     Filter::decode(bytes).map_err(Self::Error::Filter)
   }
 

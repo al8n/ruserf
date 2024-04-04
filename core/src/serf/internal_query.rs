@@ -1,5 +1,4 @@
 use async_channel::{bounded, Receiver, Sender};
-use either::Either;
 use futures::FutureExt;
 use memberlist_core::{
   agnostic_lite::RuntimeLite,
@@ -12,7 +11,7 @@ use smol_str::SmolStr;
 use crate::{
   delegate::{Delegate, TransformDelegate},
   error::Error,
-  event::{Event, EventKind, InternalQueryEvent, QueryEvent},
+  event::{CrateEvent, InternalQueryEvent, QueryEvent},
   types::{MessageType, QueryResponseMessage, SerfMessage},
 };
 
@@ -31,8 +30,8 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  in_rx: Receiver<Event<T, D>>,
-  out_tx: Sender<Event<T, D>>,
+  in_rx: Receiver<CrateEvent<T, D>>,
+  out_tx: Sender<CrateEvent<T, D>>,
   shutdown_rx: Receiver<()>,
 }
 
@@ -42,7 +41,10 @@ where
   T: Transport,
 {
   #[allow(clippy::new_ret_no_self)]
-  pub(crate) fn new(out_tx: Sender<Event<T, D>>, shutdown_rx: Receiver<()>) -> Sender<Event<T, D>> {
+  pub(crate) fn new(
+    out_tx: Sender<CrateEvent<T, D>>,
+    shutdown_rx: Receiver<()>,
+  ) -> Sender<CrateEvent<T, D>> {
     let (in_tx, in_rx) = bounded(1024);
     let this = Self {
       in_rx,
@@ -85,11 +87,11 @@ where
     });
   }
 
-  async fn handle_query(ev: Event<T, D>) {
+  async fn handle_query(ev: CrateEvent<T, D>) {
     macro_rules! handle_query {
       ($ev: expr) => {{
         match $ev {
-          EventKind::InternalQuery { kind, query } => match kind {
+          CrateEvent::InternalQuery { kind, query } => match kind {
             InternalQueryEvent::Ping => {}
             InternalQueryEvent::Conflict(conflict) => {
               Self::handle_conflict(&conflict, &query).await;
@@ -116,10 +118,7 @@ where
       }};
     }
 
-    match ev.0 {
-      Either::Left(ev) => handle_query!(ev),
-      Either::Right(ev) => handle_query!(&*ev),
-    }
+    handle_query!(ev)
   }
 
   /// invoked when we get a query that is attempting to
@@ -217,7 +216,9 @@ where
     }
 
     tracing::info!("ruserf: received install-key query");
-    if let Some(kr) = q.ctx.this.inner.memberlist.keyring() {
+    let kr = q.ctx.this.inner.memberlist.keyring();
+    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
+      let kr = kr.unwrap();
       kr.insert(req.key.unwrap()).await;
       if q.ctx.this.inner.opts.keyring_file.is_some() {
         if let Err(e) = q.ctx.this.write_keyring_file().await {
@@ -277,7 +278,9 @@ where
     }
 
     tracing::info!("ruserf: received use-key query");
-    if let Some(kr) = q.ctx.this.inner.memberlist.keyring() {
+    let kr = q.ctx.this.inner.memberlist.keyring();
+    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
+      let kr = kr.unwrap();
       if let Err(e) = kr.use_key(&req.key.unwrap()).await {
         tracing::error!(err=%e, "ruserf: failed to change primary key");
         response.message = SmolStr::new(e.to_string());
@@ -343,7 +346,9 @@ where
     }
 
     tracing::info!("ruserf: received remove-key query");
-    if let Some(kr) = q.ctx.this.inner.memberlist.keyring() {
+    let kr = q.ctx.this.inner.memberlist.keyring();
+    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
+      let kr = kr.unwrap();
       if let Err(e) = kr.remove(&req.key.unwrap()).await {
         tracing::error!(err=%e, "ruserf: failed to remove key");
         response.message = SmolStr::new(e.to_string());
@@ -389,7 +394,9 @@ where
     }
 
     tracing::info!("ruserf: received list-keys query");
-    if let Some(kr) = q.ctx.this.inner.memberlist.keyring() {
+    let kr = q.ctx.this.inner.memberlist.keyring();
+    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
+      let kr = kr.unwrap();
       for k in kr.keys().await {
         response.keys.push(k);
       }
@@ -409,7 +416,7 @@ where
   }
 
   #[cfg(feature = "encryption")]
-  fn key_list_response_with_correct_size(
+  pub(crate) fn key_list_response_with_correct_size(
     q: &QueryEvent<T, D>,
     resp: &mut KeyResponseMessage,
   ) -> Result<

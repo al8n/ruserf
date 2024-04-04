@@ -1,17 +1,16 @@
 use byteorder::{ByteOrder, NetworkEndian};
-use memberlist_types::NodeTransformError;
 use transformable::utils::*;
 
 use crate::LamportTimeTransformError;
 
-use super::{LamportTime, Node, Transformable};
+use super::{LamportTime, Transformable};
 
 /// The message broadcasted after we join to
 /// associated the node with a lamport clock
 #[viewit::viewit(setters(prefix = "with"))]
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct JoinMessage<I, A> {
+pub struct JoinMessage<I> {
   /// The lamport time
   #[viewit(
     getter(const, attrs(doc = "Returns the lamport time for this message")),
@@ -21,18 +20,18 @@ pub struct JoinMessage<I, A> {
     )
   )]
   ltime: LamportTime,
-  /// The node
+  /// The id of the node
   #[viewit(
     getter(const, style = "ref", attrs(doc = "Returns the node")),
     setter(attrs(doc = "Sets the node (Builder pattern)"))
   )]
-  node: Node<I, A>,
+  id: I,
 }
 
-impl<I, A> JoinMessage<I, A> {
+impl<I> JoinMessage<I> {
   /// Create a new join message
-  pub fn new(ltime: LamportTime, node: Node<I, A>) -> Self {
-    Self { ltime, node }
+  pub fn new(ltime: LamportTime, id: I) -> Self {
+    Self { ltime, id }
   }
 
   /// Set the lamport time
@@ -42,44 +41,43 @@ impl<I, A> JoinMessage<I, A> {
     self
   }
 
-  /// Set the node
+  /// Set the id of the node
   #[inline]
-  pub fn set_node(&mut self, node: Node<I, A>) -> &mut Self {
-    self.node = node;
+  pub fn set_id(&mut self, id: I) -> &mut Self {
+    self.id = id;
     self
   }
 }
 
 /// Error that can occur when transforming a JoinMessage
 #[derive(thiserror::Error)]
-pub enum JoinMessageTransformError<I: Transformable, A: Transformable> {
+pub enum JoinMessageTransformError<I: Transformable> {
   /// Not enough bytes to decode JoinMessage
   #[error("not enough bytes to decode JoinMessage")]
   NotEnoughBytes,
   /// Encode buffer too small
   #[error("encode buffer too small")]
   EncodeBufferTooSmall,
-  /// Error transforming Node
+  /// Error transforming Id
   #[error(transparent)]
-  Node(#[from] NodeTransformError<I, A>),
+  Id(I::Error),
 
   /// Error transforming LamportTime
   #[error(transparent)]
   LamportTime(#[from] LamportTimeTransformError),
 }
 
-impl<I: Transformable, A: Transformable> core::fmt::Debug for JoinMessageTransformError<I, A> {
+impl<I: Transformable> core::fmt::Debug for JoinMessageTransformError<I> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     write!(f, "{}", self)
   }
 }
 
-impl<I, A> Transformable for JoinMessage<I, A>
+impl<I> Transformable for JoinMessage<I>
 where
   I: Transformable,
-  A: Transformable,
 {
-  type Error = JoinMessageTransformError<I, A>;
+  type Error = JoinMessageTransformError<I>;
 
   fn encode(&self, dst: &mut [u8]) -> Result<usize, Self::Error> {
     let encoded_len = self.encoded_len();
@@ -92,7 +90,10 @@ where
     offset += 4;
 
     offset += self.ltime.encode(&mut dst[offset..])?;
-    offset += self.node.encode(&mut dst[offset..])?;
+    offset += self
+      .id
+      .encode(&mut dst[offset..])
+      .map_err(Self::Error::Id)?;
 
     debug_assert_eq!(
       offset, encoded_len,
@@ -103,7 +104,7 @@ where
   }
 
   fn encoded_len(&self) -> usize {
-    4 + encoded_len_varint(self.ltime.0) + self.node.encoded_len()
+    4 + encoded_len_varint(self.ltime.0) + self.id.encoded_len()
   }
 
   fn decode(src: &[u8]) -> Result<(usize, Self), Self::Error>
@@ -123,7 +124,7 @@ where
     let (n, ltime) = LamportTime::decode(&src[offset..])?;
     offset += n;
 
-    let (n, node) = Node::decode(&src[offset..])?;
+    let (n, id) = I::decode(&src[offset..]).map_err(Self::Error::Id)?;
     offset += n;
 
     debug_assert_eq!(
@@ -131,30 +132,28 @@ where
       "expect read {} bytes, but actual read {} bytes",
       encoded_len, offset
     );
-    Ok((encoded_len, Self { ltime, node }))
+    Ok((encoded_len, Self { ltime, id }))
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use rand::{distributions::Alphanumeric, random, thread_rng, Rng};
+  use rand::{distributions::Alphanumeric, thread_rng, Rng};
   use smol_str::SmolStr;
-  use std::net::SocketAddr;
 
   use super::*;
 
-  impl JoinMessage<SmolStr, SocketAddr> {
+  impl JoinMessage<SmolStr> {
     fn random(size: usize) -> Self {
       let id = thread_rng()
         .sample_iter(Alphanumeric)
         .take(size)
         .collect::<Vec<u8>>();
       let id = String::from_utf8(id).unwrap().into();
-      let addr = SocketAddr::from(([127, 0, 0, 1], random::<u16>()));
 
       Self {
         ltime: LamportTime::random(),
-        node: Node::new(id, addr),
+        id,
       }
     }
   }
@@ -168,21 +167,19 @@ mod tests {
         let encoded_len = filter.encode(&mut buf).unwrap();
         assert_eq!(encoded_len, filter.encoded_len());
 
-        let (decoded_len, decoded) = JoinMessage::<SmolStr, SocketAddr>::decode(&buf).unwrap();
+        let (decoded_len, decoded) = JoinMessage::<SmolStr>::decode(&buf).unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, filter);
 
         let (decoded_len, decoded) =
-          JoinMessage::<SmolStr, SocketAddr>::decode_from_reader(&mut std::io::Cursor::new(&buf))
-            .unwrap();
+          JoinMessage::<SmolStr>::decode_from_reader(&mut std::io::Cursor::new(&buf)).unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, filter);
 
-        let (decoded_len, decoded) = JoinMessage::<SmolStr, SocketAddr>::decode_from_async_reader(
-          &mut futures::io::Cursor::new(&buf),
-        )
-        .await
-        .unwrap();
+        let (decoded_len, decoded) =
+          JoinMessage::<SmolStr>::decode_from_async_reader(&mut futures::io::Cursor::new(&buf))
+            .await
+            .unwrap();
         assert_eq!(decoded_len, encoded_len);
         assert_eq!(decoded, filter);
       }

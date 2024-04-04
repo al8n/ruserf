@@ -237,6 +237,15 @@ pub struct KeyResponseMessage {
   primary_key: Option<SecretKey>,
 }
 
+impl KeyResponseMessage {
+  /// Adds a key to the list of keys
+  #[inline]
+  pub fn add_key(&mut self, key: SecretKey) -> &mut Self {
+    self.keys.push(key);
+    self
+  }
+}
+
 /// Error that can occur when transforming a [`KeyResponseMessage`].
 #[derive(Debug, thiserror::Error)]
 pub enum KeyResponseMessageTransformError {
@@ -382,34 +391,34 @@ pub struct KeyResponse<I> {
   )]
   num_err: usize,
 
-  /// A mapping of the base64-encoded value of the key bytes to the
+  /// A mapping of the value of the key bytes to the
   /// number of nodes that have the key installed.
   #[viewit(
     getter(
       const,
       style = "ref",
       attrs(
-        doc = "Returns a mapping of the base64-encoded value of the key bytes to the number of nodes that have the key installed."
+        doc = "Returns a mapping of the value of the key bytes to the number of nodes that have the key installed."
       )
     ),
     setter(attrs(
-      doc = "Sets a mapping of the base64-encoded value of the key bytes to the number of nodes that have the key installed (Builder pattern)"
+      doc = "Sets a mapping of the value of the key bytes to the number of nodes that have the key installed (Builder pattern)"
     ))
   )]
   keys: IndexMap<SecretKey, usize>,
 
-  /// A mapping of the base64-encoded value of the primary
+  /// A mapping of the value of the primary
   /// key bytes to the number of nodes that have the key installed.
   #[viewit(
     getter(
       const,
       style = "ref",
       attrs(
-        doc = "Returns a mapping of the base64-encoded value of the primary key bytes to the number of nodes that have the key installed."
+        doc = "Returns a mapping of the value of the primary key bytes to the number of nodes that have the key installed."
       )
     ),
     setter(attrs(
-      doc = "Sets a mapping of the base64-encoded value of the primary key bytes to the number of nodes that have the key installed. (Builder pattern)"
+      doc = "Sets a mapping of the value of the primary key bytes to the number of nodes that have the key installed. (Builder pattern)"
     ))
   )]
   primary_keys: IndexMap<SecretKey, usize>,

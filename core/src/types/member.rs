@@ -1,9 +1,9 @@
 use memberlist_core::types::OneOrMore;
 use ruserf_types::Member;
 
-use std::{collections::HashMap, time::Instant};
+use std::collections::HashMap;
 
-use super::{LamportTime, MessageType};
+use super::{Epoch, LamportTime, MessageType};
 
 /// Used to track members that are no longer active due to
 /// leaving, failing, partitioning, etc. It tracks the member along with
@@ -15,21 +15,13 @@ pub(crate) struct MemberState<I, A> {
   /// lamport clock time of last received message
   status_time: LamportTime,
   /// wall clock time of leave
-  leave_time: Instant,
-}
-
-impl<I, A> MemberState<I, A> {
-  pub(crate) fn zero_leave_time() -> Instant {
-    static ZERO: once_cell::sync::Lazy<Instant> =
-      once_cell::sync::Lazy::new(|| Instant::now() - std::time::UNIX_EPOCH.elapsed().unwrap());
-    *ZERO
-  }
+  leave_time: Option<Epoch>,
 }
 
 /// Used to buffer intents for out-of-order deliveries.
 pub(crate) struct NodeIntent {
   pub(crate) ty: MessageType,
-  pub(crate) wall_time: Instant,
+  pub(crate) wall_time: Epoch,
   pub(crate) ltime: LamportTime,
 }
 
@@ -47,15 +39,6 @@ impl<I, A> Default for Members<I, A> {
       recent_intents: Default::default(),
       left_members: Default::default(),
       failed_members: Default::default(),
-    }
-  }
-}
-
-impl<I: Eq + core::hash::Hash, A: Eq + core::hash::Hash> Members<I, A> {
-  pub(crate) fn recent_intent(&self, id: &I, ty: MessageType) -> Option<LamportTime> {
-    match self.recent_intents.get(id) {
-      Some(intent) if intent.ty == ty => Some(intent.ltime),
-      _ => None,
     }
   }
 }
