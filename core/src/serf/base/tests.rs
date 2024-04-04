@@ -24,8 +24,7 @@ use super::*;
 mod internals;
 pub use internals::*;
 
-mod serf;
-pub use serf::*;
+pub(crate) mod serf;
 
 fn test_config() -> Options {
   let mut opts = Options::new();

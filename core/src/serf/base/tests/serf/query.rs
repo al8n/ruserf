@@ -22,7 +22,6 @@ where
   assert_eq!(params.timeout, timeout);
 }
 
-
 /// Unit test for query params encode filters
 pub async fn query_params_encode_filters<T>(transport_opts: T::Options)
 where
@@ -120,4 +119,109 @@ where
 
   let filters = params.encode_filters::<DefaultDelegate<T>>().unwrap();
   assert!(!s.should_process_query(&filters));
+}
+
+/// Unit test for serf query deduplicate
+pub async fn serf_query_deduplicate<T>(transport_opts: T::Options)
+where
+  T: Transport,
+{
+  let opts = test_config();
+  let s = Serf::<T>::new(transport_opts, opts).await.unwrap();
+
+  // Set up a dummy query and response
+  let mq = QueryMessage {
+    ltime: 123.into(),
+    id: 123,
+    from: s.advertise_node(),
+    filters: Default::default(),
+    flags: QueryFlag::ACK,
+    relay_factor: 0,
+    timeout: Duration::from_secs(1),
+    name: Default::default(),
+    payload: Default::default(),
+  };
+  let query = QueryResponse::from_query(&mq, 3);
+  let mut response = QueryResponseMessage {
+    ltime: mq.ltime,
+    id: mq.id,
+    from: s.advertise_node(),
+    flags: QueryFlag::empty(),
+    payload: Default::default(),
+  };
+  {
+    let mut qc = s.inner.query_core.write().await;
+    qc.responses.insert(mq.ltime, query.clone());
+  }
+
+  // Send a few duplicate responses
+  s.handle_query_response(response.clone()).await;
+  s.handle_query_response(response.clone()).await;
+  response.flags |= QueryFlag::ACK;
+  s.handle_query_response(response.clone()).await;
+  s.handle_query_response(response.clone()).await;
+
+  // Ensure we only get one NodeResponse off the channel
+  let resp_rx = query.response_rx();
+  futures::select! {
+    _ = resp_rx.recv().fuse() => {},
+    default => {
+      panic!("should have a response")
+    }
+  }
+
+  let ack_rx = query.ack_rx().unwrap();
+  futures::select! {
+    _ = ack_rx.recv().fuse() => {},
+    default => {
+      panic!("should have an ack")
+    }
+  }
+
+  futures::select! {
+    _ = resp_rx.recv().fuse() => {
+      panic!("should not have a second response")
+    },
+    default => {}
+  }
+
+  futures::select! {
+    _ = ack_rx.recv().fuse() => {
+      panic!("should not have a second ack")
+    },
+    default => {}
+  }
+}
+
+/// Unit test for serf query size limit
+pub async fn serf_query_size_limit<T>(transport_opts: T::Options)
+where
+  T: Transport,
+{
+  let opts = test_config();
+  let size_limit = opts.query_size_limit;
+  let s = Serf::<T>::new(transport_opts, opts).await.unwrap();
+
+  let name = "this is too large a query";
+  let payload = vec![0; size_limit];
+  let Err(err) = s.query(name, payload, None).await else {
+    panic!("expected error");
+  };
+  assert!(err.to_string().contains("query exceeds limit of"));
+}
+
+/// Unit test for serf query size limit increased
+pub async fn serf_query_size_limit_increased<T>(transport_opts: T::Options)
+where
+  T: Transport,
+{
+  let opts = test_config();
+  let size_limit = opts.query_size_limit;
+  let s = Serf::<T>::new(transport_opts, opts.with_query_size_limit(size_limit * 2))
+    .await
+    .unwrap();
+
+  let name = "this is too large a query";
+  let payload = vec![0; size_limit];
+  s.query(name, payload, None).await.unwrap();
 }

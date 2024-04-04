@@ -242,10 +242,11 @@ where
   pub async fn user_event(
     &self,
     name: impl Into<SmolStr>,
-    payload: Bytes,
+    payload: impl Into<Bytes>,
     coalesce: bool,
   ) -> Result<(), Error<T, D>> {
     let name: SmolStr = name.into();
+    let payload: Bytes = payload.into();
     let payload_size_before_encoding = name.len() + payload.len();
 
     // Check size before encoding to prevent needless encoding and return early if it's over the specified limit.
@@ -313,11 +314,13 @@ where
   pub async fn query(
     &self,
     name: impl Into<SmolStr>,
-    payload: Bytes,
+    payload: impl Into<Bytes>,
     params: Option<QueryParam<T::Id>>,
   ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
   {
-    self.query_in(name.into(), payload, params, None).await
+    self
+      .query_in(name.into(), payload.into(), params, None)
+      .await
   }
 
   pub(crate) async fn internal_query(
