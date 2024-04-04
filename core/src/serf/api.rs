@@ -196,6 +196,13 @@ where
     self.inner.members.read().await.states.len()
   }
 
+  /// Returns the key manager for the current serf instance
+  #[cfg(feature = "encryption")]
+  #[inline]
+  pub fn key_manager(&self) -> &crate::key_manager::KeyManager<T, D> {
+    &self.inner.key_manager
+  }
+
   /// Returns the Member information for the local node
   #[inline]
   pub async fn local_member(

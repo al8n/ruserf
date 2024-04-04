@@ -1227,6 +1227,84 @@ where
   assert!(!stats.get_encrypted());
 }
 
+/// Unit test for serf write keying file
+#[cfg(feature = "encryption")]
+pub async fn serf_write_keying_file<T>(
+  get_transport_opts: impl FnOnce(memberlist_core::types::SecretKeyring) -> T::Options,
+) where
+  T: Transport,
+{
+  use std::io::Read;
+
+  use base64::{engine::general_purpose, Engine as _};
+
+  const EXISTING: &str = "T9jncgl9mbLus+baTTa7q7nPSUrXwbDi2dhbtqir37s=";
+  const NEW_KEY: &str = "HvY8ubRZMgafUOWvrOadwOckVa1wN3QWAo46FVKbVN8=";
+
+  let td = tempfile::tempdir().unwrap();
+  let mut p = td.path().join("serf_write_keying_file");
+  p.set_extension("json");
+
+  let existing_bytes = general_purpose::STANDARD.decode(EXISTING).unwrap();
+  let sk = memberlist_core::types::SecretKey::try_from(existing_bytes.as_slice()).unwrap();
+  let keyring = memberlist_core::types::SecretKeyring::new(sk);
+
+  let s = Serf::<T>::new(get_transport_opts(keyring), test_config())
+    .await
+    .unwrap();
+  assert!(
+    s.encryption_enabled(),
+    "write keyring file test only works on encrypted serf"
+  );
+
+  let manager = s.key_manager();
+  let new_key = general_purpose::STANDARD.decode(NEW_KEY).unwrap();
+  let new_sk = memberlist_core::types::SecretKey::try_from(new_key.as_slice()).unwrap();
+  manager.install_key(new_sk, None).await.unwrap();
+
+  let mut keyring_file = std::fs::File::open(&p).unwrap();
+  let mut s = String::new();
+  keyring_file.read_to_string(&mut s).unwrap();
+
+  let lines = s.split('\n').collect::<Vec<_>>();
+  assert_eq!(lines.len(), 4);
+
+  // Ensure both the original key and the new key are present in the file
+  assert!(s.contains(EXISTING));
+  assert!(s.contains(NEW_KEY));
+
+  // Ensure the existing key remains primary. This is in position 1 because
+  // the file writer will use json.MarshalIndent(), leaving the first line as
+  // the opening bracket.
+  assert!(lines[1].contains(EXISTING));
+
+  // Swap primary keys
+  manager.use_key(new_sk, None).await.unwrap();
+
+  let mut keyring_file = std::fs::File::open(&p).unwrap();
+  let mut s = String::new();
+  keyring_file.read_to_string(&mut s).unwrap();
+
+  let lines = s.split('\n').collect::<Vec<_>>();
+  assert_eq!(lines.len(), 4);
+
+  // Key order should have changed in keyring file
+  assert!(lines[1].contains(NEW_KEY));
+
+  // Remove the old key
+  manager.remove_key(sk, None).await.unwrap();
+
+  let mut keyring_file = std::fs::File::open(&p).unwrap();
+  let mut s = String::new();
+  keyring_file.read_to_string(&mut s).unwrap();
+
+  let lines = s.split('\n').collect::<Vec<_>>();
+  // Only the new key should now be present in the keyring file
+  assert_eq!(lines.len(), 3);
+
+  assert!(lines[1].contains(NEW_KEY));
+}
+
 #[test]
 fn test_recent_intent() {
   assert!(recent_intent::<SmolStr>(&HashMap::new(), &"foo".into(), MessageType::Join).is_none());
