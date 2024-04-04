@@ -22,6 +22,7 @@ where
   assert_eq!(params.timeout, timeout);
 }
 
+
 /// Unit test for query params encode filters
 pub async fn query_params_encode_filters<T>(transport_opts: T::Options)
 where

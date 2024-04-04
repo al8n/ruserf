@@ -14,7 +14,7 @@ pub mod leave;
 pub mod join;
 
 /// Unit tests for the serf ping delegate related functionalities
-pub mod ping_delegate;
+pub mod delegate;
 
 /// Unit tests for the serf reconnect related functionalities
 pub mod reconnect;
@@ -27,6 +27,9 @@ pub mod reap;
 
 /// Unit tests for the serf snapshot related functionalities
 pub mod snapshot;
+
+/// Unit tests for the serf query related functionalities
+pub mod query;
 
 fn test_member_status<I: Id, A>(
   members: &HashMap<I, MemberState<I, A>>,
