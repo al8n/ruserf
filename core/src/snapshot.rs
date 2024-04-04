@@ -28,7 +28,7 @@ use ruserf_types::UserEventMessage;
 
 use crate::{
   delegate::{Delegate, TransformDelegate},
-  event::{Event, EventKind, MemberEvent, MemberEventType},
+  event::{CrateEvent, CrateEventKind, MemberEvent, MemberEventType},
   invalid_data_io_error,
   types::{LamportClock, LamportTime},
 };
@@ -380,7 +380,7 @@ where
   path: PathBuf,
   offset: u64,
   rejoin_after_leave: bool,
-  stream_rx: Receiver<Event<T, D>>,
+  stream_rx: Receiver<CrateEvent<T, D>>,
   shutdown_rx: Receiver<()>,
   wait_tx: Sender<()>,
   last_attempted_compaction: Instant,
@@ -399,12 +399,12 @@ where
     min_compact_size: u64,
     rejoin_after_leave: bool,
     clock: LamportClock,
-    out_tx: Option<Sender<Event<T, D>>>,
+    out_tx: Option<Sender<CrateEvent<T, D>>>,
     shutdown_rx: Receiver<()>,
     #[cfg(feature = "metrics")] metric_labels: std::sync::Arc<memberlist_core::types::MetricLabels>,
   ) -> Result<
     (
-      Sender<Event<T, D>>,
+      Sender<CrateEvent<T, D>>,
       TinyVec<Node<T::Id, MaybeResolvedAddress<T>>>,
       SnapshotHandle,
     ),
@@ -482,9 +482,9 @@ where
   /// A long running routine that is used to copy events
   /// to the output channel and the internal event handler.
   async fn tee_stream(
-    in_rx: Receiver<Event<T, D>>,
-    stream_tx: Sender<Event<T, D>>,
-    out_tx: Option<Sender<Event<T, D>>>,
+    in_rx: Receiver<CrateEvent<T, D>>,
+    stream_tx: Sender<CrateEvent<T, D>>,
+    out_tx: Option<Sender<CrateEvent<T, D>>>,
     shutdown_rx: Receiver<()>,
   ) {
     macro_rules! flush_event {
@@ -559,16 +559,16 @@ where
 
         match $event.0 {
           Either::Left(e) => match &e {
-            EventKind::Member(e) => $this.process_member_event(e),
-            EventKind::User(e) => $this.process_user_event(e),
-            EventKind::Query(e) => $this.process_query_event(e.ltime),
-            EventKind::InternalQuery { query, .. } => $this.process_query_event(query.ltime),
+            CrateEventKind::Member(e) => $this.process_member_event(e),
+            CrateEventKind::User(e) => $this.process_user_event(e),
+            CrateEventKind::Query(e) => $this.process_query_event(e.ltime),
+            CrateEventKind::InternalQuery { query, .. } => $this.process_query_event(query.ltime),
           },
           Either::Right(e) => match &*e {
-            EventKind::Member(e) => $this.process_member_event(e),
-            EventKind::User(e) => $this.process_user_event(e),
-            EventKind::Query(e) => $this.process_query_event(e.ltime),
-            EventKind::InternalQuery { query, .. } => $this.process_query_event(query.ltime),
+            CrateEventKind::Member(e) => $this.process_member_event(e),
+            CrateEventKind::User(e) => $this.process_user_event(e),
+            CrateEventKind::Query(e) => $this.process_query_event(e.ltime),
+            CrateEventKind::InternalQuery { query, .. } => $this.process_query_event(query.ltime),
           },
         }
       }};

@@ -14,7 +14,7 @@ use smol_str::SmolStr;
 use crate::{
   delegate::TransformDelegate,
   error::{Error, JoinError},
-  event::InternalQueryEvent,
+  event::{EventProducer, InternalQueryEvent},
   types::{
     LeaveMessage, Member, MessageType, QueryFlag, QueryMessage, SerfMessage, Tags, UserEventMessage,
   },
@@ -43,13 +43,13 @@ where
   }
 
   /// Creates a new Serf instance with the given transport and options.
-  pub async fn with_event_sender(
+  pub async fn with_event_producer(
     transport: T::Options,
     opts: Options,
-    ev: async_channel::Sender<Event<T, DefaultDelegate<T>>>,
+    ev: EventProducer<T, DefaultDelegate<T>>,
   ) -> Result<Self, Error<T, DefaultDelegate<T>>> {
     Self::new_in(
-      Some(ev),
+      Some(ev.tx),
       None,
       transport,
       opts,
@@ -83,14 +83,14 @@ where
   }
 
   /// Creates a new Serf instance with the given transport, options, event sender, and delegate.
-  pub async fn with_event_sender_and_delegate(
+  pub async fn with_event_producer_and_delegate(
     transport: T::Options,
     opts: Options,
-    ev: async_channel::Sender<Event<T, D>>,
+    ev: EventProducer<T, D>,
     delegate: D,
   ) -> Result<Self, Error<T, D>> {
     Self::new_in(
-      Some(ev),
+      Some(ev.tx),
       Some(delegate),
       transport,
       opts,

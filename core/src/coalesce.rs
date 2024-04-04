@@ -15,7 +15,7 @@ use memberlist_core::{
 
 use crate::delegate::Delegate;
 
-use super::event::Event;
+use super::event::CrateEvent;
 
 pub(crate) struct ClosedOutChannel;
 
@@ -28,27 +28,27 @@ pub(crate) trait Coalescer: Send + Sync + 'static {
 
   fn name(&self) -> &'static str;
 
-  fn handle(&self, event: &Event<Self::Transport, Self::Delegate>) -> bool;
+  fn handle(&self, event: &CrateEvent<Self::Transport, Self::Delegate>) -> bool;
 
   /// Invoked to coalesce the given event
-  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate>);
+  fn coalesce(&mut self, event: CrateEvent<Self::Transport, Self::Delegate>);
 
   /// Invoked to flush the coalesced events
   fn flush(
     &mut self,
-    out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
+    out_tx: &Sender<CrateEvent<Self::Transport, Self::Delegate>>,
   ) -> impl Future<Output = Result<(), ClosedOutChannel>> + Send;
 }
 
 /// Returns an event channel where the events are coalesced
 /// using the given coalescer.
 pub(crate) fn coalesced_event<C: Coalescer>(
-  out_tx: Sender<Event<C::Transport, C::Delegate>>,
+  out_tx: Sender<CrateEvent<C::Transport, C::Delegate>>,
   shutdown_rx: Receiver<()>,
   c_period: Duration,
   q_period: Duration,
   c: C,
-) -> Sender<Event<C::Transport, C::Delegate>> {
+) -> Sender<CrateEvent<C::Transport, C::Delegate>> {
   let (in_tx, in_rx) = bounded(1024);
   <<C::Transport as Transport>::Runtime as RuntimeLite>::spawn_detach(coalesce_loop::<C>(
     in_rx,
@@ -64,8 +64,8 @@ pub(crate) fn coalesced_event<C: Coalescer>(
 /// A simple long-running routine that manages the high-level
 /// flow of coalescing based on quiescence and a maximum quantum period.
 async fn coalesce_loop<C: Coalescer>(
-  in_rx: Receiver<Event<C::Transport, C::Delegate>>,
-  out_tx: Sender<Event<C::Transport, C::Delegate>>,
+  in_rx: Receiver<CrateEvent<C::Transport, C::Delegate>>,
+  out_tx: Sender<CrateEvent<C::Transport, C::Delegate>>,
   shutdown_rx: Receiver<()>,
   coalesce_peirod: Duration,
   quiescent_period: Duration,

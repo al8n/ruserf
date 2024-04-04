@@ -5,7 +5,7 @@ use memberlist_core::types::TinyVec;
 use ruserf_types::UserEventMessage;
 use smol_str::SmolStr;
 
-use crate::{event::EventKind, types::LamportTime};
+use crate::{event::CrateEventKind, types::LamportTime};
 
 use super::*;
 
@@ -42,16 +42,16 @@ where
     "user_event_coalescer"
   }
 
-  fn handle(&self, event: &Event<Self::Transport, Self::Delegate>) -> bool {
+  fn handle(&self, event: &CrateEvent<Self::Transport, Self::Delegate>) -> bool {
     match event.kind() {
-      EventKind::User(e) => e.cc(),
+      CrateEventKind::User(e) => e.cc(),
       _ => false,
     }
   }
 
-  fn coalesce(&mut self, event: Event<Self::Transport, Self::Delegate>) {
+  fn coalesce(&mut self, event: CrateEvent<Self::Transport, Self::Delegate>) {
     let event = match event.kind() {
-      EventKind::User(e) => e.clone(),
+      CrateEventKind::User(e) => e.clone(),
       _ => unreachable!(),
     };
 
@@ -84,11 +84,11 @@ where
 
   async fn flush(
     &mut self,
-    out_tx: &Sender<Event<Self::Transport, Self::Delegate>>,
+    out_tx: &Sender<CrateEvent<Self::Transport, Self::Delegate>>,
   ) -> Result<(), super::ClosedOutChannel> {
     for (_, latest) in self.events.drain(..) {
       for event in latest.events {
-        if out_tx.send(Event::from(event)).await.is_err() {
+        if out_tx.send(CrateEvent::from(event)).await.is_err() {
           return Err(super::ClosedOutChannel);
         }
       }
@@ -158,7 +158,7 @@ mod tests {
     ];
 
     for event in send {
-      in_.send(Event::from(event)).await.unwrap();
+      in_.send(CrateEvent::from(event)).await.unwrap();
     }
 
     let mut got_foo = false;
@@ -171,7 +171,7 @@ mod tests {
         event = rx.recv().fuse() => {
           let event = event.unwrap();
           match event.kind() {
-            EventKind::User(e) => {
+            CrateEventKind::User(e) => {
               match e.name().as_str() {
                 "foo" => {
                   assert_eq!(e.ltime(), 2.into(), "bad ltime for foo");
@@ -202,26 +202,29 @@ mod tests {
   #[test]
   fn test_user_event_coalesce_pass_through() {
     let cases = [
-      (Event::from(UserEventMessage::default()), false),
-      (Event::from(UserEventMessage::default().with_cc(true)), true),
+      (CrateEvent::from(UserEventMessage::default()), false),
       (
-        Event::from(MemberEvent {
+        CrateEvent::from(UserEventMessage::default().with_cc(true)),
+        true,
+      ),
+      (
+        CrateEvent::from(MemberEvent {
           ty: MemberEventType::Join,
-          members: TinyVec::new(),
+          members: TinyVec::new().into(),
         }),
         false,
       ),
       (
-        Event::from(MemberEvent {
+        CrateEvent::from(MemberEvent {
           ty: MemberEventType::Leave,
-          members: TinyVec::new(),
+          members: TinyVec::new().into(),
         }),
         false,
       ),
       (
-        Event::from(MemberEvent {
+        CrateEvent::from(MemberEvent {
           ty: MemberEventType::Failed,
-          members: TinyVec::new(),
+          members: TinyVec::new().into(),
         }),
         false,
       ),

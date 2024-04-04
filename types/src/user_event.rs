@@ -1,5 +1,5 @@
 use byteorder::{ByteOrder, NetworkEndian};
-use memberlist_types::{bytes::Bytes, OneOrMore};
+use memberlist_types::{bytes::Bytes, CheapClone, OneOrMore};
 use smol_str::SmolStr;
 use transformable::{BytesTransformError, StringTransformError, Transformable};
 
@@ -264,6 +264,17 @@ pub struct UserEventMessage {
     )
   )]
   cc: bool,
+}
+
+impl CheapClone for UserEventMessage {
+  fn cheap_clone(&self) -> Self {
+    Self {
+      ltime: self.ltime,
+      name: self.name.cheap_clone(),
+      payload: self.payload.clone(),
+      cc: self.cc,
+    }
+  }
 }
 
 /// Error that can occur when transforming a [`UserEventMessage`]

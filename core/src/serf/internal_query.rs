@@ -12,7 +12,7 @@ use smol_str::SmolStr;
 use crate::{
   delegate::{Delegate, TransformDelegate},
   error::Error,
-  event::{Event, EventKind, InternalQueryEvent, QueryEvent},
+  event::{CrateEvent, CrateEventKind, InternalQueryEvent, QueryEvent},
   types::{MessageType, QueryResponseMessage, SerfMessage},
 };
 
@@ -31,8 +31,8 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  in_rx: Receiver<Event<T, D>>,
-  out_tx: Sender<Event<T, D>>,
+  in_rx: Receiver<CrateEvent<T, D>>,
+  out_tx: Sender<CrateEvent<T, D>>,
   shutdown_rx: Receiver<()>,
 }
 
@@ -42,7 +42,7 @@ where
   T: Transport,
 {
   #[allow(clippy::new_ret_no_self)]
-  pub(crate) fn new(out_tx: Sender<Event<T, D>>, shutdown_rx: Receiver<()>) -> Sender<Event<T, D>> {
+  pub(crate) fn new(out_tx: Sender<CrateEvent<T, D>>, shutdown_rx: Receiver<()>) -> Sender<CrateEvent<T, D>> {
     let (in_tx, in_rx) = bounded(1024);
     let this = Self {
       in_rx,
@@ -85,11 +85,11 @@ where
     });
   }
 
-  async fn handle_query(ev: Event<T, D>) {
+  async fn handle_query(ev: CrateEvent<T, D>) {
     macro_rules! handle_query {
       ($ev: expr) => {{
         match $ev {
-          EventKind::InternalQuery { kind, query } => match kind {
+          CrateEventKind::InternalQuery { kind, query } => match kind {
             InternalQueryEvent::Ping => {}
             InternalQueryEvent::Conflict(conflict) => {
               Self::handle_conflict(&conflict, &query).await;

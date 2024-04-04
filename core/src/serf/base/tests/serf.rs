@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use memberlist_core::{tests::AnyError, transport::Id};
 use ruserf_types::{Member, MemberStatus, Tags};
 
-use crate::types::MemberState;
+use crate::{event::EventProducer, types::MemberState};
 
 use super::*;
 
@@ -55,8 +55,8 @@ pub async fn serf_events_failed<T>(transport_opts1: T::Options, transport_opts2:
 where
   T: Transport,
 {
-  let (event_tx, event_rx) = async_channel::bounded(4);
-  let s1 = Serf::<T>::with_event_sender(transport_opts1, test_config(), event_tx)
+  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
     .await
     .unwrap();
   let s2 = Serf::<T>::new(transport_opts2, test_config())
@@ -82,12 +82,12 @@ where
   // Since s2 shutdown, we check the events to make sure we got failures.
   let node = serfs[1].inner.memberlist.local_id().clone();
   test_events(
-    event_rx,
+    event_rx.rx,
     node,
     [
-      EventType::Member(MemberEventType::Join),
-      EventType::Member(MemberEventType::Failed),
-      EventType::Member(MemberEventType::Reap),
+      CrateEventType::Member(MemberEventType::Join),
+      CrateEventType::Member(MemberEventType::Failed),
+      CrateEventType::Member(MemberEventType::Reap),
     ]
     .into_iter()
     .collect(),
@@ -100,8 +100,8 @@ pub async fn serf_events_join<T>(transport_opts1: T::Options, transport_opts2: T
 where
   T: Transport,
 {
-  let (event_tx, event_rx) = async_channel::bounded(4);
-  let s1 = Serf::<T>::with_event_sender(transport_opts1, test_config(), event_tx)
+  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
     .await
     .unwrap();
   let s2 = Serf::<T>::new(transport_opts2, test_config())
@@ -127,9 +127,9 @@ where
   // Since s2 shutdown, we check the events to make sure we got failures.
   let node = serfs[1].inner.memberlist.local_id().clone();
   test_events(
-    event_rx,
+    event_rx.rx,
     node,
-    [EventType::Member(MemberEventType::Join)]
+    [CrateEventType::Member(MemberEventType::Join)]
       .into_iter()
       .collect(),
   )
@@ -142,8 +142,8 @@ pub async fn serf_events_leave<T>(transport_opts1: T::Options, transport_opts2: 
 where
   T: Transport,
 {
-  let (event_tx, event_rx) = async_channel::bounded(4);
-  let s1 = Serf::<T>::with_event_sender(
+  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let s1 = Serf::<T>::with_event_producer(
     transport_opts1,
     test_config().with_reap_interval(Duration::from_secs(30)),
     event_tx,
@@ -186,11 +186,11 @@ where
   // a leave event in s1 about the leave.
   let node = serfs[1].inner.memberlist.local_id().clone();
   test_events(
-    event_rx,
+    event_rx.rx,
     node,
     [
-      EventType::Member(MemberEventType::Join),
-      EventType::Member(MemberEventType::Leave),
+      CrateEventType::Member(MemberEventType::Join),
+      CrateEventType::Member(MemberEventType::Leave),
     ]
     .into_iter()
     .collect(),
@@ -237,8 +237,8 @@ pub async fn serf_events_leave_avoid_infinite_rebroadcast<T>(
   // lamport clock for that node.
   let config_local = |opts: Options| opts.with_reap_interval(Duration::from_secs(30));
 
-  let (event_tx1, event_rx1) = async_channel::bounded(4);
-  let s1 = Serf::<T>::with_event_sender(transport_opts1, config_local(test_config()), event_tx1)
+  let (event_tx1, event_rx1) = EventProducer::bounded(4);
+  let s1 = Serf::<T>::with_event_producer(transport_opts1, config_local(test_config()), event_tx1)
     .await
     .unwrap();
   let s2 = Serf::<T>::new(transport_opts2.clone(), config_local(test_config()))
@@ -352,13 +352,13 @@ pub async fn serf_events_leave_avoid_infinite_rebroadcast<T>(
   // Now that s2 has left, we check the events to make sure we got
   // a leave event in s1 about the leave.
   test_events(
-    event_rx1,
+    event_rx1.rx,
     s2.inner.memberlist.local_id().clone(),
     [
-      EventType::Member(MemberEventType::Join),
-      EventType::Member(MemberEventType::Leave),
-      EventType::Member(MemberEventType::Join),
-      EventType::Member(MemberEventType::Leave),
+      CrateEventType::Member(MemberEventType::Join),
+      CrateEventType::Member(MemberEventType::Leave),
+      CrateEventType::Member(MemberEventType::Join),
+      CrateEventType::Member(MemberEventType::Leave),
     ]
     .into_iter()
     .collect(),
@@ -373,8 +373,8 @@ pub async fn serf_remove_failed_events_leave<T>(
 ) where
   T: Transport,
 {
-  let (event_tx, event_rx) = async_channel::bounded(4);
-  let s1 = Serf::<T>::with_event_sender(transport_opts1, test_config(), event_tx)
+  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
     .await
     .unwrap();
   let s2 = Serf::<T>::new(transport_opts2, test_config())
@@ -418,12 +418,12 @@ pub async fn serf_remove_failed_events_leave<T>(
   // Now that s2 has failed and been marked as left, we check the
   // events to make sure we got a leave event in s1 about the leave.
   test_events(
-    event_rx,
+    event_rx.rx,
     serfs[1].inner.memberlist.local_id().clone(),
     [
-      EventType::Member(MemberEventType::Join),
-      EventType::Member(MemberEventType::Failed),
-      EventType::Member(MemberEventType::Leave),
+      CrateEventType::Member(MemberEventType::Join),
+      CrateEventType::Member(MemberEventType::Failed),
+      CrateEventType::Member(MemberEventType::Leave),
     ]
     .into_iter()
     .collect(),
@@ -436,11 +436,11 @@ pub async fn serf_event_user<T>(transport_opts1: T::Options, transport_opts2: T:
 where
   T: Transport,
 {
-  let (event_tx, event_rx) = async_channel::bounded(4);
+  let (event_tx, event_rx) = EventProducer::bounded(4);
   let s1 = Serf::<T>::new(transport_opts1, test_config())
     .await
     .unwrap();
-  let s2 = Serf::<T>::with_event_sender(transport_opts2, test_config(), event_tx)
+  let s2 = Serf::<T>::with_event_producer(transport_opts2, test_config(), event_tx)
     .await
     .unwrap();
 
@@ -471,7 +471,7 @@ where
   // check the events to make sure we got
   // a leave event in s1 about the leave.
   test_user_events(
-    event_rx,
+    event_rx.rx,
     ["event!", "second"].into_iter().map(Into::into).collect(),
     vec![Bytes::from_static(b"test"), Bytes::from_static(b"foobar")],
   )
@@ -483,8 +483,8 @@ pub async fn serf_event_user_size_limit<T>(transport_opts1: T::Options)
 where
   T: Transport,
 {
-  let (event_tx, _event_rx) = async_channel::bounded(4);
-  let s1 = Serf::<T>::with_event_sender(transport_opts1, test_config(), event_tx)
+  let (event_tx, _event_rx) = EventProducer::bounded(4);
+  let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
     .await
     .unwrap();
 
@@ -631,8 +631,8 @@ where
   T: Transport,
   T::Options: Clone,
 {
-  let (event_tx, event_rx) = async_channel::bounded(64);
-  let s1 = Serf::<T>::with_event_sender(transport_opts1, test_config(), event_tx)
+  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
     .await
     .unwrap();
   let s2 = Serf::<T>::new(transport_opts2.clone(), test_config())
@@ -680,11 +680,11 @@ where
   wait_until_num_nodes(2, &serfs).await;
 
   test_events(
-    event_rx,
+    event_rx.rx,
     node.id().clone(),
     [
-      EventType::Member(MemberEventType::Join),
-      EventType::Member(MemberEventType::Update),
+      CrateEventType::Member(MemberEventType::Join),
+      CrateEventType::Member(MemberEventType::Update),
     ]
     .into_iter()
     .collect(),
@@ -799,8 +799,8 @@ pub async fn serf_set_tags<T>(transport_opts1: T::Options, transport_opts2: T::O
 where
   T: Transport,
 {
-  let (event_tx, event_rx) = async_channel::bounded(4);
-  let s1 = Serf::<T>::with_event_sender(transport_opts1, test_config(), event_tx)
+  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
     .await
     .unwrap();
   let s2 = Serf::<T>::new(transport_opts2, test_config())
@@ -883,11 +883,11 @@ where
 
   // we check the events to make sure we got failures.
   test_events(
-    event_rx,
+    event_rx.rx,
     node.id().clone(),
     [
-      EventType::Member(MemberEventType::Join),
-      EventType::Member(MemberEventType::Update),
+      CrateEventType::Member(MemberEventType::Join),
+      CrateEventType::Member(MemberEventType::Update),
     ]
     .into_iter()
     .collect(),

@@ -79,7 +79,7 @@ pub async fn snapshoter<T>(
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
       match e.kind() {
-        EventKind::User(e) => {
+        CrateEventKind::User(e) => {
           assert_eq!(e, &ue);
         },
         _ => panic!("expected user event"),
@@ -94,7 +94,7 @@ pub async fn snapshoter<T>(
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
       match e.kind() {
-        EventKind::Query(e) => {
+        CrateEventKind::Query(e) => {
           if qe.ne(e) {
             panic!("expected query event mismatch");
           }
@@ -111,7 +111,7 @@ pub async fn snapshoter<T>(
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
       match e.kind() {
-        EventKind::Member(e) => {
+        CrateEventKind::Member(e) => {
           assert_eq!(e, &mejoin);
         },
         _ => panic!("expected member event"),
@@ -126,7 +126,7 @@ pub async fn snapshoter<T>(
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
       match e.kind() {
-        EventKind::Member(e) => {
+        CrateEventKind::Member(e) => {
           assert_eq!(e, &mefail);
         },
         _ => panic!("expected member event"),
@@ -141,7 +141,7 @@ pub async fn snapshoter<T>(
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
       match e.kind() {
-        EventKind::Member(e) => {
+        CrateEventKind::Member(e) => {
           assert_eq!(e, &mejoin);
         },
         _ => panic!("expected member event"),
@@ -524,8 +524,8 @@ where
   }
 
   // Listen for events
-  let (event_tx, event_rx) = async_channel::bounded(4);
-  let s2 = Serf::<T>::with_event_sender(
+  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let s2 = Serf::<T>::with_event_producer(
     transport_opts2,
     test_config().with_snapshot_path(Some(snap_path.clone())),
     event_tx,
@@ -561,7 +561,7 @@ where
   }
 
   // Check the events to make sure we got nothing
-  test_user_events(event_rx, vec![], vec![]).await;
+  test_user_events(event_rx.rx, vec![], vec![]).await;
 
   for s in serfs.iter() {
     s.shutdown().await.unwrap();

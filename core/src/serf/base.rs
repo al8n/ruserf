@@ -60,7 +60,7 @@ where
   }
 
   pub(crate) async fn new_in(
-    ev: Option<async_channel::Sender<Event<T, D>>>,
+    ev: Option<async_channel::Sender<CrateEvent<T, D>>>,
     delegate: Option<D>,
     transport: T::Options,
     opts: Options,
@@ -518,7 +518,7 @@ where
   coord_core: Option<Arc<CoordCore<T::Id>>>,
   memberlist: Memberlist<T, SerfDelegate<T, D>>,
   members: Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
-  event_tx: Option<async_channel::Sender<Event<T, D>>>,
+  event_tx: Option<async_channel::Sender<CrateEvent<T, D>>>,
   shutdown_rx: async_channel::Receiver<()>,
   reap_interval: Duration,
   reconnect_timeout: Duration,
@@ -541,9 +541,9 @@ macro_rules! erase_node {
     // Send out event
     if let Some(tx) = $tx {
       let _ = tx
-        .send(Event::from(MemberEvent {
+        .send(CrateEvent::from(MemberEvent {
           ty: MemberEventType::Reap,
-          members: TinyVec::from($m.member.clone()),
+          members: Arc::new(TinyVec::from($m.member.clone())),
         }))
         .await;
     }
@@ -612,7 +612,7 @@ where
 
   async fn reap_failed(
     old: &mut Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-    event_tx: Option<&async_channel::Sender<Event<T, D>>>,
+    event_tx: Option<&async_channel::Sender<CrateEvent<T, D>>>,
     reconnector: Option<&D>,
     coord: Option<&CoordCore<T::Id>>,
     timeout: Duration,
@@ -622,7 +622,7 @@ where
 
   async fn reap_left(
     old: &mut Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-    event_tx: Option<&async_channel::Sender<Event<T, D>>>,
+    event_tx: Option<&async_channel::Sender<CrateEvent<T, D>>>,
     reconnector: Option<&D>,
     coord: Option<&CoordCore<T::Id>>,
     timeout: Duration,
@@ -1096,7 +1096,7 @@ where
           tx.send(
             MemberEvent {
               ty: MemberEventType::Join,
-              members: TinyVec::from(member.member.clone()),
+              members: Arc::new(TinyVec::from(member.member.clone())),
             }
             .into(),
           )
@@ -1138,7 +1138,7 @@ where
           tx.send(
             MemberEvent {
               ty: MemberEventType::Join,
-              members: TinyVec::from(member),
+              members: Arc::new(TinyVec::from(member)),
             }
             .into(),
           )
@@ -1265,7 +1265,7 @@ where
         .send(
           MemberEvent {
             ty,
-            members: TinyVec::from(member),
+            members: Arc::new(TinyVec::from(member)),
           }
           .into(),
         )
@@ -1373,7 +1373,7 @@ where
             .send(
               MemberEvent {
                 ty: MemberEventType::Leave,
-                members: TinyVec::from(owned.member.clone()),
+                members: Arc::new(TinyVec::from(owned.member.clone())),
               }
               .into(),
             )
@@ -1435,7 +1435,7 @@ where
           .send(
             MemberEvent {
               ty: MemberEventType::Update,
-              members: TinyVec::from(ms.member.clone()),
+              members: Arc::new(TinyVec::from(ms.member.clone())),
             }
             .into(),
           )

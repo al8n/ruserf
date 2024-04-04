@@ -152,8 +152,8 @@ where
     .await
     .unwrap();
 
-  let (event_tx, event_rx) = async_channel::bounded(4);
-  let s2 = Serf::<T>::with_event_sender(transport_opts2, test_config(), event_tx)
+  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let s2 = Serf::<T>::with_event_producer(transport_opts2, test_config(), event_tx)
     .await
     .unwrap();
 
@@ -184,7 +184,7 @@ where
   wait_until_num_nodes(2, &serfs).await;
 
   // check the events to make sure we got nothing
-  test_user_events(event_rx, vec![], vec![]).await;
+  test_user_events(event_rx.rx, vec![], vec![]).await;
 
   for s in serfs.iter() {
     s.shutdown().await.unwrap();

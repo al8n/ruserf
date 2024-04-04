@@ -126,9 +126,9 @@ pub async fn serf_query<T>(transport_opts1: T::Options, transport_opts2: T::Opti
 where
   T: Transport,
 {
-  let (event_tx, event_rx) = async_channel::bounded(4);
+  let (event_tx, event_rx) = EventProducer::bounded(4);
 
-  let s1 = Serf::<T>::with_event_sender(transport_opts1, test_config(), event_tx)
+  let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
     .await
     .unwrap();
 
@@ -144,12 +144,12 @@ where
         _ = ctx_rx.recv().fuse() => {
           break;
         },
-        e = event_rx.recv().fuse() => {
+        e = event_rx.rx.recv().fuse() => {
           let e = e.unwrap();
           match e.ty() {
-            EventType::Query => {
+            CrateEventType::Query => {
               match e.kind() {
-                EventKind::Query(q) => {
+                CrateEventKind::Query(q) => {
                   q.respond(Bytes::from_static(b"test")).await.unwrap();
                   break;
                 }
@@ -225,9 +225,9 @@ pub async fn serf_query_filter<T>(
 ) where
   T: Transport,
 {
-  let (event_tx, event_rx) = async_channel::bounded(4);
+  let (event_tx, event_rx) = EventProducer::bounded(4);
 
-  let s1 = Serf::<T>::with_event_sender(transport_opts1, test_config(), event_tx)
+  let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
     .await
     .unwrap();
 
@@ -243,12 +243,12 @@ pub async fn serf_query_filter<T>(
         _ = ctx_rx.recv().fuse() => {
           break;
         },
-        e = event_rx.recv().fuse() => {
+        e = event_rx.rx.recv().fuse() => {
           let e = e.unwrap();
           match e.ty() {
-            EventType::Query => {
+            CrateEventType::Query => {
               match e.kind() {
-                EventKind::Query(q) => {
+                CrateEventKind::Query(q) => {
                   q.respond(Bytes::from_static(b"test")).await.unwrap();
                   break;
                 }

@@ -10,9 +10,9 @@ where
   T: Transport,
   T::Options: Clone,
 {
-  let (event_tx, event_rx) = async_channel::bounded(64);
+  let (event_tx, event_rx) = EventProducer::bounded(4);
 
-  let s1 = Serf::<T>::with_event_sender(transport_opts1, test_config(), event_tx)
+  let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
     .await
     .unwrap();
   let s2 = Serf::<T>::new(transport_opts2.clone(), test_config())
@@ -44,12 +44,12 @@ where
 
   let node = serfs[1].local_id().clone();
   test_events(
-    event_rx,
+    event_rx.rx,
     node,
     [
-      EventType::Member(MemberEventType::Join),
-      EventType::Member(MemberEventType::Failed),
-      EventType::Member(MemberEventType::Join),
+      CrateEventType::Member(MemberEventType::Join),
+      CrateEventType::Member(MemberEventType::Failed),
+      CrateEventType::Member(MemberEventType::Join),
     ]
     .into_iter()
     .collect(),
@@ -70,9 +70,9 @@ pub async fn serf_reconnect_same_ip<T>(
   T: Transport,
   T::Options: Clone,
 {
-  let (event_tx, event_rx) = async_channel::bounded(64);
+  let (event_tx, event_rx) = EventProducer::bounded(4);
 
-  let s1 = Serf::<T>::with_event_sender(transport_opts1, test_config(), event_tx)
+  let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
     .await
     .unwrap();
   let s2 = Serf::<T>::new(transport_opts2.clone(), test_config())
@@ -108,12 +108,12 @@ pub async fn serf_reconnect_same_ip<T>(
 
   let node = serfs[1].local_id().clone();
   test_events(
-    event_rx,
+    event_rx.rx,
     node,
     [
-      EventType::Member(MemberEventType::Join),
-      EventType::Member(MemberEventType::Failed),
-      EventType::Member(MemberEventType::Join),
+      CrateEventType::Member(MemberEventType::Join),
+      CrateEventType::Member(MemberEventType::Failed),
+      CrateEventType::Member(MemberEventType::Join),
     ]
     .into_iter()
     .collect(),
@@ -156,7 +156,7 @@ pub async fn serf_per_node_reconnect_timeout<T>(
 ) where
   T: Transport<Id = SmolStr>,
 {
-  let (event_tx, event_rx) = async_channel::bounded(64);
+  let (event_tx, event_rx) = EventProducer::bounded(4);
 
   let ro1 = ReconnectOverride {
     timeout: Duration::from_secs(1),
@@ -164,7 +164,7 @@ pub async fn serf_per_node_reconnect_timeout<T>(
     _marker: PhantomData,
   };
 
-  let s1 = Serf::<T, _>::with_event_sender_and_delegate(
+  let s1 = Serf::<T, _>::with_event_producer_and_delegate(
     transport_opts1,
     test_config().with_reconnect_timeout(Duration::from_secs(30)),
     event_tx,
@@ -241,12 +241,12 @@ pub async fn serf_per_node_reconnect_timeout<T>(
 
   // Since s2 shutdown, we check the events to make sure we got failures.
   test_events(
-    event_rx,
+    event_rx.rx,
     s2.local_id().clone(),
     [
-      EventType::Member(MemberEventType::Join),
-      EventType::Member(MemberEventType::Failed),
-      EventType::Member(MemberEventType::Reap),
+      CrateEventType::Member(MemberEventType::Join),
+      CrateEventType::Member(MemberEventType::Failed),
+      CrateEventType::Member(MemberEventType::Reap),
     ]
     .into_iter()
     .collect(),
