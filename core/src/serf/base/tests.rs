@@ -16,7 +16,7 @@ use smol_str::SmolStr;
 
 use crate::{
   delegate::TransformDelegate,
-  event::{CrateEventKind, CrateEventType, MemberEvent, MemberEventType},
+  event::{CrateEvent, CrateEventType, MemberEvent, MemberEventType},
 };
 
 use super::*;
@@ -101,8 +101,11 @@ where
 
 /// tests that the given node had the given sequence of events
 /// on the event channel.
-async fn test_events<T, D>(rx: Receiver<CrateEvent<T, D>>, node: T::Id, expected: Vec<CrateEventType>)
-where
+async fn test_events<T, D>(
+  rx: Receiver<CrateEvent<T, D>>,
+  node: T::Id,
+  expected: Vec<CrateEventType>,
+) where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
@@ -112,8 +115,8 @@ where
     futures::select! {
       event = rx.recv().fuse() => {
         let event = event.unwrap();
-        match event.kind() {
-          CrateEventKind::Member(MemberEvent { ty, members }) => {
+        match event {
+          CrateEvent::Member(MemberEvent { ty, members }) => {
             let mut found = false;
 
             for m in members.iter() {
@@ -124,7 +127,7 @@ where
             }
 
             if found {
-              actual.push(CrateEventType::Member(*ty));
+              actual.push(CrateEventType::Member(ty));
             }
           }
           _ => continue,
@@ -156,8 +159,8 @@ async fn test_user_events<T, D>(
     futures::select! {
       event = rx.recv().fuse() => {
         let Ok(event) = event else { break };
-        match event.kind() {
-          CrateEventKind::User(e) => {
+        match event {
+          CrateEvent::User(e) => {
             actual_name.push(e.name.clone());
             actual_payload.push(e.payload.clone());
           }
@@ -191,12 +194,12 @@ async fn test_query_events<T, D>(
     futures::select! {
       event = rx.recv().fuse() => {
         let Ok(event) = event else { break };
-        match event.kind() {
-          CrateEventKind::Query(e) => {
+        match event {
+          CrateEvent::Query(e) => {
             actual_name.push(e.name.clone());
             actual_payload.push(e.payload.clone());
           }
-          CrateEventKind::InternalQuery { query, .. } => {
+          CrateEvent::InternalQuery { query, .. } => {
             actual_name.push(query.name.clone());
             actual_payload.push(query.payload.clone());
           }
@@ -247,7 +250,7 @@ where
   // Push a member event
   let event = CrateEvent::from(MemberEvent {
     ty: MemberEventType::Join,
-    members: TinyVec::new(),
+    members: TinyVec::new().into(),
   });
   event_tx.send(event).await.unwrap();
 

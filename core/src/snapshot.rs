@@ -13,7 +13,6 @@ use std::os::unix::prelude::OpenOptionsExt;
 
 use async_channel::{Receiver, Sender};
 use byteorder::{LittleEndian, ReadBytesExt};
-use either::Either;
 use futures::FutureExt;
 use memberlist_core::{
   agnostic_lite::RuntimeLite,
@@ -28,7 +27,7 @@ use ruserf_types::UserEventMessage;
 
 use crate::{
   delegate::{Delegate, TransformDelegate},
-  event::{CrateEvent, CrateEventKind, MemberEvent, MemberEventType},
+  event::{CrateEvent, MemberEvent, MemberEventType},
   invalid_data_io_error,
   types::{LamportClock, LamportTime},
 };
@@ -510,7 +509,6 @@ where
         ev = in_rx.recv().fuse() => {
           match ev {
             Ok(ev) => {
-              let ev = ev.into_right();
               flush_event!(ev)
             },
             Err(e) => {
@@ -531,7 +529,6 @@ where
         ev = in_rx.recv().fuse() => {
           match ev {
             Ok(ev) => {
-              let ev = ev.into_right();
               flush_event!(ev)
             },
             Err(e) => {
@@ -557,19 +554,11 @@ where
           return;
         }
 
-        match $event.0 {
-          Either::Left(e) => match &e {
-            CrateEventKind::Member(e) => $this.process_member_event(e),
-            CrateEventKind::User(e) => $this.process_user_event(e),
-            CrateEventKind::Query(e) => $this.process_query_event(e.ltime),
-            CrateEventKind::InternalQuery { query, .. } => $this.process_query_event(query.ltime),
-          },
-          Either::Right(e) => match &*e {
-            CrateEventKind::Member(e) => $this.process_member_event(e),
-            CrateEventKind::User(e) => $this.process_user_event(e),
-            CrateEventKind::Query(e) => $this.process_query_event(e.ltime),
-            CrateEventKind::InternalQuery { query, .. } => $this.process_query_event(query.ltime),
-          },
+        match &$event {
+          CrateEvent::Member(e) => $this.process_member_event(e),
+          CrateEvent::User(e) => $this.process_user_event(e),
+          CrateEvent::Query(e) => $this.process_query_event(e.ltime),
+          CrateEvent::InternalQuery { query, .. } => $this.process_query_event(query.ltime),
         }
       }};
     }

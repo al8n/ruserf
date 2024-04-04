@@ -1,19 +1,30 @@
-use std::{pin::Pin, sync::Arc, task::Poll, time::{Duration, Instant}};
+use std::{
+  pin::Pin,
+  sync::Arc,
+  task::Poll,
+  time::{Duration, Instant},
+};
 
 use crate::delegate::TransformDelegate;
 
 use self::error::Error;
 
-use super::{*, delegate::Delegate};
+use super::{delegate::Delegate, *};
 
 mod crate_event;
 use async_channel::Sender;
 use async_lock::Mutex;
 pub(crate) use crate_event::*;
-use either::Either;
 use futures::Stream;
-use memberlist_core::{bytes::{BufMut, Bytes, BytesMut}, transport::{AddressResolver, Transport}, types::TinyVec, CheapClone};
-use ruserf_types::{LamportTime, Member, MessageType, Node, QueryFlag, QueryResponseMessage, UserEventMessage};
+use memberlist_core::{
+  bytes::{BufMut, Bytes, BytesMut},
+  transport::{AddressResolver, Transport},
+  types::TinyVec,
+  CheapClone,
+};
+use ruserf_types::{
+  LamportTime, Member, MessageType, Node, QueryFlag, QueryResponseMessage, UserEventMessage,
+};
 use smol_str::SmolStr;
 
 pub(crate) struct QueryContext<T, D>
@@ -288,11 +299,22 @@ impl<I, A> MemberEventMut<I, A> {
 
 /// MemberEvent is the struct used for member related events
 /// Because Serf coalesces events, an event may contain multiple members.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct MemberEvent<I, A> {
   pub(crate) ty: MemberEventType,
   pub(crate) members: Arc<TinyVec<Member<I, A>>>,
 }
+
+impl<I, A> Clone for MemberEvent<I, A> {
+  fn clone(&self) -> Self {
+    Self {
+      ty: self.ty,
+      members: self.members.clone(),
+    }
+  }
+}
+
+impl<I, A> CheapClone for MemberEvent<I, A> {}
 
 impl<I, A> core::fmt::Display for MemberEvent<I, A> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -302,7 +324,10 @@ impl<I, A> core::fmt::Display for MemberEvent<I, A> {
 
 impl<I, A> MemberEvent<I, A> {
   pub fn new(ty: MemberEventType, members: TinyVec<Member<I, A>>) -> Self {
-    Self { ty, members: Arc::new(members) }
+    Self {
+      ty,
+      members: Arc::new(members),
+    }
   }
 
   pub fn ty(&self) -> MemberEventType {
@@ -320,22 +345,7 @@ impl<I, A> From<MemberEvent<I, A>> for (MemberEventType, Arc<TinyVec<Member<I, A
   }
 }
 
-pub struct Event<T, D>(pub(crate) Either<EventKind<T, D>, Arc<EventKind<T, D>>>)
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport;
-
-impl<D, T> Clone for Event<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn clone(&self) -> Self {
-    Self(self.0.clone())
-  }
-}
-
-pub(crate) enum EventKind<T, D>
+pub enum Event<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
@@ -345,15 +355,15 @@ where
   Query(QueryEvent<T, D>),
 }
 
-impl<D, T> Clone for EventKind<T, D>
+impl<D, T> Clone for Event<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
   fn clone(&self) -> Self {
     match self {
-      Self::Member(e) => Self::Member(e.clone()),
-      Self::User(e) => Self::User(e.clone()),
+      Self::Member(e) => Self::Member(e.cheap_clone()),
+      Self::User(e) => Self::User(e.cheap_clone()),
       Self::Query(e) => Self::Query(e.clone()),
     }
   }
@@ -403,19 +413,11 @@ where
 
   fn poll_next(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
     match <async_channel::Receiver<CrateEvent<T, D>> as Stream>::poll_next(self.project().rx, cx) {
-      Poll::Ready(Some(event)) => match event.0 {
-        Either::Left(e) => match e {
-          CrateEventKind::Member(e) => Poll::Ready(Some(Event(Either::Left(EventKind::Member(e))))),
-          CrateEventKind::User(e) => Poll::Ready(Some(Event(Either::Left(EventKind::User(e))))),
-          CrateEventKind::Query(e) => Poll::Ready(Some(Event(Either::Left(EventKind::Query(e))))),
-          CrateEventKind::InternalQuery { .. } => Poll::Pending,
-        },
-        Either::Right(kind) => match &*kind {
-          CrateEventKind::Member(e) => Poll::Ready(Some(Event(Either::Right(kind)))),
-          CrateEventKind::User(e) => Poll::Ready(Some(Event(Either::Left(EventKind::User(e))))),
-          CrateEventKind::Query(e) => Poll::Ready(Some(Event(Either::Left(EventKind::Query(e))))),
-          CrateEventKind::InternalQuery { .. } => Poll::Pending,
-        },
+      Poll::Ready(Some(event)) => match event {
+        CrateEvent::Member(e) => Poll::Ready(Some(Event::Member(e))),
+        CrateEvent::User(e) => Poll::Ready(Some(Event::User(e))),
+        CrateEvent::Query(e) => Poll::Ready(Some(Event::Query(e))),
+        CrateEvent::InternalQuery { .. } => Poll::Pending,
       },
       Poll::Ready(None) => Poll::Ready(None),
       Poll::Pending => Poll::Pending,

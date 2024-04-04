@@ -1,7 +1,6 @@
 use std::{collections::HashMap, marker::PhantomData};
 
 use async_channel::Sender;
-use either::Either;
 use memberlist_core::{
   transport::{AddressResolver, Node, Transport},
   types::TinyVec,
@@ -10,7 +9,7 @@ use memberlist_core::{
 
 use crate::{
   delegate::Delegate,
-  event::{CrateEvent, CrateEventKind, MemberEventMut, MemberEventType},
+  event::{CrateEvent, MemberEventMut, MemberEventType},
   types::Member,
 };
 
@@ -55,43 +54,23 @@ where
   }
 
   fn handle(&self, event: &CrateEvent<Self::Transport, Self::Delegate>) -> bool {
-    match &event.0 {
-      Either::Left(e) => matches!(e, CrateEventKind::Member(_)),
-      Either::Right(e) => matches!(&**e, CrateEventKind::Member(_)),
-    }
+    matches!(event, CrateEvent::Member(_))
   }
 
   fn coalesce(&mut self, event: CrateEvent<Self::Transport, Self::Delegate>) {
-    match event.0 {
-      Either::Left(ev) => {
-        let CrateEventKind::Member(event) = ev else {
-          unreachable!();
-        };
+    let CrateEvent::Member(event) = event else {
+      unreachable!();
+    };
 
-        let (ty, members) = event.into();
-        for member in members.iter() {
-          self
-            .latest_events
-            .insert(member.node().cheap_clone(), CoalesceEvent { ty, member: member.clone() });
-        }
-      }
-      Either::Right(ev) => {
-        let event = match &*ev {
-          CrateEventKind::Member(ev) => ev,
-          _ => unreachable!(),
-        };
-
-        let ty = event.ty();
-        for member in event.members() {
-          self.latest_events.insert(
-            member.node().cheap_clone(),
-            CoalesceEvent {
-              ty,
-              member: member.clone(),
-            },
-          );
-        }
-      }
+    let (ty, members) = event.into();
+    for member in members.iter() {
+      self.latest_events.insert(
+        member.node().cheap_clone(),
+        CoalesceEvent {
+          ty,
+          member: member.clone(),
+        },
+      );
     }
   }
 
@@ -151,7 +130,11 @@ mod tests {
   use ruserf_types::{MemberStatus, UserEventMessage};
   use smol_str::SmolStr;
 
-  use crate::{coalesce::coalesced_event, event::{CrateEventType, MemberEvent}, DefaultDelegate};
+  use crate::{
+    coalesce::coalesced_event,
+    event::{CrateEventType, MemberEvent},
+    DefaultDelegate,
+  };
 
   use super::*;
 
@@ -185,7 +168,8 @@ mod tests {
           Node::new("foo".into(), "127.0.0.1:8080".parse().unwrap()),
           Default::default(),
           MemberStatus::None,
-        )).into(),
+        ))
+        .into(),
       },
       MemberEvent {
         ty: MemberEventType::Leave,
@@ -193,7 +177,8 @@ mod tests {
           Node::new("foo".into(), "127.0.0.1:8080".parse().unwrap()),
           Default::default(),
           MemberStatus::None,
-        )).into(),
+        ))
+        .into(),
       },
       MemberEvent {
         ty: MemberEventType::Leave,
@@ -201,7 +186,8 @@ mod tests {
           Node::new("bar".into(), "127.0.0.1:8080".parse().unwrap()),
           Default::default(),
           MemberStatus::None,
-        )).into(),
+        ))
+        .into(),
       },
       MemberEvent {
         ty: MemberEventType::Update,
@@ -209,7 +195,8 @@ mod tests {
           Node::new("zip".into(), "127.0.0.1:8080".parse().unwrap()),
           [("role", "foo")].into_iter().collect(),
           MemberStatus::None,
-        )).into(),
+        ))
+        .into(),
       },
       MemberEvent {
         ty: MemberEventType::Update,
@@ -217,7 +204,8 @@ mod tests {
           Node::new("zip".into(), "127.0.0.1:8080".parse().unwrap()),
           [("role", "bar")].into_iter().collect(),
           MemberStatus::None,
-        )).into(),
+        ))
+        .into(),
       },
       MemberEvent {
         ty: MemberEventType::Reap,
@@ -225,7 +213,8 @@ mod tests {
           Node::new("dead".into(), "127.0.0.1:8080".parse().unwrap()),
           Default::default(),
           MemberStatus::None,
-        )).into(),
+        ))
+        .into(),
       },
     ];
 
@@ -252,8 +241,8 @@ mod tests {
 
     match events.get(&CrateEventType::Member(MemberEventType::Leave)) {
       None => panic!(""),
-      Some(e) => match e.kind() {
-        CrateEventKind::Member(MemberEvent { members, .. }) => {
+      Some(e) => match e {
+        CrateEvent::Member(MemberEvent { members, .. }) => {
           assert_eq!(members.len(), 2);
 
           let expected = ["bar", "foo"];
@@ -268,8 +257,8 @@ mod tests {
 
     match events.get(&CrateEventType::Member(MemberEventType::Update)) {
       None => panic!(""),
-      Some(e) => match e.kind() {
-        CrateEventKind::Member(MemberEvent { members, .. }) => {
+      Some(e) => match e {
+        CrateEvent::Member(MemberEvent { members, .. }) => {
           assert_eq!(members.len(), 1);
           assert_eq!(members[0].node.id(), "zip");
           assert_eq!(members[0].tags().get("role").unwrap(), "bar");
@@ -280,8 +269,8 @@ mod tests {
 
     match events.get(&CrateEventType::Member(MemberEventType::Reap)) {
       None => panic!(""),
-      Some(e) => match e.kind() {
-        CrateEventKind::Member(MemberEvent { members, .. }) => {
+      Some(e) => match e {
+        CrateEvent::Member(MemberEvent { members, .. }) => {
           assert_eq!(members.len(), 1);
           assert_eq!(members[0].node.id(), "dead");
         }
@@ -311,7 +300,8 @@ mod tests {
           Node::new("foo".into(), "127.0.0.1:8080".parse().unwrap()),
           [("role", "foo")].into_iter().collect(),
           MemberStatus::None,
-        )).into(),
+        ))
+        .into(),
       }))
       .await
       .unwrap();
@@ -322,8 +312,8 @@ mod tests {
       e = rx.recv().fuse() => {
         let e = e.unwrap();
 
-        match e.kind() {
-          CrateEventKind::Member(MemberEvent { ty, .. }) => {
+        match e {
+          CrateEvent::Member(MemberEvent { ty, .. }) => {
             assert!(matches!(ty, MemberEventType::Update));
           }
           _ => panic!("expected update"),
@@ -341,7 +331,8 @@ mod tests {
           Node::new("foo".into(), "127.0.0.1:8080".parse().unwrap()),
           [("role", "bar")].into_iter().collect(),
           MemberStatus::None,
-        )).into(),
+        ))
+        .into(),
       }))
       .await
       .unwrap();
@@ -351,8 +342,8 @@ mod tests {
       e = rx.recv().fuse() => {
         let e = e.unwrap();
 
-        match e.kind() {
-          CrateEventKind::Member(MemberEvent { ty, .. }) => {
+        match e {
+          CrateEvent::Member(MemberEvent { ty, .. }) => {
             assert!(matches!(ty, MemberEventType::Update));
           }
           _ => panic!("expected update"),

@@ -58,7 +58,8 @@ pub async fn snapshoter<T>(
       Node::new("foo".into(), addr.clone()),
       Default::default(),
       MemberStatus::None,
-    )),
+    ))
+    .into(),
   };
 
   let mefail = MemberEvent {
@@ -67,7 +68,8 @@ pub async fn snapshoter<T>(
       Node::new("foo".into(), addr.clone()),
       Default::default(),
       MemberStatus::None,
-    )),
+    ))
+    .into(),
   };
 
   event_tx.send(mejoin.clone().into()).await.unwrap();
@@ -78,9 +80,9 @@ pub async fn snapshoter<T>(
   futures::select! {
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
-      match e.kind() {
-        CrateEventKind::User(e) => {
-          assert_eq!(e, &ue);
+      match e {
+        CrateEvent::User(e) => {
+          assert_eq!(e, ue);
         },
         _ => panic!("expected user event"),
       }
@@ -93,9 +95,9 @@ pub async fn snapshoter<T>(
   futures::select! {
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
-      match e.kind() {
-        CrateEventKind::Query(e) => {
-          if qe.ne(e) {
+      match e {
+        CrateEvent::Query(e) => {
+          if qe.ne(&e) {
             panic!("expected query event mismatch");
           }
         },
@@ -110,9 +112,9 @@ pub async fn snapshoter<T>(
   futures::select! {
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
-      match e.kind() {
-        CrateEventKind::Member(e) => {
-          assert_eq!(e, &mejoin);
+      match e {
+        CrateEvent::Member(e) => {
+          assert_eq!(e, mejoin);
         },
         _ => panic!("expected member event"),
       }
@@ -125,9 +127,9 @@ pub async fn snapshoter<T>(
   futures::select! {
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
-      match e.kind() {
-        CrateEventKind::Member(e) => {
-          assert_eq!(e, &mefail);
+      match e {
+        CrateEvent::Member(e) => {
+          assert_eq!(e, mefail);
         },
         _ => panic!("expected member event"),
       }
@@ -140,9 +142,9 @@ pub async fn snapshoter<T>(
   futures::select! {
     e = out_rx.recv().fuse() => {
       let e = e.unwrap();
-      match e.kind() {
-        CrateEventKind::Member(e) => {
-          assert_eq!(e, &mejoin);
+      match e {
+        CrateEvent::Member(e) => {
+          assert_eq!(e, mejoin);
         },
         _ => panic!("expected member event"),
       }
@@ -332,7 +334,8 @@ pub async fn snapshoter_leave<T>(
       Node::new("foo".into(), addr.clone()),
       Default::default(),
       MemberStatus::None,
-    )),
+    ))
+    .into(),
   };
   event_tx.send(mejoin.clone().into()).await.unwrap();
 
@@ -426,7 +429,8 @@ pub async fn snapshoter_leave_rejoin<T>(
       Node::new("foo".into(), addr.clone()),
       Default::default(),
       MemberStatus::None,
-    )),
+    ))
+    .into(),
   };
   event_tx.send(mejoin.clone().into()).await.unwrap();
 
@@ -723,7 +727,8 @@ async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
           ),
           Default::default(),
           MemberStatus::None,
-        )),
+        ))
+        .into(),
       };
 
       if i % 10 == 0 {
@@ -826,7 +831,8 @@ async fn test_snapshoter_slow_disk_not_blocking_memberlist() {
         ),
         Default::default(),
         MemberStatus::None,
-      )),
+      ))
+      .into(),
     };
 
     if i % 10 == 0 {

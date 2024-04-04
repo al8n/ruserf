@@ -148,8 +148,8 @@ where
           let e = e.unwrap();
           match e.ty() {
             CrateEventType::Query => {
-              match e.kind() {
-                CrateEventKind::Query(q) => {
+              match e {
+                CrateEvent::Query(q) => {
                   q.respond(Bytes::from_static(b"test")).await.unwrap();
                   break;
                 }
@@ -247,8 +247,8 @@ pub async fn serf_query_filter<T>(
           let e = e.unwrap();
           match e.ty() {
             CrateEventType::Query => {
-              match e.kind() {
-                CrateEventKind::Query(q) => {
+              match e {
+                CrateEvent::Query(q) => {
                   q.respond(Bytes::from_static(b"test")).await.unwrap();
                   break;
                 }

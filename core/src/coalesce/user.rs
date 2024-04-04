@@ -5,7 +5,7 @@ use memberlist_core::types::TinyVec;
 use ruserf_types::UserEventMessage;
 use smol_str::SmolStr;
 
-use crate::{event::CrateEventKind, types::LamportTime};
+use crate::types::LamportTime;
 
 use super::*;
 
@@ -43,15 +43,15 @@ where
   }
 
   fn handle(&self, event: &CrateEvent<Self::Transport, Self::Delegate>) -> bool {
-    match event.kind() {
-      CrateEventKind::User(e) => e.cc(),
+    match event {
+      CrateEvent::User(e) => e.cc(),
       _ => false,
     }
   }
 
   fn coalesce(&mut self, event: CrateEvent<Self::Transport, Self::Delegate>) {
-    let event = match event.kind() {
-      CrateEventKind::User(e) => e.clone(),
+    let event = match event {
+      CrateEvent::User(e) => e.clone(),
       _ => unreachable!(),
     };
 
@@ -170,8 +170,8 @@ mod tests {
         _ = TokioRuntime::sleep(Duration::from_millis(10)).fuse() => break,
         event = rx.recv().fuse() => {
           let event = event.unwrap();
-          match event.kind() {
-            CrateEventKind::User(e) => {
+          match event {
+            CrateEvent::User(e) => {
               match e.name().as_str() {
                 "foo" => {
                   assert_eq!(e.ltime(), 2.into(), "bad ltime for foo");

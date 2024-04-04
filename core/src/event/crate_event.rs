@@ -21,101 +21,7 @@ pub enum CrateEventType {
   InternalQuery,
 }
 
-pub(crate) struct CrateEvent<T, D>(pub(crate) Either<CrateEventKind<T, D>, Arc<CrateEventKind<T, D>>>)
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport;
-
-impl<D, T> Clone for CrateEvent<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn clone(&self) -> Self {
-    Self(self.0.clone())
-  }
-}
-
-impl<D, T> CrateEvent<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  /// Returns the type of the event
-  #[inline]
-  pub fn ty(&self) -> CrateEventType {
-    match self.kind() {
-      CrateEventKind::Member(e) => CrateEventType::Member(e.ty),
-      CrateEventKind::User(_) => CrateEventType::User,
-      CrateEventKind::Query(_) => CrateEventType::Query,
-      CrateEventKind::InternalQuery { .. } => CrateEventType::InternalQuery,
-    }
-  }
-
-  pub(crate) fn into_right(self) -> Self {
-    match self.0 {
-      Either::Left(e) => Self(Either::Right(Arc::new(e))),
-      Either::Right(e) => Self(Either::Right(e)),
-    }
-  }
-
-  pub(crate) fn kind(&self) -> &CrateEventKind<T, D> {
-    match &self.0 {
-      Either::Left(e) => e,
-      Either::Right(e) => e,
-    }
-  }
-
-  pub(crate) fn is_internal_query(&self) -> bool {
-    matches!(self.kind(), CrateEventKind::InternalQuery { .. })
-  }
-}
-
-impl<D, T> From<MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>
-  for CrateEvent<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn from(value: MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>) -> Self {
-    Self(Either::Left(CrateEventKind::Member(value)))
-  }
-}
-
-impl<D, T> From<UserEventMessage> for CrateEvent<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn from(value: UserEventMessage) -> Self {
-    Self(Either::Left(CrateEventKind::User(value)))
-  }
-}
-
-impl<D, T> From<QueryEvent<T, D>> for CrateEvent<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn from(value: QueryEvent<T, D>) -> Self {
-    Self(Either::Left(CrateEventKind::Query(value)))
-  }
-}
-
-impl<D, T> From<(InternalQueryEvent<T::Id>, QueryEvent<T, D>)> for CrateEvent<T, D>
-where
-  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
-  T: Transport,
-{
-  fn from(value: (InternalQueryEvent<T::Id>, QueryEvent<T, D>)) -> Self {
-    Self(Either::Left(CrateEventKind::InternalQuery {
-      kind: value.0,
-      query: value.1,
-    }))
-  }
-}
-
-pub(crate) enum CrateEventKind<T, D>
+pub(crate) enum CrateEvent<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
@@ -129,7 +35,7 @@ where
   },
 }
 
-impl<D, T> Clone for CrateEventKind<T, D>
+impl<D, T> Clone for CrateEvent<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
@@ -147,34 +53,68 @@ where
   }
 }
 
+impl<D, T> CrateEvent<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  /// Returns the type of the event
+  #[inline]
+  pub fn ty(&self) -> CrateEventType {
+    match self {
+      Self::Member(e) => CrateEventType::Member(e.ty),
+      Self::User(_) => CrateEventType::User,
+      Self::Query(_) => CrateEventType::Query,
+      Self::InternalQuery { .. } => CrateEventType::InternalQuery,
+    }
+  }
+
+  pub(crate) fn is_internal_query(&self) -> bool {
+    matches!(self, Self::InternalQuery { .. })
+  }
+}
+
 impl<D, T> From<MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>
-  for CrateEventKind<T, D>
+  for CrateEvent<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  fn from(event: MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>) -> Self {
-    Self::Member(event)
+  fn from(value: MemberEvent<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>) -> Self {
+    Self::Member(value)
   }
 }
 
-impl<D, T> From<UserEventMessage> for CrateEventKind<T, D>
+impl<D, T> From<UserEventMessage> for CrateEvent<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  fn from(event: UserEventMessage) -> Self {
-    Self::User(event)
+  fn from(value: UserEventMessage) -> Self {
+    Self::User(value)
   }
 }
 
-impl<D, T> From<QueryEvent<T, D>> for CrateEventKind<T, D>
+impl<D, T> From<QueryEvent<T, D>> for CrateEvent<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  fn from(event: QueryEvent<T, D>) -> Self {
-    Self::Query(event)
+  fn from(value: QueryEvent<T, D>) -> Self {
+    Self::Query(value)
+  }
+}
+
+impl<D, T> From<(InternalQueryEvent<T::Id>, QueryEvent<T, D>)> for CrateEvent<T, D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  fn from(value: (InternalQueryEvent<T::Id>, QueryEvent<T, D>)) -> Self {
+    Self::InternalQuery {
+      kind: value.0,
+      query: value.1,
+    }
   }
 }
 
@@ -225,4 +165,3 @@ impl<I> InternalQueryEvent<I> {
     }
   }
 }
-
