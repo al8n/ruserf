@@ -11,6 +11,7 @@ description = "Types for the `ruserf` crate"
 [features]
 encryption = ["memberlist-types/encryption", "futures"]
 serde = ["dep:serde", "indexmap/serde", "memberlist-types/serde", "smol_str/serde", "bitflags/serde"]
+metrics = ["memberlist-types/metrics"]
 
 [dependencies]
 bitflags = "2"

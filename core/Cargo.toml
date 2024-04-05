@@ -9,8 +9,8 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
-default = ["metrics", "async-graphql"]
-metrics = ["memberlist-core/metrics", "dep:metrics"]
+default = ["metrics"]
+metrics = ["memberlist-core/metrics", "dep:metrics", "ruserf-types/metrics"]
 encryption = ["memberlist-core/encryption", "ruserf-types/encryption", "base64"]
 async-graphql = ["dep:async-graphql"]
 
