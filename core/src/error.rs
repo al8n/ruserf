@@ -1,6 +1,7 @@
 use std::{borrow::Cow, collections::HashMap};
 
 use memberlist_core::{
+  delegate::DelegateError as MemberlistDelegateError,
   transport::{AddressResolver, MaybeResolvedAddress, Node, Transport},
   types::{SmallVec, TinyVec},
 };
@@ -12,8 +13,8 @@ use crate::{
   types::Member,
 };
 
-pub use crate::{delegate::DelegateError, snapshot::SnapshotError};
-pub use memberlist_core::delegate::DelegateError as MemberlistDelegateError;
+pub use crate::snapshot::SnapshotError;
+
 #[derive(Debug)]
 pub struct VoidError;
 
@@ -24,6 +25,63 @@ impl std::fmt::Display for VoidError {
 }
 
 impl std::error::Error for VoidError {}
+
+/// Error trait for [`Delegate`]
+#[derive(thiserror::Error)]
+pub enum SerfDelegateError<D: Delegate> {
+  /// Serf error
+  #[error(transparent)]
+  Serf(#[from] SerfError),
+  /// [`TransformDelegate`] error
+  #[error(transparent)]
+  TransformDelegate(<D as TransformDelegate>::Error),
+  /// [`MergeDelegate`] error
+  #[error(transparent)]
+  MergeDelegate(<D as MergeDelegate>::Error),
+}
+
+impl<D: Delegate> core::fmt::Debug for SerfDelegateError<D> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::TransformDelegate(err) => write!(f, "{err:?}"),
+      Self::MergeDelegate(err) => write!(f, "{err:?}"),
+      Self::Serf(err) => write!(f, "{err:?}"),
+    }
+  }
+}
+
+impl<D: Delegate> SerfDelegateError<D> {
+  /// Create a delegate error from an alive delegate error.
+  #[inline]
+  pub const fn transform(err: <D as TransformDelegate>::Error) -> Self {
+    Self::TransformDelegate(err)
+  }
+
+  /// Create a delegate error from a merge delegate error.
+  #[inline]
+  pub const fn merge(err: <D as MergeDelegate>::Error) -> Self {
+    Self::MergeDelegate(err)
+  }
+
+  /// Create a delegate error from a serf error.
+  #[inline]
+  pub const fn serf(err: crate::error::SerfError) -> Self {
+    Self::Serf(err)
+  }
+}
+
+impl<T, D> From<MemberlistDelegateError<SerfDelegate<T, D>>> for SerfDelegateError<D>
+where
+  D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
+  T: Transport,
+{
+  fn from(value: MemberlistDelegateError<SerfDelegate<T, D>>) -> Self {
+    match value {
+      MemberlistDelegateError::AliveDelegate(e) => e,
+      MemberlistDelegateError::MergeDelegate(e) => e,
+    }
+  }
+}
 
 #[derive(thiserror::Error)]
 pub enum Error<T, D>
@@ -38,9 +96,7 @@ where
   #[error(transparent)]
   Transport(T::Error),
   #[error(transparent)]
-  MemberlistDelegate(#[from] MemberlistDelegateError<SerfDelegate<T, D>>),
-  #[error(transparent)]
-  Delegate(#[from] DelegateError<D>),
+  Delegate(#[from] SerfDelegateError<D>),
   #[error(transparent)]
   Relay(#[from] RelayError<T, D>),
 }
@@ -60,7 +116,10 @@ where
         Self::Memberlist(MemberlistError::LeaveTimeout)
       }
       memberlist_core::error::Error::Lost(n) => Self::Memberlist(MemberlistError::Lost(n)),
-      memberlist_core::error::Error::Delegate(e) => Self::MemberlistDelegate(e),
+      memberlist_core::error::Error::Delegate(e) => match e.into() {
+        SerfDelegateError::Serf(e) => Self::Serf(e),
+        e => Self::Delegate(e),
+      },
       memberlist_core::error::Error::Transport(e) => Self::Transport(e),
       memberlist_core::error::Error::UnexpectedMessage { expected, got } => {
         Self::Memberlist(MemberlistError::UnexpectedMessage { expected, got })
@@ -85,7 +144,6 @@ where
       Self::Serf(e) => write!(f, "{e:?}"),
       Self::Transport(e) => write!(f, "{e:?}"),
       Self::Delegate(e) => write!(f, "{e:?}"),
-      Self::MemberlistDelegate(e) => write!(f, "{e:?}"),
       Self::Relay(e) => write!(f, "{e:?}"),
     }
   }
@@ -109,13 +167,13 @@ where
   /// Create error from a transform error
   #[inline]
   pub fn transform_delegate(err: <D as TransformDelegate>::Error) -> Self {
-    Self::Delegate(DelegateError::TransformDelegate(err))
+    Self::Delegate(SerfDelegateError::TransformDelegate(err))
   }
 
   /// Create a merge delegate error
   #[inline]
   pub const fn merge_delegate(err: <D as MergeDelegate>::Error) -> Self {
-    Self::Delegate(DelegateError::MergeDelegate(err))
+    Self::Delegate(SerfDelegateError::MergeDelegate(err))
   }
 
   /// Create a query response too large error
@@ -231,8 +289,6 @@ where
 
 #[derive(Debug, thiserror::Error)]
 pub enum SerfError {
-  // #[error("ruserf: {0}")]
-  // Delegate(#[from] DelegateError<D>),
   #[error("ruserf: user event size limit exceeds limit of {0} bytes")]
   UserEventLimitTooLarge(usize),
   #[error("ruserf: user event exceeds sane limit of {0} bytes before encoding")]

@@ -1,7 +1,7 @@
 use crate::{
   broadcast::SerfBroadcast,
   delegate::{Delegate, TransformDelegate},
-  error::Error,
+  error::{SerfDelegateError, SerfError},
   types::{
     DelegateVersion, JoinMessage, LamportTime, LeaveMessage, Member, MemberStatus,
     MemberlistDelegateVersion, MemberlistProtocolVersion, MessageType, ProtocolVersion,
@@ -562,18 +562,18 @@ where
 {
   type Id = T::Id;
   type Address = <T::Resolver as AddressResolver>::ResolvedAddress;
-  type Error = Error<T, D>;
+  type Error = SerfDelegateError<D>;
 
   async fn notify_alive(
     &self,
     node: Arc<NodeState<Self::Id, Self::Address>>,
   ) -> Result<(), Self::Error> {
     if let Some(ref d) = self.delegate {
-      let member = node_to_member(node)?;
+      let member = node_to_member::<T, D>(node)?;
       return d
         .notify_merge(TinyVec::from(member))
         .await
-        .map_err(|e| Error::merge_delegate(e));
+        .map_err(SerfDelegateError::merge);
     }
 
     Ok(())
@@ -587,7 +587,7 @@ where
 {
   type Id = T::Id;
   type Address = <T::Resolver as AddressResolver>::ResolvedAddress;
-  type Error = Error<T, D>;
+  type Error = SerfDelegateError<D>;
 
   async fn notify_merge(
     &self,
@@ -596,12 +596,12 @@ where
     if let Some(ref d) = self.delegate {
       let peers = peers
         .into_iter()
-        .map(node_to_member)
+        .map(node_to_member::<T, D>)
         .collect::<Result<TinyVec<_>, _>>()?;
       return d
         .notify_merge(peers)
         .await
-        .map_err(|e| Error::merge_delegate(e));
+        .map_err(SerfDelegateError::merge);
     }
     Ok(())
   }
@@ -773,7 +773,7 @@ where
 
 fn node_to_member<T, D>(
   node: Arc<NodeState<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
-) -> Result<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
+) -> Result<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, SerfDelegateError<D>>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
@@ -786,18 +786,17 @@ where
 
   let meta = node.meta();
   if meta.len() > META_MAX_SIZE {
-    return Err(Error::tags_too_large(meta.len()));
+    return Err(SerfDelegateError::serf(SerfError::TagsTooLarge(meta.len())));
   }
 
   Ok(Member {
     node: node.node(),
     tags: <D as TransformDelegate>::decode_tags(node.meta())
-      .map_err(Error::transform_delegate)
       .map(|(read, tags)| {
         tracing::trace!(read=%read, tags=?tags, "ruserf: decode tags successfully");
-        tags
+        Arc::new(tags)
       })
-      .map(Arc::new)?,
+      .map_err(SerfDelegateError::transform)?,
     status,
     protocol_version: ProtocolVersion::V1,
     delegate_version: DelegateVersion::V1,
