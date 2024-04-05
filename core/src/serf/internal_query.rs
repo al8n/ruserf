@@ -440,7 +440,7 @@ where
       raw.resize(expected_k_encoded_len + 1, 0);
 
       let len = <D as TransformDelegate>::encode_message(&*resp, &mut raw[1..])
-        .map_err(Error::transform)?;
+        .map_err(Error::transform_delegate)?;
 
       debug_assert_eq!(
         len, expected_k_encoded_len,
@@ -459,7 +459,7 @@ where
       raw.resize(expected_encoded_len + 1, 0);
 
       let len = <D as TransformDelegate>::encode_message(&qresp, &mut raw[1..])
-        .map_err(Error::transform)?;
+        .map_err(Error::transform_delegate)?;
 
       debug_assert_eq!(
         len, expected_encoded_len,
@@ -484,7 +484,7 @@ where
       }
       return Ok((qraw, qresp));
     }
-    Err(Error::FailTruncateResponse)
+    Err(Error::fail_truncate_response())
   }
 
   #[cfg(feature = "encryption")]

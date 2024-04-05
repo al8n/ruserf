@@ -228,7 +228,7 @@ where
     // Check that the meta data length is okay
     let tags_encoded_len = <D as TransformDelegate>::tags_encoded_len(&tags);
     if tags_encoded_len > Meta::MAX_SIZE {
-      return Err(Error::TagsTooLarge(tags_encoded_len));
+      return Err(Error::tags_too_large(tags_encoded_len));
     }
     // update the config
     self.inner.opts.tags.store(Arc::new(tags));
@@ -258,11 +258,15 @@ where
 
     // Check size before encoding to prevent needless encoding and return early if it's over the specified limit.
     if payload_size_before_encoding > self.inner.opts.max_user_event_size {
-      return Err(Error::UserEventTooLarge(payload_size_before_encoding));
+      return Err(Error::user_event_limit_too_large(
+        payload_size_before_encoding,
+      ));
     }
 
     if payload_size_before_encoding > USER_EVENT_SIZE_LIMIT {
-      return Err(Error::UserEventTooLarge(payload_size_before_encoding));
+      return Err(Error::user_event_limit_too_large(
+        payload_size_before_encoding,
+      ));
     }
 
     // Create a message
@@ -279,19 +283,19 @@ where
     // Check the size after encoding to be sure again that
     // we're not attempting to send over the specified size limit.
     if len > self.inner.opts.max_user_event_size {
-      return Err(Error::RawUserEventTooLarge(len));
+      return Err(Error::raw_user_event_too_large(len));
     }
 
     if len > USER_EVENT_SIZE_LIMIT {
-      return Err(Error::RawUserEventTooLarge(len));
+      return Err(Error::raw_user_event_too_large(len));
     }
 
     let mut raw = BytesMut::with_capacity(len + 1); // + 1 for message type byte
     raw.put_u8(MessageType::UserEvent as u8);
     raw.resize(len + 1, 0);
 
-    let actual_encoded_len =
-      <D as TransformDelegate>::encode_message(&msg, &mut raw[1..]).map_err(Error::transform)?;
+    let actual_encoded_len = <D as TransformDelegate>::encode_message(&msg, &mut raw[1..])
+      .map_err(Error::transform_delegate)?;
     debug_assert_eq!(
       actual_encoded_len, len,
       "expected encoded len {} mismatch the actual encoded len {}",
@@ -359,7 +363,9 @@ where
     let local = self.inner.memberlist.advertise_node();
 
     // Encode the filters
-    let filters = params.encode_filters::<D>().map_err(Error::transform)?;
+    let filters = params
+      .encode_filters::<D>()
+      .map_err(Error::transform_delegate)?;
 
     // Setup the flags
     let flags = if params.request_ack {
@@ -386,14 +392,14 @@ where
 
     // Check the size
     if len > self.inner.opts.query_size_limit {
-      return Err(Error::QueryTooLarge(len));
+      return Err(Error::query_too_large(len));
     }
 
     let mut raw = BytesMut::with_capacity(len + 1); // + 1 for message type byte
     raw.put_u8(MessageType::Query as u8);
     raw.resize(len + 1, 0);
-    let actual_encoded_len =
-      <D as TransformDelegate>::encode_message(&q, &mut raw[1..]).map_err(Error::transform)?;
+    let actual_encoded_len = <D as TransformDelegate>::encode_message(&q, &mut raw[1..])
+      .map_err(Error::transform_delegate)?;
     debug_assert_eq!(
       actual_encoded_len, len,
       "expected encoded len {} mismatch the actual encoded len {}",
@@ -432,7 +438,7 @@ where
     // Do a quick state check
     let current_state = self.state();
     if current_state != SerfState::Alive {
-      return Err(Error::BadJoinStatus(current_state));
+      return Err(Error::bad_join_status(current_state));
     }
 
     // Hold the joinLock, this is to make eventJoinIgnore safe
@@ -457,7 +463,7 @@ where
       }
       Err(e) => {
         self.inner.event_join_ignore.store(false, Ordering::SeqCst);
-        Err(Error::Memberlist(e.into()))
+        Err(Error::from(e))
       }
     }
   }
@@ -480,7 +486,7 @@ where
         joined: SmallVec::new(),
         errors: existing
           .into_iter()
-          .map(|node| (node, Error::BadJoinStatus(current_state)))
+          .map(|node| (node, Error::bad_join_status(current_state)))
           .collect(),
         broadcast_error: None,
       });
@@ -560,8 +566,8 @@ where
       let mut s = self.inner.state.lock();
       match *s {
         SerfState::Left => return Ok(()),
-        SerfState::Leaving => return Err(Error::BadLeaveStatus(*s)),
-        SerfState::Shutdown => return Err(Error::BadLeaveStatus(*s)),
+        SerfState::Leaving => return Err(Error::bad_leave_status(*s)),
+        SerfState::Shutdown => return Err(Error::bad_leave_status(*s)),
         _ => {
           // Set the state to leaving
           *s = SerfState::Leaving;
@@ -692,7 +698,7 @@ where
       return Ok(coord.client.get_coordinate());
     }
 
-    Err(Error::CoordinatesDisabled)
+    Err(Error::coordinates_disabled())
   }
 
   /// Returns the network coordinate for the node with the given
@@ -702,7 +708,7 @@ where
       return Ok(coord.cache.read().get(id).cloned());
     }
 
-    Err(Error::CoordinatesDisabled)
+    Err(Error::coordinates_disabled())
   }
 
   /// Returns the underlying [`Memberlist`] instance

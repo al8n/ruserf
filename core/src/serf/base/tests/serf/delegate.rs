@@ -16,6 +16,8 @@ where
 
   let (_, tags) = <DefaultDelegate<T> as TransformDelegate>::decode_tags(&meta).unwrap();
   assert_eq!(tags.get("role"), Some(&SmolStr::new("test")));
+
+  s.shutdown().await.unwrap();
 }
 
 /// Unit test for delegate node meta panic
@@ -31,6 +33,7 @@ where
   .await
   .unwrap();
   s.inner.memberlist.delegate().unwrap().node_meta(1).await;
+  s.shutdown().await.unwrap();
 }
 
 /// Unit test for delegate local state
@@ -178,6 +181,8 @@ where
   assert!(buf.buffer[45].is_some(), "missing event buffer for time");
   assert_eq!(buf.buffer[45].as_ref().unwrap().events[0].name, "test");
   assert_eq!(s.inner.query_clock.time(), 100.into(), "bad query clock");
+
+  s.shutdown().await.unwrap();
 }
 
 /// Unit test for serf ping delegate versioning

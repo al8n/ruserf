@@ -67,7 +67,7 @@ where
     #[cfg(any(test, feature = "test"))] message_dropper: Option<Box<dyn delegate::MessageDropper>>,
   ) -> Result<Self, Error<T, D>> {
     if opts.max_user_event_size > USER_EVENT_SIZE_LIMIT {
-      return Err(Error::UserEventLimitTooLarge(USER_EVENT_SIZE_LIMIT));
+      return Err(Error::user_event_limit_too_large(USER_EVENT_SIZE_LIMIT));
     }
 
     // Check that the meta data length is okay
@@ -76,7 +76,7 @@ where
       if !tags.as_ref().is_empty() {
         let len = <D as TransformDelegate>::tags_encoded_len(&tags);
         if len > Meta::MAX_SIZE {
-          return Err(Error::TagsTooLarge(len));
+          return Err(Error::tags_too_large(len));
         }
       }
     }
@@ -380,8 +380,8 @@ where
     let mut raw = BytesMut::with_capacity(expected_encoded_len + 1); // + 1 for message type byte
     raw.put_u8(ty as u8);
     raw.resize(expected_encoded_len + 1, 0);
-    let len =
-      <D as TransformDelegate>::encode_message(&msg, &mut raw[1..]).map_err(Error::transform)?;
+    let len = <D as TransformDelegate>::encode_message(&msg, &mut raw[1..])
+      .map_err(Error::transform_delegate)?;
     debug_assert_eq!(
       len, expected_encoded_len,
       "expected encoded len {} mismatch the actual encoded len {}",
@@ -505,8 +505,8 @@ where
     // Wait for the broadcast
     <T::Runtime as RuntimeLite>::timeout(self.inner.opts.broadcast_timeout, nrx.recv())
       .await
-      .map_err(|_| Error::RemovalBroadcastTimeout)?
-      .map_err(|_| Error::BroadcastChannelClosed)
+      .map_err(|_| Error::removal_broadcast_timeout())?
+      .map_err(|_| Error::broadcast_channel_closed())
   }
 }
 

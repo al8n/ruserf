@@ -224,7 +224,7 @@ impl<I, A> QueryResponse<I, A> {
         metrics::counter!("ruserf.query.acks", metrics_labels.iter()).increment(1);
       }
 
-      if let Some(Err(e)) = self.send_ack::<T, D>(&mut *c, &resp).await {
+      if let Some(Err(e)) = self.send_ack::<T, D>(&mut *c, &resp, metrics_labels).await {
         tracing::warn!("ruserf: {}", e);
       }
     } else {
@@ -288,7 +288,7 @@ impl<I, A> QueryResponse<I, A> {
             Ok(())
           },
           default => {
-            Err(Error::QueryResponseDeliveryFailed)
+            Err(Error::query_response_delivery_failed())
           }
         }
       }
@@ -301,6 +301,7 @@ impl<I, A> QueryResponse<I, A> {
     &self,
     c: &mut QueryResponseCore<I, A>,
     nr: &QueryResponseMessage<I, A>,
+    #[cfg(feature = "metrics")] metrics_labels: &memberlist_core::types::MetricLabels,
   ) -> Option<Result<(), Error<T, D>>>
   where
     I: Eq + std::hash::Hash + CheapClone,
@@ -310,6 +311,10 @@ impl<I, A> QueryResponse<I, A> {
   {
     // Exit early if this is a duplicate ack
     if c.acks.contains(&nr.from) {
+      #[cfg(feature = "metrics")]
+      {
+        metrics::counter!("ruserf.query.duplicate_acks", metrics_labels.iter()).increment(1);
+      }
       // TODO: metrics
       return None;
     }
@@ -326,7 +331,7 @@ impl<I, A> QueryResponse<I, A> {
             Ok(())
           },
           default => {
-            Err(Error::QueryResponseDeliveryFailed)
+            Err(Error::query_response_delivery_failed())
           }
         }
       } else {
@@ -494,7 +499,7 @@ where
     let expected_encoded_len = <D as TransformDelegate>::node_encoded_len(&node)
       + <D as TransformDelegate>::message_encoded_len(&resp);
     if expected_encoded_len > self.inner.opts.query_response_size_limit {
-      return Err(Error::RelayedResponseTooLarge(
+      return Err(Error::relayed_response_too_large(
         self.inner.opts.query_response_size_limit,
       ));
     }
@@ -504,11 +509,11 @@ where
     raw.resize(expected_encoded_len + 1 + 1, 0);
     let mut encoded = 1;
     encoded += <D as TransformDelegate>::encode_node(&node, &mut raw[encoded..])
-      .map_err(Error::transform)?;
+      .map_err(Error::transform_delegate)?;
     raw[encoded] = MessageType::QueryResponse as u8;
     encoded += 1;
     encoded += <D as TransformDelegate>::encode_message(&resp, &mut raw[encoded..])
-      .map_err(Error::transform)?;
+      .map_err(Error::transform_delegate)?;
 
     debug_assert_eq!(
       encoded - 1 - 1,
@@ -552,7 +557,7 @@ where
     }
 
     if !errs.is_empty() {
-      return Err(Error::Relay(From::from(errs)));
+      return Err(Error::relay(From::from(errs)));
     }
 
     Ok(())

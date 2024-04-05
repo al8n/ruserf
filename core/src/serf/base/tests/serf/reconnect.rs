@@ -1,5 +1,7 @@
 use std::{marker::PhantomData, net::IpAddr};
 
+use memberlist_core::transport::resolver::socket_addr::SocketAddrResolver;
+
 use crate::delegate::ReconnectDelegate;
 
 use super::*;
@@ -62,13 +64,14 @@ where
 }
 
 /// Unit test for reconnect
-pub async fn serf_reconnect_same_ip<T>(
+pub async fn serf_reconnect_same_ip<T, R>(
   transport_opts1: T::Options,
   transport_opts2: T::Options,
   get_ip: impl Fn(&<T::Resolver as AddressResolver>::ResolvedAddress) -> IpAddr,
 ) where
-  T: Transport,
+  T: Transport<Id = SmolStr, Resolver = SocketAddrResolver<R>>,
   T::Options: Clone,
+  R: RuntimeLite,
 {
   let (event_tx, event_rx) = EventProducer::bounded(4);
 

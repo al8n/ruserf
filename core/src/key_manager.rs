@@ -147,8 +147,8 @@ where
     buf.put_u8(MessageType::KeyRequest as u8);
     buf.resize(expected_encoded_len + 1, 0);
     // Encode the query request
-    let len =
-      <D as TransformDelegate>::encode_message(&kr, &mut buf[1..]).map_err(Error::transform)?;
+    let len = <D as TransformDelegate>::encode_message(&kr, &mut buf[1..])
+      .map_err(Error::transform_delegate)?;
 
     debug_assert_eq!(
       len, expected_encoded_len,

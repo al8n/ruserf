@@ -43,10 +43,10 @@ where
   fn check_response_size(&self, resp: &[u8]) -> Result<(), Error<T, D>> {
     let resp_len = resp.len();
     if resp_len > self.this.inner.opts.query_response_size_limit {
-      Err(Error::QueryResponseTooLarge {
-        limit: self.this.inner.opts.query_response_size_limit,
-        got: resp_len,
-      })
+      Err(Error::query_response_too_large(
+        self.this.inner.opts.query_response_size_limit,
+        resp_len,
+      ))
     } else {
       Ok(())
     }
@@ -65,7 +65,7 @@ where
     if let Some(span) = *mu {
       // Ensure we aren't past our response deadline
       if span.elapsed() > self.query_timeout {
-        return Err(Error::QueryTimeout);
+        return Err(Error::query_timeout());
       }
 
       // Send the response directly to the originator
@@ -86,7 +86,7 @@ where
       *mu = None;
       Ok(())
     } else {
-      Err(Error::QueryAlreadyResponsed)
+      Err(Error::query_already_responsed())
     }
   }
 
@@ -109,8 +109,8 @@ where
     let mut buf = BytesMut::with_capacity(expected_encoded_len + 1); // +1 for the message type byte
     buf.put_u8(MessageType::QueryResponse as u8);
     buf.resize(expected_encoded_len + 1, 0);
-    let len =
-      <D as TransformDelegate>::encode_message(&resp, &mut buf[1..]).map_err(Error::transform)?;
+    let len = <D as TransformDelegate>::encode_message(&resp, &mut buf[1..])
+      .map_err(Error::transform_delegate)?;
     debug_assert_eq!(
       len, expected_encoded_len,
       "expected encoded len {expected_encoded_len} is not match the actual encoded len {len}"

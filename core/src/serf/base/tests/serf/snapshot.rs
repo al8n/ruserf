@@ -664,6 +664,7 @@ pub async fn serf_leave_snapshot_recovery<T>(
   }
 }
 
+#[cfg(test)]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
   use memberlist_core::{
@@ -778,6 +779,7 @@ async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
   handle.wait().await;
 }
 
+#[cfg(test)]
 #[tokio::test]
 async fn test_snapshoter_slow_disk_not_blocking_memberlist() {
   use memberlist_core::{

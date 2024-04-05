@@ -34,13 +34,13 @@ compression = ["memberlist/compression"]
 encryption = ["memberlist/encryption", "ruserf-core/encryption"]
 
 quic = ["memberlist/quic"]
-quinn = ["memberlist/quinn"]
-s2n = ["memberlist/s2n"]
+quinn = ["memberlist/quinn", "quic"]
+s2n = ["memberlist/s2n", "quic"]
 
 net = ["memberlist/net"]
 tcp = ["net"]
-tls = ["memberlist/tls"]
-native-tls = ["memberlist/native-tls"]
+tls = ["memberlist/tls", "net"]
+native-tls = ["memberlist/native-tls", "net"]
 
 # enable DNS node address resolver
 dns = ["memberlist/dns"]
@@ -77,3 +77,13 @@ test = ["memberlist/test", "ruserf-core/test"]
 [dependencies]
 memberlist.workspace = true
 ruserf-core = { workspace = true, default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+smol_str = "0.2"
+paste = "1"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+required-features = ["test"]

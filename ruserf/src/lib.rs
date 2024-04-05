@@ -1,7 +1,6 @@
-
 pub use ruserf_core::*;
 
-pub use memberlist::agnostic;
+pub use memberlist::{agnostic, transport};
 
 #[cfg(feature = "net")]
 pub use memberlist::net;

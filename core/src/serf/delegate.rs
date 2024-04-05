@@ -1,7 +1,7 @@
 use crate::{
   broadcast::SerfBroadcast,
   delegate::{Delegate, TransformDelegate},
-  error::{DelegateError, Error},
+  error::Error,
   types::{
     DelegateVersion, JoinMessage, LamportTime, LeaveMessage, Member, MemberStatus,
     MemberlistDelegateVersion, MemberlistProtocolVersion, MessageType, ProtocolVersion,
@@ -573,7 +573,7 @@ where
       return d
         .notify_merge(TinyVec::from(member))
         .await
-        .map_err(|e| Error::Delegate(DelegateError::merge(e)));
+        .map_err(|e| Error::merge_delegate(e));
     }
 
     Ok(())
@@ -601,7 +601,7 @@ where
       return d
         .notify_merge(peers)
         .await
-        .map_err(|e| Error::Delegate(DelegateError::merge(e)));
+        .map_err(|e| Error::merge_delegate(e));
     }
     Ok(())
   }
@@ -786,13 +786,13 @@ where
 
   let meta = node.meta();
   if meta.len() > META_MAX_SIZE {
-    return Err(Error::TagsTooLarge(meta.len()));
+    return Err(Error::tags_too_large(meta.len()));
   }
 
   Ok(Member {
     node: node.node(),
     tags: <D as TransformDelegate>::decode_tags(node.meta())
-      .map_err(Error::transform)
+      .map_err(Error::transform_delegate)
       .map(|(read, tags)| {
         tracing::trace!(read=%read, tags=?tags, "ruserf: decode tags successfully");
         tags
