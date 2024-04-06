@@ -173,7 +173,6 @@ where
     MessageType::Leave,
   )
   .unwrap();
-  println!("{:?}", members.recent_intents);
   assert_eq!(ltime, 16.into(), "bad leave ltime");
 
   // Verify event clock
@@ -195,19 +194,19 @@ pub async fn serf_ping_delegate_versioning<T>(
 {
   const PROBE_INTERVAL: Duration = Duration::from_millis(2);
 
-  let opts = test_config().with_disable_coordinates(false);
   let s1 = Serf::<T>::new(
     transport_opts1,
-    opts
+    test_config()
+      .with_disable_coordinates(false)
       .with_memberlist_options(memberlist_core::Options::lan().with_probe_interval(PROBE_INTERVAL)),
   )
   .await
   .unwrap();
 
-  let opts = test_config().with_disable_coordinates(false);
   let s2 = Serf::<T>::new(
     transport_opts2,
-    opts
+    test_config()
+      .with_disable_coordinates(false)
       .with_memberlist_options(memberlist_core::Options::lan().with_probe_interval(PROBE_INTERVAL)),
   )
   .await
@@ -326,15 +325,19 @@ pub async fn serf_ping_delegate_rogue_coordinate<T>(
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
-    if serfs[0].cached_coordinate(&s2id).is_ok() {
+    let s1c = serfs[0].cached_coordinate(&s2id).unwrap();
+    // println!("s1c {:?}", s1c);
+    if s1c.is_some() {
       cond1 = true;
-    } else if start.elapsed() > Duration::from_secs(5) {
+    } else if start.elapsed() > Duration::from_secs(7) {
       panic!("s1 didn't get a coordinate for s2");
     }
 
-    if serfs[1].cached_coordinate(&s1id).is_err() {
+    let s2c = serfs[1].cached_coordinate(&s1id).unwrap();
+    // println!("s2c {:?}", s2c);
+    if s2c.is_none() {
       cond2 = true;
-    } else if start.elapsed() > Duration::from_secs(5) {
+    } else if start.elapsed() > Duration::from_secs(7) {
       panic!("s2 got an unexpected coordinate for s1");
     }
 

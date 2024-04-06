@@ -662,10 +662,9 @@ where
       buf.put_u8(PING_VERSION);
 
       // Make a bad coordinate with the wrong number of dimensions.
-      let coord = crate::coordinate::Coordinate::with_options(
-        crate::coordinate::CoordinateOptions::new()
-          .with_dimensionality(crate::coordinate::CoordinateOptions::new().dimensionality() * 2),
-      );
+      let mut coord = crate::coordinate::Coordinate::new();
+      let len = coord.portion.len();
+      coord.portion.resize(len * 2, 0.0);
 
       // The rest of the message is the serialized coordinate.
       let len = <D as TransformDelegate>::coordinate_encoded_len(&coord);
@@ -725,7 +724,7 @@ where
 
       // Apply the update.
       let before = c.client.get_coordinate();
-      match c.client.update(node.id(), &before, rtt) {
+      match c.client.update(node.id(), &coord, rtt) {
         Ok(after) => {
           #[cfg(feature = "metrics")]
           {
