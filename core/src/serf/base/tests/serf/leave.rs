@@ -1,5 +1,144 @@
 use super::*;
 
+/// Unit tests for the leave intent buffer early
+pub async fn leave_intent_buffer_early<T>(transport_opts: T::Options)
+where
+  T: Transport<Id = SmolStr>,
+{
+  let opts = test_config();
+  let s1 = Serf::<T>::new(transport_opts, opts).await.unwrap();
+
+  // Deliver a leave intent message early
+  let j = LeaveMessage {
+    ltime: 10.into(),
+    id: "test".into(),
+    prune: false,
+  };
+
+  assert!(!s1.handle_node_leave_intent(&j).await, "should rebroadcast");
+  assert!(
+    s1.handle_node_leave_intent(&j).await,
+    "should not rebroadcast"
+  );
+
+  // Check that we buffered
+  {
+    let members = s1.inner.members.read().await;
+    let ltime = recent_intent(&members.recent_intents, &"test".into(), MessageType::Leave).unwrap();
+    assert_eq!(ltime, 10.into(), "bad buffer");
+  }
+
+  s1.shutdown().await.unwrap();
+}
+
+/// Unit tests for the leave intent old message
+pub async fn leave_intent_old_message<T>(
+  transport_opts: T::Options,
+  addr: <T::Resolver as AddressResolver>::ResolvedAddress,
+) where
+  T: Transport<Id = SmolStr>,
+{
+  let opts = test_config();
+  let s1 = Serf::<T>::new(transport_opts, opts).await.unwrap();
+
+  {
+    let mut members = s1.inner.members.write().await;
+    members.states.insert(
+      "test".into(),
+      MemberState {
+        member: Member {
+          node: Node::new("test".into(), addr),
+          tags: Arc::new(Default::default()),
+          status: MemberStatus::Alive,
+          memberlist_protocol_version: ruserf_types::MemberlistProtocolVersion::V1,
+          memberlist_delegate_version: ruserf_types::MemberlistDelegateVersion::V1,
+          protocol_version: ruserf_types::ProtocolVersion::V1,
+          delegate_version: ruserf_types::DelegateVersion::V1,
+        },
+        status_time: 12.into(),
+        leave_time: None,
+      },
+    );
+  }
+
+  let j = LeaveMessage {
+    ltime: 10.into(),
+    id: "test".into(),
+    prune: false,
+  };
+
+  assert!(
+    s1.handle_node_leave_intent(&j).await,
+    "should not rebroadcast"
+  );
+
+  {
+    let members = s1.inner.members.read().await;
+    assert!(
+      recent_intent(&members.recent_intents, &"test".into(), MessageType::Leave).is_none(),
+      "should not have buffered intent"
+    );
+  }
+
+  s1.shutdown().await.unwrap();
+}
+
+/// Unit tests for the leave intent newer
+pub async fn leave_intent_newer<T>(
+  transport_opts: T::Options,
+  addr: <T::Resolver as AddressResolver>::ResolvedAddress,
+) where
+  T: Transport<Id = SmolStr>,
+{
+  let opts = test_config();
+  let s1 = Serf::<T>::new(transport_opts, opts).await.unwrap();
+  {
+    let mut members = s1.inner.members.write().await;
+    members.states.insert(
+      "test".into(),
+      MemberState {
+        member: Member {
+          node: Node::new("test".into(), addr),
+          tags: Arc::new(Default::default()),
+          status: MemberStatus::Alive,
+          memberlist_protocol_version: ruserf_types::MemberlistProtocolVersion::V1,
+          memberlist_delegate_version: ruserf_types::MemberlistDelegateVersion::V1,
+          protocol_version: ruserf_types::ProtocolVersion::V1,
+          delegate_version: ruserf_types::DelegateVersion::V1,
+        },
+        status_time: 12.into(),
+        leave_time: None,
+      },
+    );
+  }
+
+  let j = LeaveMessage {
+    ltime: 14.into(),
+    id: "test".into(),
+    prune: false,
+  };
+
+  assert!(!s1.handle_node_leave_intent(&j).await, "should rebroadcast");
+
+  {
+    let members = s1.inner.members.read().await;
+    assert!(
+      recent_intent(&members.recent_intents, &"test".into(), MessageType::Leave).is_none(),
+      "should not have buffered intent"
+    );
+
+    let m = members.states.get("test").unwrap();
+    assert_eq!(
+      m.member.status,
+      MemberStatus::Leaving,
+      "should update status"
+    );
+    assert_eq!(s1.inner.clock.time(), 15.into(), "should update clock");
+  }
+
+  s1.shutdown().await.unwrap();
+}
+
 /// Unit tests for the force leave failed
 pub async fn serf_force_leave_failed<T>(
   transport_opts1: T::Options,

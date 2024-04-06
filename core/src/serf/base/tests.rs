@@ -22,9 +22,6 @@ use crate::{
 
 use super::*;
 
-mod internals;
-pub use internals::*;
-
 pub(crate) mod serf;
 
 fn test_config() -> Options {
