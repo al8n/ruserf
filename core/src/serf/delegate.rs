@@ -474,7 +474,7 @@ where
                   if let Some(&ltime) = pp.status_ltimes.get(node) {
                     this
                       .handle_node_leave_intent(&LeaveMessage {
-                        ltime,
+                        ltime: ltime + LamportTime::new(1),
                         id: node.cheap_clone(),
                         prune: false,
                       })

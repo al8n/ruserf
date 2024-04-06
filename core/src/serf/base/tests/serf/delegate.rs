@@ -118,9 +118,8 @@ where
 }
 
 /// Unit test for delegate merge remote state
-pub async fn delegate_merge_remote_state<A, T>(transport_opts: T::Options)
+pub async fn delegate_merge_remote_state<T>(transport_opts: T::Options)
 where
-  // A: AddressResolver<ResolvedAddress = SocketAddr>,
   T: Transport<Id = SmolStr>,
 {
   let opts = test_config();
@@ -136,7 +135,7 @@ where
     ]
     .into_iter()
     .collect(),
-    left_members: ["test".into()].into_iter().collect(),
+    left_members: ["foo".into()].into_iter().collect(),
     event_ltime: 50.into(),
     events: TinyVec::from(Some(UserEvents {
       ltime: 45.into(),
@@ -148,8 +147,9 @@ where
     query_ltime: 100.into(),
   };
 
-  let mut buf = vec![0; <DefaultDelegate<T> as TransformDelegate>::message_encoded_len(&pp)];
-  <DefaultDelegate<T> as TransformDelegate>::encode_message(&pp, &mut buf).unwrap();
+  let mut buf = vec![0; <DefaultDelegate<T> as TransformDelegate>::message_encoded_len(&pp) + 1];
+  buf[0] = MessageType::PushPull as u8;
+  <DefaultDelegate<T> as TransformDelegate>::encode_message(&pp, &mut buf[1..]).unwrap();
 
   // Merge in fake state
   d.merge_remote_state(buf.into(), false).await;
@@ -173,6 +173,7 @@ where
     MessageType::Leave,
   )
   .unwrap();
+  println!("{:?}", members.recent_intents);
   assert_eq!(ltime, 16.into(), "bad leave ltime");
 
   // Verify event clock

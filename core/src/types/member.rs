@@ -19,6 +19,7 @@ pub(crate) struct MemberState<I, A> {
 }
 
 /// Used to buffer intents for out-of-order deliveries.
+#[derive(Debug)]
 pub(crate) struct NodeIntent {
   pub(crate) ty: MessageType,
   pub(crate) wall_time: Epoch,
