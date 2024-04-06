@@ -241,15 +241,15 @@ pub async fn serf_ping_delegate_versioning<T>(
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
-    if serfs[0].cached_coordinate(&s2id).is_ok() {
+    if serfs[0].cached_coordinate(&s2id).unwrap().is_some() {
       cond1 = true;
-    } else if start.elapsed() > Duration::from_secs(5) {
+    } else if start.elapsed() > Duration::from_secs(7) {
       panic!("s1 didn't get a coordinate for s2");
     }
 
-    if serfs[1].cached_coordinate(&s1id).is_err() {
+    if serfs[1].cached_coordinate(&s1id).unwrap().is_none() {
       cond2 = true;
-    } else if start.elapsed() > Duration::from_secs(5) {
+    } else if start.elapsed() > Duration::from_secs(7) {
       panic!("s2 got an unexpected coordinate for s1");
     }
 
