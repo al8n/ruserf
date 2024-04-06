@@ -780,8 +780,8 @@ where
 
 /// Unit test for serf write keying file
 #[cfg(feature = "encryption")]
-pub async fn serf_write_keying_file<T>(
-  get_transport_opts: impl FnOnce(memberlist_core::types::SecretKeyring) -> T::Options,
+pub async fn serf_write_keyring_file<T>(
+  get_transport_opts: impl FnOnce(memberlist_core::types::SecretKey) -> T::Options,
 ) where
   T: Transport,
 {
@@ -798,9 +798,8 @@ pub async fn serf_write_keying_file<T>(
 
   let existing_bytes = general_purpose::STANDARD.decode(EXISTING).unwrap();
   let sk = memberlist_core::types::SecretKey::try_from(existing_bytes.as_slice()).unwrap();
-  let keyring = memberlist_core::types::SecretKeyring::new(sk);
 
-  let s = Serf::<T>::new(get_transport_opts(keyring), test_config())
+  let s = Serf::<T>::new(get_transport_opts(sk), test_config())
     .await
     .unwrap();
   assert!(

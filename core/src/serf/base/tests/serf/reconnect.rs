@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, net::IpAddr};
+use std::marker::PhantomData;
 
 use memberlist_core::transport::resolver::socket_addr::SocketAddrResolver;
 
@@ -64,11 +64,8 @@ where
 }
 
 /// Unit test for reconnect
-pub async fn serf_reconnect_same_ip<T, R>(
-  transport_opts1: T::Options,
-  transport_opts2: T::Options,
-  get_ip: impl Fn(&<T::Resolver as AddressResolver>::ResolvedAddress) -> IpAddr,
-) where
+pub async fn serf_reconnect_same_ip<T, R>(transport_opts1: T::Options, transport_opts2: T::Options)
+where
   T: Transport<Id = SmolStr, Resolver = SocketAddrResolver<R>>,
   T::Options: Clone,
   R: RuntimeLite,
@@ -82,8 +79,8 @@ pub async fn serf_reconnect_same_ip<T, R>(
     .await
     .unwrap();
 
-  let ip1 = get_ip(s1.inner.memberlist.advertise_address());
-  let ip2 = get_ip(s2.inner.memberlist.advertise_address());
+  let ip1 = s1.inner.memberlist.advertise_address().ip();
+  let ip2 = s2.inner.memberlist.advertise_address().ip();
   assert_eq!(ip1, ip2, "require same ip address 1: {ip1} 2: {ip2}");
 
   let mut serfs = [s1, s2];
