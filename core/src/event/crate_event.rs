@@ -59,8 +59,9 @@ where
   T: Transport,
 {
   /// Returns the type of the event
+  #[cfg(feature = "test")]
   #[inline]
-  pub fn ty(&self) -> CrateEventType {
+  pub(crate) fn ty(&self) -> CrateEventType {
     match self {
       Self::Member(e) => CrateEventType::Member(e.ty),
       Self::User(_) => CrateEventType::User,

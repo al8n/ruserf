@@ -136,17 +136,17 @@ mod tests {
 
   #[test]
   fn test_delegate_version() {
-    assert_eq!(DelegateVersion::V1 as u8, 0);
+    assert_eq!(DelegateVersion::V1 as u8, 1);
     assert_eq!(DelegateVersion::V1.to_string(), "V1");
-    assert_eq!(DelegateVersion::try_from(0), Ok(DelegateVersion::V1));
-    assert_eq!(DelegateVersion::try_from(1), Err(UnknownDelegateVersion(1)));
+    assert_eq!(DelegateVersion::try_from(1), Ok(DelegateVersion::V1));
+    assert_eq!(DelegateVersion::try_from(0), Err(UnknownDelegateVersion(0)));
   }
 
   #[test]
   fn test_protocol_version() {
-    assert_eq!(ProtocolVersion::V1 as u8, 0);
+    assert_eq!(ProtocolVersion::V1 as u8, 1);
     assert_eq!(ProtocolVersion::V1.to_string(), "V1");
-    assert_eq!(ProtocolVersion::try_from(0), Ok(ProtocolVersion::V1));
-    assert_eq!(ProtocolVersion::try_from(1), Err(UnknownProtocolVersion(1)));
+    assert_eq!(ProtocolVersion::try_from(1), Ok(ProtocolVersion::V1));
+    assert_eq!(ProtocolVersion::try_from(0), Err(UnknownProtocolVersion(0)));
   }
 }

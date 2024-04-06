@@ -33,8 +33,8 @@ use self::internal_query::SerfQueries;
 use super::*;
 
 /// Re-export the unit tests
-#[cfg(any(test, feature = "test"))]
-#[cfg_attr(docsrs, doc(cfg(any(test, feature = "test"))))]
+#[cfg(feature = "test")]
+#[cfg_attr(docsrs, doc(cfg(feature = "test")))]
 pub mod tests;
 
 impl<T, D> Serf<T, D>
@@ -42,7 +42,7 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  #[cfg(any(test, feature = "test"))]
+  #[cfg(feature = "test")]
   pub(crate) async fn with_message_dropper(
     transport: T::Options,
     opts: Options,
@@ -53,7 +53,7 @@ where
       None,
       transport,
       opts,
-      #[cfg(any(test, feature = "test"))]
+      #[cfg(feature = "test")]
       Some(message_dropper),
     )
     .await
@@ -206,13 +206,13 @@ where
         #[cfg(any(test, feature = "test"))]
         {
           match message_dropper {
-            Some(dropper) => SerfDelegate::with_dropper(delegate, dropper),
-            None => SerfDelegate::new(delegate),
+            Some(dropper) => SerfDelegate::with_dropper(delegate, dropper, opts.tags.clone()),
+            None => SerfDelegate::new(delegate, opts.tags.clone()),
           }
         }
         #[cfg(not(any(test, feature = "test")))]
         {
-          SerfDelegate::new(delegate)
+          SerfDelegate::new(delegate, opts.tags.clone())
         }
       },
       transport,
@@ -260,6 +260,7 @@ where
     let that = this.clone();
     let memberlist_delegate = this.inner.memberlist.delegate().unwrap();
     memberlist_delegate.store(that);
+    println!("here");
     let local_node = this.inner.memberlist.local_state().await;
     memberlist_delegate.notify_join(local_node).await;
 
@@ -463,7 +464,7 @@ where
     Ok(())
   }
 
-  #[cfg(any(feature = "test", test))]
+  #[cfg(feature = "test")]
   pub(crate) async fn get_queue_max(&self) -> usize {
     let mut max = self.inner.opts.max_queue_depth;
     if self.inner.opts.min_queue_depth > 0 {

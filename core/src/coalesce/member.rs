@@ -118,15 +118,15 @@ where
   }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "test"))]
 #[allow(clippy::collapsible_match)]
 mod tests {
   use std::{net::SocketAddr, time::Duration};
 
-  use agnostic_lite::{tokio::TokioRuntime, RuntimeLite};
   use futures::FutureExt;
-  use memberlist_core::transport::{
-    resolver::socket_addr::SocketAddrResolver, tests::UnimplementedTransport, Lpe,
+  use memberlist_core::{
+    agnostic_lite::{tokio::TokioRuntime, RuntimeLite},
+    transport::{resolver::socket_addr::SocketAddrResolver, tests::UnimplementedTransport, Lpe},
   };
   use ruserf_types::{MemberStatus, UserEventMessage};
   use smol_str::SmolStr;

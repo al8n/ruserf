@@ -12,6 +12,7 @@ use crate::{
 
 use std::sync::{atomic::Ordering, Arc, OnceLock};
 
+use arc_swap::ArcSwap;
 use indexmap::IndexSet;
 use memberlist_core::{
   bytes::{Buf, BufMut, Bytes, BytesMut},
@@ -24,12 +25,14 @@ use memberlist_core::{
   types::{Meta, NodeState, SmallVec, State, TinyVec},
   CheapClone, META_MAX_SIZE,
 };
+use ruserf_types::Tags;
 
 // PingVersion is an internal version for the ping message, above the normal
 // versioning we get from the protocol version. This enables small updates
 // to the ping message without a full protocol bump.
 const PING_VERSION: u8 = 1;
 
+#[cfg(any(test, feature = "test"))]
 pub(crate) trait MessageDropper: Send + Sync + 'static {
   fn should_drop(&self, ty: MessageType) -> bool;
 }
@@ -42,6 +45,7 @@ where
 {
   serf: OnceLock<Serf<T, D>>,
   delegate: Option<D>,
+  tags: Arc<ArcSwap<Tags>>,
   #[cfg(any(test, feature = "test"))]
   pub(crate) message_dropper: Option<Box<dyn MessageDropper>>,
   /// Only used for testing purposes
@@ -56,10 +60,11 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  pub(crate) fn new(d: Option<D>) -> Self {
+  pub(crate) fn new(d: Option<D>, tags: Arc<ArcSwap<Tags>>) -> Self {
     Self {
       serf: OnceLock::new(),
       delegate: d,
+      tags,
       #[cfg(any(test, feature = "test"))]
       message_dropper: None,
       #[cfg(any(test, feature = "test"))]
@@ -70,10 +75,15 @@ where
   }
 
   #[cfg(any(test, feature = "test"))]
-  pub(crate) fn with_dropper(d: Option<D>, dropper: Box<dyn MessageDropper>) -> Self {
+  pub(crate) fn with_dropper(
+    d: Option<D>,
+    dropper: Box<dyn MessageDropper>,
+    tags: Arc<ArcSwap<Tags>>,
+  ) -> Self {
     Self {
       serf: OnceLock::new(),
       delegate: d,
+      tags,
       #[cfg(any(test, feature = "test"))]
       message_dropper: Some(dropper),
       #[cfg(any(test, feature = "test"))]
@@ -103,7 +113,7 @@ where
   T: Transport,
 {
   async fn node_meta(&self, limit: usize) -> Meta {
-    let tags = self.this().inner.opts.tags();
+    let tags = self.tags.load();
     match tags.is_empty() {
       false => {
         let encoded_len = <D as TransformDelegate>::tags_encoded_len(&tags);
@@ -543,7 +553,9 @@ where
   type Address = <T::Resolver as AddressResolver>::ResolvedAddress;
 
   async fn notify_join(&self, node: Arc<NodeState<Self::Id, Self::Address>>) {
-    self.this().handle_node_join(node).await;
+    if let Some(serf) = self.serf.get() {
+      serf.handle_node_join(node).await;
+    }
   }
 
   async fn notify_leave(&self, node: Arc<NodeState<Self::Id, Self::Address>>) {

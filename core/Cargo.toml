@@ -11,7 +11,7 @@ homepage.workspace = true
 [features]
 default = ["metrics"]
 metrics = ["memberlist-core/metrics", "dep:metrics", "ruserf-types/metrics"]
-encryption = ["memberlist-core/encryption", "ruserf-types/encryption", "base64"]
+encryption = ["memberlist-core/encryption", "ruserf-types/encryption", "base64", "serde"]
 async-graphql = ["dep:async-graphql"]
 
 serde = [
