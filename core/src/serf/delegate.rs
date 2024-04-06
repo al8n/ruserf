@@ -668,7 +668,7 @@ where
       );
 
       // The rest of the message is the serialized coordinate.
-      let len = <D as TransformDelegate>::cooradinate_encoded_len(&coord);
+      let len = <D as TransformDelegate>::coordinate_encoded_len(&coord);
       buf.resize(len + 1, 0);
       if let Err(e) = <D as TransformDelegate>::encode_coordinate(&coord, &mut buf[1..]) {
         panic!("failed to encode coordinate: {}", e);
@@ -677,12 +677,13 @@ where
     }
 
     if let Some(c) = self.this().inner.coord_core.as_ref() {
-      let mut buf = Vec::new();
+      let coord = c.client.get_coordinate();
+      let encoded_len = <D as TransformDelegate>::coordinate_encoded_len(&coord) + 1;
+      let mut buf = BytesMut::with_capacity(encoded_len);
       buf.put_u8(PING_VERSION);
+      buf.resize(encoded_len, 0);
 
-      if let Err(e) =
-        <D as TransformDelegate>::encode_coordinate(&c.client.get_coordinate(), &mut buf[1..])
-      {
+      if let Err(e) = <D as TransformDelegate>::encode_coordinate(&coord, &mut buf[1..]) {
         tracing::error!(err=%e, "ruserf: failed to encode coordinate");
       }
       buf.into()

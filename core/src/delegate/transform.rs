@@ -51,7 +51,7 @@ pub trait TransformDelegate: Send + Sync + 'static {
 
   fn decode_address(bytes: &[u8]) -> Result<(usize, Self::Address), Self::Error>;
 
-  fn cooradinate_encoded_len(coordinate: &Coordinate) -> usize;
+  fn coordinate_encoded_len(coordinate: &Coordinate) -> usize;
 
   fn encode_coordinate(coordinate: &Coordinate, dst: &mut [u8]) -> Result<usize, Self::Error>;
 
@@ -207,7 +207,7 @@ where
     Transformable::decode(bytes).map_err(Self::Error::Address)
   }
 
-  fn cooradinate_encoded_len(coordinate: &Coordinate) -> usize {
+  fn coordinate_encoded_len(coordinate: &Coordinate) -> usize {
     Transformable::encoded_len(coordinate)
   }
 

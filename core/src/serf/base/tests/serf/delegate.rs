@@ -41,10 +41,10 @@ pub async fn delegate_local_state<T>(transport_opts1: T::Options, transport_opts
 where
   T: Transport,
 {
-  let opts = test_config();
+  let opts = test_config().with_event_buffer_size(0);
   let s1 = Serf::<T>::new(transport_opts1, opts).await.unwrap();
 
-  let opts = test_config();
+  let opts = test_config().with_event_buffer_size(0);
   let s2 = Serf::<T>::new(transport_opts2, opts).await.unwrap();
 
   let serfs = [s1, s2];

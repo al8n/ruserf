@@ -165,22 +165,17 @@ impl LamportClock {
     loop {
       // If the other value is old, we do not need to do anything
       let current = self.0.load(Ordering::SeqCst);
-      if current >= time.0 {
+      if time.0 < current {
         return;
       }
 
       // Ensure that our local clock is at least one ahead.
-      if self
+      match self
         .0
-        .compare_exchange_weak(current, time.0 + 1, Ordering::SeqCst, Ordering::Relaxed)
-        .is_err()
+        .compare_exchange_weak(current, time.0 + 1, Ordering::SeqCst, Ordering::SeqCst)
       {
-        // The CAS failed, so we just retry. Eventually our CAS should
-        // succeed or a future witness will pass us by and our witness
-        // will end.
-        continue;
-      } else {
-        return;
+        Ok(_) => return,
+        Err(_) => continue,
       }
     }
   }

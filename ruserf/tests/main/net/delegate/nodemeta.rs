@@ -13,7 +13,7 @@ macro_rules! test_mod {
           [< $rt:snake >]::[< $rt:camel Runtime >],
           transport::Lpe,
         };
-        use ruserf_core::tests::{delegate::delegate_nodemeta, next_socket_addr_v4, next_socket_addr_v6};
+        use ruserf_core::tests::{delegate::{delegate_nodemeta, delegate_nodemeta_panic}, next_socket_addr_v4, next_socket_addr_v6};
         use smol_str::SmolStr;
 
         #[test]
@@ -38,6 +38,40 @@ macro_rules! test_mod {
           let mut opts = NetTransportOptions::new(SmolStr::new(name));
           opts.add_bind_address(next_socket_addr_v6());
           [< $rt:snake _run >](delegate_nodemeta::<
+            NetTransport<
+              SmolStr,
+              SocketAddrResolver<[< $rt:camel Runtime >]>,
+              Tcp<[< $rt:camel Runtime >]>,
+              Lpe<SmolStr, SocketAddr>,
+              [< $rt:camel Runtime >],
+            >,
+          >(opts));
+        }
+
+        #[test]
+        #[should_panic]
+        fn test_delegate_nodemeta_panic_v4() {
+          let name = "delegate_nodemeta_panic_v4";
+          let mut opts = NetTransportOptions::new(SmolStr::new(name));
+          opts.add_bind_address(next_socket_addr_v4(0));
+          [< $rt:snake _run >](delegate_nodemeta_panic::<
+            NetTransport<
+              SmolStr,
+              SocketAddrResolver<[< $rt:camel Runtime >]>,
+              Tcp<[< $rt:camel Runtime >]>,
+              Lpe<SmolStr, SocketAddr>,
+              [< $rt:camel Runtime >],
+            >,
+          >(opts));
+        }
+
+        #[test]
+        #[should_panic]
+        fn test_delegate_nodemeta_panic_v6() {
+          let name = "delegate_nodemeta_panic_v6";
+          let mut opts = NetTransportOptions::new(SmolStr::new(name));
+          opts.add_bind_address(next_socket_addr_v6());
+          [< $rt:snake _run >](delegate_nodemeta_panic::<
             NetTransport<
               SmolStr,
               SocketAddrResolver<[< $rt:camel Runtime >]>,

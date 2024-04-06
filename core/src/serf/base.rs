@@ -185,8 +185,8 @@ where
     ));
 
     // Create a buffer for events and queries
-    let event_buffer = Vec::with_capacity(opts.event_buffer_size);
-    let query_buffer = Vec::with_capacity(opts.query_buffer_size);
+    let event_buffer = vec![None; opts.event_buffer_size];
+    let query_buffer = vec![None; opts.query_buffer_size];
 
     // Ensure our lamport clock is at least 1, so that the default
     // join LTime of 0 does not cause issues
@@ -260,7 +260,6 @@ where
     let that = this.clone();
     let memberlist_delegate = this.inner.memberlist.delegate().unwrap();
     memberlist_delegate.store(that);
-    println!("here");
     let local_node = this.inner.memberlist.local_state().await;
     memberlist_delegate.notify_join(local_node).await;
 
@@ -1050,15 +1049,19 @@ where
     }
 
     let node = n.node();
-    let tags = match <D as TransformDelegate>::decode_tags(n.meta()) {
-      Ok((readed, tags)) => {
-        tracing::trace!(read = %readed, tags=?tags, "ruserf: decode tags successfully");
-        tags
+    let tags = if !n.meta().is_empty() {
+      match <D as TransformDelegate>::decode_tags(n.meta()) {
+        Ok((readed, tags)) => {
+          tracing::trace!(read = %readed, tags=?tags, "ruserf: decode tags successfully");
+          tags
+        }
+        Err(e) => {
+          tracing::error!(err=%e, "ruserf: failed to decode tags");
+          return;
+        }
       }
-      Err(e) => {
-        tracing::error!(err=%e, "ruserf: failed to decode tags");
-        return;
-      }
+    } else {
+      Default::default()
     };
 
     let (old_status, fut) = if let Some(member) = members.states.get_mut(node.id()) {
