@@ -67,6 +67,7 @@ pub async fn serf_get_queue_max<T>(
   // state.
   {
     let mut members = s.inner.members.write().await;
+    members.states.clear();
     for i in 0..100 {
       let name: SmolStr = format!("Member{i}").into();
       members.states.insert(
@@ -93,33 +94,21 @@ pub async fn serf_get_queue_max<T>(
   s.shutdown().await.unwrap();
   <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(2)).await;
 
-  let s = Serf::<T>::new(
+  let sn = Serf::<T>::new(
     transport_opts.clone(),
-    test_config().with_max_queue_depth(1024),
+    test_config().with_min_queue_depth(1024),
   )
   .await
   .unwrap();
 
   {
-    let mut members = s.inner.members.write().await;
-    for i in 0..100 {
-      let name: SmolStr = format!("Member{i}").into();
-      members.states.insert(
-        name.clone(),
-        MemberState {
-          member: Member::new(
-            Node::new(name.clone(), get_addr(i)),
-            Default::default(),
-            MemberStatus::Alive,
-          ),
-          status_time: 0.into(),
-          leave_time: None,
-        },
-      );
-    }
+    let mut members = sn.inner.members.write().await;
+    members.states.clear();
+    let old_members = s.inner.members.read().await;
+    members.states.clone_from(&old_members.states);
   }
 
-  let got = s.get_queue_max().await;
+  let got = sn.get_queue_max().await;
   let want = 1024;
   assert_eq!(got, want);
 
@@ -128,50 +117,40 @@ pub async fn serf_get_queue_max<T>(
 
   // Bring it under the number of nodes, so the calculation based on
   // the number of nodes takes precedence.
-  let s = Serf::<T>::new(transport_opts, test_config().with_max_queue_depth(16))
+  let snn = Serf::<T>::new(transport_opts, test_config().with_min_queue_depth(16))
     .await
     .unwrap();
 
   {
-    let mut members = s.inner.members.write().await;
-    for i in 0..100 {
-      let name: SmolStr = format!("Member{i}").into();
-      members.states.insert(
-        name.clone(),
-        MemberState {
-          member: Member::new(
-            Node::new(name.clone(), get_addr(i)),
-            Default::default(),
-            MemberStatus::Alive,
-          ),
-          status_time: 0.into(),
-          leave_time: None,
-        },
-      );
-    }
+    let mut members = snn.inner.members.write().await;
+    members.states.clear();
+    let old_members = sn.inner.members.read().await;
+    members.states.clone_from(&old_members.states);
   }
 
-  let got = s.get_queue_max().await;
+  let got = snn.get_queue_max().await;
   let want = 200;
   assert_eq!(got, want);
 
   // Try adjusting the node count.
-  let mut members = s.inner.members.write().await;
-  let name = SmolStr::new("another");
-  members.states.insert(
-    name.clone(),
-    MemberState {
-      member: Member::new(
-        Node::new(name.clone(), get_addr(10000)),
-        Default::default(),
-        MemberStatus::Alive,
-      ),
-      status_time: 0.into(),
-      leave_time: None,
-    },
-  );
+  {
+    let mut members = snn.inner.members.write().await;
+    let name = SmolStr::new("another");
+    members.states.insert(
+      name.clone(),
+      MemberState {
+        member: Member::new(
+          Node::new(name.clone(), get_addr(10000)),
+          Default::default(),
+          MemberStatus::Alive,
+        ),
+        status_time: 0.into(),
+        leave_time: None,
+      },
+    );
+  }
 
-  let got = s.get_queue_max().await;
+  let got = snn.get_queue_max().await;
   let want = 202;
   assert_eq!(got, want);
 }

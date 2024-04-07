@@ -9,7 +9,7 @@ use super::{Epoch, LamportTime, MessageType};
 /// leaving, failing, partitioning, etc. It tracks the member along with
 /// when that member was marked as leaving.
 #[viewit::viewit]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct MemberState<I, A> {
   member: Member<I, A>,
   /// lamport clock time of last received message

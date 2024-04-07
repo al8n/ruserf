@@ -39,7 +39,7 @@ const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 const CLOCK_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
 
 /// The extention we use for the temporary file during compaction
-const TMP_EXT: &str = ".compact";
+const TMP_EXT: &str = "compact";
 
 /// How often we attempt to recover from
 /// errors writing to the snapshot file.
@@ -341,8 +341,6 @@ pub(crate) struct SnapshotHandle {
   wait_rx: Receiver<()>,
   shutdown_rx: Receiver<()>,
   leave_tx: Sender<()>,
-  // stream_handle: <R::Spawner as AsyncSpawner>::JoinHandle<()>,
-  // tee_stream_handle: <R::Spawner as AsyncSpawner>::JoinHandle<()>,
 }
 
 impl SnapshotHandle {
@@ -509,14 +507,8 @@ where
     loop {
       futures::select! {
         ev = in_rx.recv().fuse() => {
-          match ev {
-            Ok(ev) => {
-              flush_event!(ev)
-            },
-            Err(e) => {
-              tracing::error!(err=%e, "ruserf: tee stream: fail to receive from inbound channel");
-              return;
-            }
+          if let Ok(ev) = ev {
+            flush_event!(ev)
           }
         }
         _ = shutdown_rx.recv().fuse() => {
@@ -529,14 +521,8 @@ where
     loop {
       futures::select! {
         ev = in_rx.recv().fuse() => {
-          match ev {
-            Ok(ev) => {
-              flush_event!(ev)
-            },
-            Err(e) => {
-              tracing::error!(err=%e, "ruserf: tee stream: fail to receive from inbound channel");
-              return;
-            }
+          if let Ok(ev) = ev {
+            flush_event!(ev)
           }
         }
         default => return,
@@ -609,12 +595,8 @@ where
           loop {
             futures::select! {
               ev = self.stream_rx.recv().fuse() => {
-                match ev {
-                  Ok(ev) => flush_event!(self <- ev),
-                  Err(e) => {
-                    tracing::error!(target="ruserf", err=%e, "stream channel is closed");
-                    return;
-                  },
+                if let Ok(ev) = ev {
+                  flush_event!(self <- ev)
                 }
               }
               _ = (&mut flush_timeout).fuse() => {
@@ -659,7 +641,7 @@ where
   /// Used to handle a single query event
   fn process_query_event(&mut self, ltime: LamportTime) {
     // Ignore old clocks
-    if ltime <= self.last_event_clock {
+    if ltime <= self.last_query_clock {
       return;
     }
 
@@ -697,7 +679,7 @@ where
   /// periodically due to race conditions with join and leave intents
   fn update_clock(&mut self) {
     let t: u64 = self.clock.time().into();
-    let last_seen = LamportTime::from(t.wrapping_sub(1));
+    let last_seen = LamportTime::from(t.saturating_sub(1));
     if last_seen > self.last_clock {
       self.last_clock = last_seen;
       self.try_append(SnapshotRecord::Clock(self.last_clock));
@@ -763,8 +745,8 @@ where
   fn snapshot_max_size(&self) -> u64 {
     let nodes = self.alive_nodes.len() as u64;
     let est_size = nodes * SNAPSHOT_BYTES_PER_NODE as u64;
-
-    (est_size * SNAPSHOT_COMPACTION_THRESHOLD as u64).min(self.min_compact_size)
+    let threshold = est_size * SNAPSHOT_COMPACTION_THRESHOLD as u64;
+    threshold.max(self.min_compact_size)
   }
 
   /// Used to compact the snapshot once it is too large

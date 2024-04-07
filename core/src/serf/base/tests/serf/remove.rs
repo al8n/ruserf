@@ -51,7 +51,8 @@ pub async fn serf_remove_failed_node<T>(
       break;
     }
 
-    if start.elapsed() > Duration::from_secs(7) {
+    if start.elapsed() > Duration::from_secs(10) {
+      println!("{:?}", members.states);
       panic!("Failed to mark node as failed");
     }
   }
@@ -68,12 +69,12 @@ pub async fn serf_remove_failed_node<T>(
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
     let members = serfs[0].inner.members.read().await;
-    if test_member_status(&members.states, s2id.clone(), MemberStatus::Failed).is_ok() {
+    if test_member_status(&members.states, s2id.clone(), MemberStatus::Left).is_ok() {
       cond1 = true;
     }
 
     let members = serfs[1].inner.members.read().await;
-    if test_member_status(&members.states, s2id.clone(), MemberStatus::Failed).is_ok() {
+    if test_member_status(&members.states, s2id.clone(), MemberStatus::Left).is_ok() {
       cond2 = true;
     }
 

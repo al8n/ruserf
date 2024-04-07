@@ -470,12 +470,13 @@ pub async fn snapshoter_leave_rejoin<T>(
   .unwrap();
 
   assert!(!alive_nodes.is_empty());
-
-  <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(3)).await; 
 }
 
 /// Unit tests for the serf snapshot recovery
-pub async fn serf_snapshot_recovery<T>(transport_opts1: T::Options, transport_opts2: T::Options)
+pub async fn serf_snapshot_recovery<T>(
+  transport_opts1: T::Options,
+  transport_opts2: T::Options,
+)
 where
   T: Transport,
   T::Options: Clone,
@@ -563,6 +564,7 @@ where
   {
     let node = serfs[1].local_id().clone();
     let members = serfs[0].inner.members.read().await;
+    println!("{:?}", members.states);
     test_member_status(&members.states, node, MemberStatus::Alive).unwrap();
   }
   {

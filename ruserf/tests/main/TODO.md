@@ -14,10 +14,8 @@
     - failed_node_prune
     - failed_node
   - snapshot
-    - force_compact
-    - recovery
+    - recovery (need to check memberlist implementation)
   - coordinates
-  - get_queue_max
   - name_resolution
   - set_tags
   - update
@@ -37,10 +35,8 @@
     - failed_node_prune
     - failed_node
   - snapshot
-    - force_compact
-    - recovery
+    - recovery (need to check memberlist implementation)
   - coordinates
-  - get_queue_max
   - name_resolution
   - set_tags
   - update
