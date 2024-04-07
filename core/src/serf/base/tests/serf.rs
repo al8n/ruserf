@@ -411,13 +411,6 @@ where
     }
 
     if start.elapsed() > Duration::from_secs(7) {
-      println!("cond1 {cond1} cond2 {cond2} cond3 {cond3} cond4 {cond4}");
-      let m1m = serfs[0].members().await;
-      let mut m1m_tags = HashMap::with_capacity(2);
-      for m in m1m {
-        m1m_tags.insert(m.node.id().clone(), m.tags.clone());
-      }
-      println!("{:?}", m1m_tags);
       panic!("timed out");
     }
   }
@@ -718,6 +711,7 @@ pub async fn serf_name_resolution<T>(
     }
 
     if start.elapsed() > Duration::from_secs(7) {
+      println!("cond1 {cond1} cond2 {cond2} cond3 {cond3}");
       panic!("timed out");
     }
   }

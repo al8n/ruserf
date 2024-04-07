@@ -1,42 +1,30 @@
 # FIX
 
 - net
-  - reap
-    - reap_handler
-  - leave
-    - snapshot_recovery
-    - force_leave_failed
+  - reap_handler
+  - leave_snapshot_recovery
+  - leave_force_leave_failed
   - reconnect
-    - reconnect
-    - same_ip
-    - timeout
-  - remove
-    - failed_node_prune
-    - failed_node
-  - snapshot
-    - recovery (need to check memberlist implementation)
+  - reconnect_same_ip
+  - reconnect_timeout
+  - remove_failed_node_prune
+  - remove_failed_node
+  - snapshot_recovery (need to check memberlist implementation)
   - coordinates
   - name_resolution
-  - set_tags
   - update
   - write_keyring_file
 
 - quinn
-  - reap
-    - reap_handler
-  - leave
-    - snapshot_recovery
-    - force_leave_failed
+  - reap_handler
+  - leave_snapshot_recovery
+  - leave_force_leave_failed
   - reconnect
-    - reconnect
-    - same_ip
-    - timeout
-  - remove
-    - failed_node_prune
-    - failed_node
-  - snapshot
-    - recovery (need to check memberlist implementation)
+  - reconnect_same_ip
+  - reconnect_timeout
+  - remove_failed_node_prune
+  - remove_failed_node
+  - snapshot_recovery (need to check memberlist implementation)
   - coordinates
   - name_resolution
-  - set_tags
   - update
