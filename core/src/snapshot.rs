@@ -531,9 +531,7 @@ where
   }
 
   /// Long running routine that is used to handle events
-  async fn stream(
-    mut self,
-  ) {
+  async fn stream(mut self) {
     let mut clock_ticker = <T::Runtime as RuntimeLite>::interval(CLOCK_UPDATE_INTERVAL);
 
     // flushEvent is used to handle writing out an event
@@ -569,7 +567,7 @@ where
             if let Err(e) = fh.flush() {
               tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
             }
-  
+
             if let Err(e) = fh.get_mut().sync_all() {
               tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
             }
@@ -612,7 +610,7 @@ where
             if let Err(e) = fh.flush() {
               tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
             }
-  
+
             if let Err(e) = fh.get_mut().sync_all() {
               tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
             }

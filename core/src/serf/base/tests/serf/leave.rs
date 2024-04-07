@@ -177,7 +177,7 @@ pub async fn serf_force_leave_failed<T>(
   //Put s2 in failed state
   serfs[1].shutdown().await.unwrap();
 
-  <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(10)).await;  
+  <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(10)).await;
 
   let s2id = serfs[1].local_id().clone();
 

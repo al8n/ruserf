@@ -376,11 +376,15 @@ where
       m1m_tags.insert(m.node.id().clone(), m.tags.clone());
     }
 
-    if m1m_tags.get(node.id()).map(|t| t.get("port")) == Some(Some(&"8080".into())) {
+    if m1m_tags.get(serfs[0].local_id()).map(|t| t.get("port")) == Some(Some(&"8080".into())) {
       cond1 = true;
     }
 
-    if m1m_tags.get(serfs[0].local_id()).map(|t| t.get("port")) == Some(Some(&"8080".into())) {
+    if m1m_tags
+      .get(serfs[1].local_id())
+      .map(|t| t.get("datacenter"))
+      == Some(Some(&"east-aws".into()))
+    {
       cond2 = true;
     }
 
@@ -390,7 +394,7 @@ where
       m2m_tags.insert(m.node.id().clone(), m.tags.clone());
     }
 
-    if m2m_tags.get(node.id()).map(|t| t.get("datacenter")) == Some(Some(&"east-aws".into())) {
+    if m2m_tags.get(serfs[0].local_id()).map(|t| t.get("port")) == Some(Some(&"8080".into())) {
       cond3 = true;
     }
 
@@ -407,6 +411,13 @@ where
     }
 
     if start.elapsed() > Duration::from_secs(7) {
+      println!("cond1 {cond1} cond2 {cond2} cond3 {cond3} cond4 {cond4}");
+      let m1m = serfs[0].members().await;
+      let mut m1m_tags = HashMap::with_capacity(2);
+      for m in m1m {
+        m1m_tags.insert(m.node.id().clone(), m.tags.clone());
+      }
+      println!("{:?}", m1m_tags);
       panic!("timed out");
     }
   }

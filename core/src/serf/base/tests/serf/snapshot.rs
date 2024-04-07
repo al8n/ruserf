@@ -473,10 +473,7 @@ pub async fn snapshoter_leave_rejoin<T>(
 }
 
 /// Unit tests for the serf snapshot recovery
-pub async fn serf_snapshot_recovery<T>(
-  transport_opts1: T::Options,
-  transport_opts2: T::Options,
-)
+pub async fn serf_snapshot_recovery<T>(transport_opts1: T::Options, transport_opts2: T::Options)
 where
   T: Transport,
   T::Options: Clone,
