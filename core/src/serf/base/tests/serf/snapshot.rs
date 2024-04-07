@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use super::*;
 
 /// Unit test for the snapshoter.
@@ -441,10 +443,13 @@ pub async fn snapshoter_leave_rejoin<T>(
 
   // Leave the cluster!
   handle.leave().await;
-
   // Close the snapshoter
   shutdown_tx.close();
   handle.wait().await;
+
+  let mut f = std::fs::File::open(&p).unwrap();
+  let mut d = vec![];
+  f.read_to_end(&mut d).unwrap();
 
   // Open the snapshoter
   let (_shutdown_tx, shutdown_rx) = async_channel::bounded(1);
@@ -465,6 +470,8 @@ pub async fn snapshoter_leave_rejoin<T>(
   .unwrap();
 
   assert!(!alive_nodes.is_empty());
+
+  <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(3)).await; 
 }
 
 /// Unit tests for the serf snapshot recovery

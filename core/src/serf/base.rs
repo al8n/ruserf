@@ -261,7 +261,9 @@ where
     let memberlist_delegate = this.inner.memberlist.delegate().unwrap();
     memberlist_delegate.store(that);
     let local_node = this.inner.memberlist.local_state().await;
-    memberlist_delegate.notify_join(local_node).await;
+    if let Some(local_node) = local_node {
+      memberlist_delegate.notify_join(local_node).await;
+    }
 
     // update key manager
     #[cfg(feature = "encryption")]
@@ -1344,13 +1346,17 @@ where
         member.member.status = MemberStatus::Leaving;
 
         if msg.prune {
-          self.handle_prune(member, *members.borrow_mut()).await;
+          let owned = member.clone();
+          drop(members_mut);
+          self.handle_prune(&owned, *members.borrow_mut()).await;
         }
         true
       }
       MemberStatus::Leaving | MemberStatus::Left => {
         if msg.prune {
-          self.handle_prune(member, *members.borrow_mut()).await;
+          let owned = member.clone();
+          drop(members_mut);
+          self.handle_prune(&owned, *members.borrow_mut()).await;
         }
         true
       }

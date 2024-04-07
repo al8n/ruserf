@@ -35,7 +35,7 @@ impl Broadcast for SerfBroadcast {
 
   async fn finished(&self) {
     if let Some(ref tx) = self.notify_tx {
-      tx.close();
+      let _ = tx.send(()).await;
     }
   }
 

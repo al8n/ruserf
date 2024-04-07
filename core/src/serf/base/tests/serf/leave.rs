@@ -15,9 +15,9 @@ where
     prune: false,
   };
 
-  assert!(!s1.handle_node_leave_intent(&j).await, "should rebroadcast");
+  assert!(s1.handle_node_leave_intent(&j).await, "should rebroadcast");
   assert!(
-    s1.handle_node_leave_intent(&j).await,
+    !s1.handle_node_leave_intent(&j).await,
     "should not rebroadcast"
   );
 
@@ -68,7 +68,7 @@ pub async fn leave_intent_old_message<T>(
   };
 
   assert!(
-    s1.handle_node_leave_intent(&j).await,
+    !s1.handle_node_leave_intent(&j).await,
     "should not rebroadcast"
   );
 
@@ -118,7 +118,7 @@ pub async fn leave_intent_newer<T>(
     prune: false,
   };
 
-  assert!(!s1.handle_node_leave_intent(&j).await, "should rebroadcast");
+  assert!(s1.handle_node_leave_intent(&j).await, "should rebroadcast");
 
   {
     let members = s1.inner.members.read().await;
@@ -176,6 +176,8 @@ pub async fn serf_force_leave_failed<T>(
 
   //Put s2 in failed state
   serfs[1].shutdown().await.unwrap();
+
+  <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(10)).await;  
 
   let s2id = serfs[1].local_id().clone();
 

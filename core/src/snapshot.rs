@@ -341,6 +341,8 @@ pub(crate) struct SnapshotHandle {
   wait_rx: Receiver<()>,
   shutdown_rx: Receiver<()>,
   leave_tx: Sender<()>,
+  // stream_handle: <R::Spawner as AsyncSpawner>::JoinHandle<()>,
+  // tee_stream_handle: <R::Spawner as AsyncSpawner>::JoinHandle<()>,
 }
 
 impl SnapshotHandle {
@@ -543,7 +545,9 @@ where
   }
 
   /// Long running routine that is used to handle events
-  async fn stream(mut self) {
+  async fn stream(
+    mut self,
+  ) {
     let mut clock_ticker = <T::Runtime as RuntimeLite>::interval(CLOCK_UPDATE_INTERVAL);
 
     // flushEvent is used to handle writing out an event
@@ -551,6 +555,7 @@ where
       ($this:ident <- $event:ident) => {{
         // Stop recording events after a leave is issued
         if $this.leaving {
+          // tee_stream_handle.await;
           return;
         }
 
@@ -569,26 +574,24 @@ where
           self.leaving = true;
 
           // If we plan to re-join, keep our state
-          if self.rejoin_after_leave {
+          if !self.rejoin_after_leave {
             self.alive_nodes.clear();
           }
           self.try_append(SnapshotRecord::Leave);
-          let fh = self.fh.as_mut().unwrap();
-          if let Err(e) = fh.flush() {
-            tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
-          }
 
-          if let Err(e) = fh.get_mut().sync_all() {
-            tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
+          if let Some(fh) = self.fh.as_mut() {
+            if let Err(e) = fh.flush() {
+              tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
+            }
+  
+            if let Err(e) = fh.get_mut().sync_all() {
+              tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
+            }
           }
         }
         ev = self.stream_rx.recv().fuse() => {
-          match ev {
-            Ok(ev) => flush_event!(self <- ev),
-            Err(e) => {
-              tracing::error!(target="ruserf", err=%e, "stream channel is closed");
-              return;
-            },
+          if let Ok(ev) = ev {
+            flush_event!(self <- ev)
           }
         }
         _ = futures::StreamExt::next(&mut clock_ticker).fuse() => {
@@ -623,14 +626,17 @@ where
             }
           }
 
-          let fh = self.fh.as_mut().unwrap();
-          if let Err(e) = fh.flush() {
-            tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
+          if let Some(fh) = self.fh.as_mut() {
+            if let Err(e) = fh.flush() {
+              tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
+            }
+  
+            if let Err(e) = fh.get_mut().sync_all() {
+              tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
+            }
           }
 
-          if let Err(e) = fh.get_mut().sync_all() {
-            tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
-          }
+          // tee_stream_handle.await;
           self.wait_tx.close();
           return;
         }
@@ -838,7 +844,11 @@ where
     drop(old);
 
     // Delete the old file
-    std::fs::remove_file(&self.path).map_err(SnapshotError::Remove)?;
+    if let Err(e) = std::fs::remove_file(&self.path) {
+      if !matches!(e.kind(), std::io::ErrorKind::NotFound) {
+        return Err(SnapshotError::Remove(e));
+      }
+    }
 
     // Move the new file into place
     std::fs::rename(&new_path, &self.path).map_err(SnapshotError::Install)?;

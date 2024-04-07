@@ -18,9 +18,9 @@ where
     id: "test".into(),
   };
 
-  assert!(!s1.handle_node_join_intent(&j).await, "should rebroadcast");
+  assert!(s1.handle_node_join_intent(&j).await, "should rebroadcast");
   assert!(
-    s1.handle_node_join_intent(&j).await,
+    !s1.handle_node_join_intent(&j).await,
     "should not rebroadcast"
   );
 
@@ -70,7 +70,7 @@ pub async fn join_intent_old_message<T>(
   };
 
   assert!(
-    s1.handle_node_join_intent(&j).await,
+    !s1.handle_node_join_intent(&j).await,
     "should not rebroadcast"
   );
 
@@ -120,7 +120,7 @@ pub async fn join_intent_newer<T>(
     id: "test".into(),
   };
 
-  assert!(!s1.handle_node_join_intent(&j).await, "should rebroadcast");
+  assert!(s1.handle_node_join_intent(&j).await, "should rebroadcast");
 
   {
     let members = s1.inner.members.read().await;
@@ -172,7 +172,7 @@ pub async fn join_intent_reset_leaving<T>(
     id: "test".into(),
   };
 
-  assert!(!s1.handle_node_join_intent(&j).await, "should rebroadcast");
+  assert!(s1.handle_node_join_intent(&j).await, "should rebroadcast");
 
   {
     let members = s1.inner.members.read().await;
@@ -526,12 +526,12 @@ where
   <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(10)).await;
 
   // join with ignoreOld set to true! should not get events
-  let node = serfs[1]
+  let node = serfs[0]
     .inner
     .memberlist
     .advertise_node()
     .map_address(MaybeResolvedAddress::resolved);
-  serfs[0].join(node.clone(), true).await.unwrap();
+  serfs[1].join(node.clone(), true).await.unwrap();
 
   wait_until_num_nodes(2, &serfs).await;
 
