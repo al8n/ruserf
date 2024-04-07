@@ -6,9 +6,11 @@ macro_rules! test_mod {
 
         use crate::[< $rt:snake _run >];
         use ruserf::{
-          net::{
-            resolver::socket_addr::SocketAddrResolver, stream_layer::tcp::Tcp, NetTransport,
-            NetTransportOptions,
+          transport::resolver::socket_addr::SocketAddrResolver,
+          quic::{
+            stream_layer::quinn::Quinn, QuicTransport,
+            QuicTransportOptions,
+            tests::quinn_stream_layer,
           },
           [< $rt:snake >]::[< $rt:camel Runtime >],
           transport::Lpe,
@@ -18,40 +20,42 @@ macro_rules! test_mod {
 
         #[test]
         fn test_serf_get_queue_max_v4() {
-          let name = "serf_get_queue_max_v4";
-          let mut opts = NetTransportOptions::new(SmolStr::new(name));
-          opts.add_bind_address(next_socket_addr_v4(0));
-
-          [< $rt:snake _run >](serf_get_queue_max::<
-            NetTransport<
-              SmolStr,
-              SocketAddrResolver<[< $rt:camel Runtime >]>,
-              Tcp<[< $rt:camel Runtime >]>,
-              Lpe<SmolStr, SocketAddr>,
-              [< $rt:camel Runtime >],
-            >,
-          >(opts, |idx| {
-            format!("127.0.0.1:{idx}").parse().unwrap()
-          }));
+          [< $rt:snake _run >](async move {
+            let name = "serf_get_queue_max_v4";
+            let mut opts = QuicTransportOptions::with_stream_layer_options(SmolStr::new(name), quinn_stream_layer::<[< $rt:camel Runtime >]>().await);
+            opts.add_bind_address(next_socket_addr_v4(0));
+            serf_get_queue_max::<
+              QuicTransport<
+                SmolStr,
+                SocketAddrResolver<[< $rt:camel Runtime >]>,
+                Quinn<[< $rt:camel Runtime >]>,
+                Lpe<SmolStr, SocketAddr>,
+                [< $rt:camel Runtime >],
+              >,
+            >(opts, |idx| {
+              format!("127.0.0.1:{idx}").parse().unwrap()
+            }).await
+          });
         }
 
         #[test]
         fn test_serf_get_queue_max_v6() {
-          let name = "serf_get_queue_max_v6";
-          let mut opts = NetTransportOptions::new(SmolStr::new(name));
-          opts.add_bind_address(next_socket_addr_v6());
-
-          [< $rt:snake _run >](serf_get_queue_max::<
-            NetTransport<
-              SmolStr,
-              SocketAddrResolver<[< $rt:camel Runtime >]>,
-              Tcp<[< $rt:camel Runtime >]>,
-              Lpe<SmolStr, SocketAddr>,
-              [< $rt:camel Runtime >],
-            >,
-          >(opts, |idx| {
-            format!("127.0.0.1:{idx}").parse().unwrap()
-          }));
+          [< $rt:snake _run >](async move {
+            let name = "serf_get_queue_max_v6";
+            let mut opts = QuicTransportOptions::with_stream_layer_options(SmolStr::new(name), quinn_stream_layer::<[< $rt:camel Runtime >]>().await);
+            opts.add_bind_address(next_socket_addr_v6());
+            serf_get_queue_max::<
+              QuicTransport<
+                SmolStr,
+                SocketAddrResolver<[< $rt:camel Runtime >]>,
+                Quinn<[< $rt:camel Runtime >]>,
+                Lpe<SmolStr, SocketAddr>,
+                [< $rt:camel Runtime >],
+              >,
+            >(opts, |idx| {
+              format!("127.0.0.1:{idx}").parse().unwrap()
+            }).await
+          });
         }
       }
     }

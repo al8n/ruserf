@@ -22,9 +22,9 @@ futures = "=0.3.29"
 serde = { version = "1", features = ["derive"] }
 humantime-serde = "1"
 indexmap = "2"
-memberlist-types = { version = "0.2.0-alpha.1", default-features = false }
-memberlist-core = { version = "0.2.0-alpha.1", default-features = false }
-memberlist = { version = "0.2.0-alpha.1", default-features = false }
+memberlist-types = { version = "0.2.0-alpha.2", default-features = false }
+memberlist-core = { version = "0.2.0-alpha.2", default-features = false }
+memberlist = { version = "0.2.0-alpha.2", default-features = false }
 thiserror = "1"
 viewit = "0.1.5"
 smol_str = "0.2"
