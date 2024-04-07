@@ -45,3 +45,6 @@ mod coordinates;
 
 #[path = "./quic/name_resolution.rs"]
 mod name_resolution;
+
+#[path = "./quic/join.rs"]
+mod join;

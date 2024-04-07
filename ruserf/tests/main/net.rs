@@ -46,6 +46,9 @@ mod coordinates;
 #[path = "./net/name_resolution.rs"]
 mod name_resolution;
 
+#[path = "./net/join.rs"]
+mod join;
+
 #[cfg(feature = "encryption")]
 #[path = "./net/write_keyring_file.rs"]
 mod write_keyring_file;
