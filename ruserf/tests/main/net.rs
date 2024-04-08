@@ -1,6 +1,9 @@
 #[path = "./net/delegate.rs"]
 mod delegate;
 
+#[path = "./net/event.rs"]
+mod event;
+
 #[path = "./net/leave.rs"]
 mod leave;
 

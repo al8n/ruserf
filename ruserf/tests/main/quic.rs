@@ -1,6 +1,9 @@
 #[path = "./quic/delegate.rs"]
 mod delegate;
 
+#[path = "./quic/event.rs"]
+mod event;
+
 #[path = "./quic/leave.rs"]
 mod leave;
 

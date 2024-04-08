@@ -236,6 +236,12 @@ where
     Self::Serf(SerfError::UserEventLimitTooLarge(size))
   }
 
+  /// Create a user event limit too large error
+  #[inline]
+  pub const fn user_event_too_large(size: usize) -> Self {
+    Self::Serf(SerfError::UserEventTooLarge(size))
+  }
+
   /// Create a raw user event too large error
   #[inline]
   pub const fn raw_user_event_too_large(size: usize) -> Self {
@@ -289,7 +295,7 @@ where
 
 #[derive(Debug, thiserror::Error)]
 pub enum SerfError {
-  #[error("ruserf: user event size limit exceeds limit of {0} bytes")]
+  #[error("ruserf: user event exceeds configured limit of {0} bytes before encoding")]
   UserEventLimitTooLarge(usize),
   #[error("ruserf: user event exceeds sane limit of {0} bytes before encoding")]
   UserEventTooLarge(usize),

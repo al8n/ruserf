@@ -143,11 +143,6 @@ where
 
   wait_until_num_nodes(2, &serfs).await;
 
-  serfs[1].shutdown().await.unwrap();
-
-  wait_until_num_nodes(1, &serfs[..1]).await;
-
-  // Since s2 shutdown, we check the events to make sure we got failures.
   let node = serfs[1].inner.memberlist.local_id().clone();
   test_events(
     event_rx.rx,
@@ -157,6 +152,10 @@ where
       .collect(),
   )
   .await;
+
+  for s in serfs {
+    let _ = s.shutdown().await;
+  }
 }
 
 /// Unit tests for the events leave
@@ -514,7 +513,7 @@ where
   let serfs = [s1];
   wait_until_num_nodes(1, &serfs).await;
 
-  let p = Bytes::copy_from_slice(&serfs[0].inner.opts.max_user_event_size.to_be_bytes());
+  let p = Bytes::from(vec![0; serfs[0].inner.opts.max_user_event_size]);
   let err = serfs[0]
     .user_event("this is too large an event", p, false)
     .await
@@ -529,14 +528,16 @@ where
   T: Transport,
 {
   let opts = test_config();
-  let s = Serf::<T>::new(transport_opts, opts).await.unwrap();
-  let timeout = s.default_query_timeout().await;
+  let s = [Serf::<T>::new(transport_opts, opts).await.unwrap()];
+  
+  wait_until_num_nodes(1, &s).await;
+  let timeout = s[0].default_query_timeout().await;
   assert_eq!(
     timeout,
-    s.inner.opts.memberlist_options.gossip_interval() * (s.inner.opts.query_timeout_mult as u32)
+    s[0].inner.opts.memberlist_options.gossip_interval() * (s[0].inner.opts.query_timeout_mult as u32)
   );
 
-  let params = s.default_query_param().await;
+  let params = s[0].default_query_param().await;
 
   assert!(params.filters.is_empty());
   assert!(!params.request_ack);

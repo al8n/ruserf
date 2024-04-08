@@ -852,6 +852,99 @@ where
     }
   }
 
+  pub(crate) async fn internal_query(
+    &self,
+    name: SmolStr,
+    payload: Bytes,
+    params: Option<QueryParam<T::Id>>,
+    ty: InternalQueryEvent<T::Id>,
+  ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
+  {
+    self.query_in(name, payload, params, Some(ty)).await
+  }
+
+  pub(crate) async fn query_in(
+    &self,
+    name: SmolStr,
+    payload: Bytes,
+    params: Option<QueryParam<T::Id>>,
+    ty: Option<InternalQueryEvent<T::Id>>,
+  ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
+  {
+    // Provide default parameters if none given.
+    let params = match params {
+      Some(params) => params,
+      None => self.default_query_param().await,
+    };
+
+    // Get the local node
+    let local = self.inner.memberlist.advertise_node();
+
+    // Encode the filters
+    let filters = params
+      .encode_filters::<D>()
+      .map_err(Error::transform_delegate)?;
+
+    // Setup the flags
+    let flags = if params.request_ack {
+      QueryFlag::empty() | QueryFlag::ACK
+    } else {
+      QueryFlag::empty()
+    };
+
+    // Create the message
+    let q = QueryMessage {
+      ltime: self.inner.query_clock.time(),
+      id: rand::random(),
+      from: local.cheap_clone(),
+      filters,
+      flags,
+      relay_factor: params.relay_factor,
+      timeout: params.timeout,
+      name: name.clone(),
+      payload,
+    };
+
+    // Encode the query
+    let len = <D as TransformDelegate>::message_encoded_len(&q);
+
+    // Check the size
+    if len > self.inner.opts.query_size_limit {
+      return Err(Error::query_too_large(len));
+    }
+
+    let mut raw = BytesMut::with_capacity(len + 1); // + 1 for message type byte
+    raw.put_u8(MessageType::Query as u8);
+    raw.resize(len + 1, 0);
+    let actual_encoded_len = <D as TransformDelegate>::encode_message(&q, &mut raw[1..])
+      .map_err(Error::transform_delegate)?;
+    debug_assert_eq!(
+      actual_encoded_len, len,
+      "expected encoded len {} mismatch the actual encoded len {}",
+      len, actual_encoded_len
+    );
+
+    // Register QueryResponse to track acks and responses
+    let resp = QueryResponse::from_query(&q, self.inner.memberlist.num_online_members().await);
+    self
+      .register_query_response(params.timeout, resp.clone())
+      .await;
+
+    // Process query locally
+    self.handle_query(q, ty).await;
+
+    // Start broadcasting the event
+    self
+      .inner
+      .broadcasts
+      .queue_broadcast(SerfBroadcast {
+        msg: raw.freeze(),
+        notify_tx: None,
+      })
+      .await;
+    Ok(resp)
+  }
+
   /// Called when a query broadcast is
   /// received. Returns if the message should be rebroadcast.
   pub(crate) async fn handle_query(

@@ -393,7 +393,7 @@ where
     let n = self.inner.memberlist.num_online_members().await;
     let mut timeout = self.inner.opts.memberlist_options.gossip_interval();
     timeout *= self.inner.opts.query_timeout_mult as u32;
-    timeout *= (f64::log10((n + 1) as f64) + 0.5) as u32; // Using ceil approximation
+    timeout *= ((n + 1) as f64).log10().ceil() as u32; // Using ceil approximation
     timeout
   }
 
