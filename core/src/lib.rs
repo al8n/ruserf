@@ -98,7 +98,7 @@ pub mod tests {
     use std::sync::Once;
     static TRACE: Once = Once::new();
     TRACE.call_once(|| {
-      let filter = std::env::var("RUSERF_TESTING_LOG").unwrap_or_else(|_| "trace".to_owned());
+      let filter = std::env::var("RUSERF_TESTING_LOG").unwrap_or_else(|_| "ruserf_core=trace".to_owned());
       memberlist_core::tracing::subscriber::set_global_default(
         tracing_subscriber::fmt::fmt()
           .without_time()

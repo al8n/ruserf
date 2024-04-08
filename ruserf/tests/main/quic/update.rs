@@ -37,7 +37,12 @@ macro_rules! test_mod {
                 Lpe<SmolStr, SocketAddr>,
                 [< $rt:camel Runtime >],
               >,
-            >(opts, opts2).await
+              _,
+            >(opts, opts2, |id, addr| async move {
+              let mut opts2 = QuicTransportOptions::with_stream_layer_options(id, quinn_stream_layer::<[< $rt:camel Runtime >]>().await);
+              opts2.add_bind_address(addr);
+              opts2
+            }).await
           });
         }
 
@@ -60,7 +65,12 @@ macro_rules! test_mod {
                 Lpe<SmolStr, SocketAddr>,
                 [< $rt:camel Runtime >],
               >,
-            >(opts, opts2).await
+              _,
+            >(opts, opts2, |id, addr| async move {
+              let mut opts2 = QuicTransportOptions::with_stream_layer_options(id, quinn_stream_layer::<[< $rt:camel Runtime >]>().await);
+              opts2.add_bind_address(addr);
+              opts2
+            }).await
           });
         }
       }

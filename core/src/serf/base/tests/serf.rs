@@ -156,18 +156,24 @@ pub async fn serf_get_queue_max<T>(
 }
 
 /// Unit tests for the update
-pub async fn serf_update<T>(transport_opts1: T::Options, transport_opts2: T::Options)
+pub async fn serf_update<T, F>(
+  transport_opts1: T::Options,
+  transport_opts2: T::Options,
+  get_transport: impl FnOnce(T::Id, <T::Resolver as AddressResolver>::ResolvedAddress) -> F + Copy,
+)
 where
   T: Transport,
   T::Options: Clone,
+  F: core::future::Future<Output = T::Options>,
 {
-  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let (event_tx, event_rx) = EventProducer::bounded(64);
   let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
     .await
     .unwrap();
   let s2 = Serf::<T>::new(transport_opts2.clone(), test_config())
     .await
     .unwrap();
+  let (s2id, s2addr) = s2.advertise_node().into_components();
 
   let mut serfs = [s1, s2];
   wait_until_num_nodes(1, &serfs).await;
@@ -187,7 +193,7 @@ where
   let start = Epoch::now();
   let s2 = loop {
     match Serf::<T>::new(
-      transport_opts2.clone(),
+      get_transport(s2id.clone(), s2addr.clone()).await,
       test_config().with_tags([("foo", "bar")].into_iter()),
     )
     .await
@@ -195,7 +201,7 @@ where
       Ok(s) => break s,
       Err(e) => {
         <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(1)).await;
-        if start.elapsed() > Duration::from_secs(2) {
+        if start.elapsed() > Duration::from_secs(10) {
           panic!("timed out: {}", e);
         }
       }

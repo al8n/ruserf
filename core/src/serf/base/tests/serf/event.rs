@@ -13,7 +13,7 @@ where
 
   // increase the ltime artificially
   s1.inner
-    .clock
+    .event_clock
     .witness(((event_buffer + 1000) as u64).into());
   assert!(
     !s1
@@ -567,14 +567,14 @@ where
   let filters = params.encode_filters::<DefaultDelegate<T>>().unwrap();
   assert_eq!(filters.len(), 3);
 
-  let node_filt = &filters[0];
-  assert_eq!(node_filt[0], FilterType::Id as u8);
+  let (_, node_filt) = <DefaultDelegate<T> as TransformDelegate>::decode_filter(&filters[0]).unwrap();
+  assert_eq!(node_filt.ty(), FilterType::Id);
 
-  let tag_filt = &filters[1];
-  assert_eq!(tag_filt[0], FilterType::Tag as u8);
+  let (_, tag_filt) = <DefaultDelegate<T> as TransformDelegate>::decode_filter(&filters[1]).unwrap(); 
+  assert_eq!(tag_filt.ty(), FilterType::Tag);
 
-  let tag_filt = &filters[2];
-  assert_eq!(tag_filt[0], FilterType::Tag as u8);
+  let (_, tag_filt) = <DefaultDelegate<T> as TransformDelegate>::decode_filter(&filters[2]).unwrap(); 
+  assert_eq!(tag_filt.ty(), FilterType::Tag);
 }
 
 /// Unit test for should process functionallity
@@ -655,7 +655,7 @@ pub async fn query_old_message<T>(
   let s1 = Serf::<T>::new(transport_opts, opts).await.unwrap();
   // increase the ltime artificially
   s1.inner
-    .clock
+    .query_clock
     .witness(((event_buffer + 1000) as u64).into());
   assert!(
     !s1

@@ -1022,6 +1022,7 @@ where
       return rebroadcast;
     }
 
+    tracing::error!("debug: local {} check ack {}", self.local_id(), q.ack());
     // Send ack if requested, without waiting for client to respond()
     if q.ack() {
       let ack = QueryResponseMessage {
@@ -1044,6 +1045,7 @@ where
             "expected encoded len {} mismatch the actual encoded len {}",
             expected_encoded_len, len
           );
+          tracing::error!("debug: local {} send ack to {} ({})", self.local_id(), q.from(), ack.from);
           if let Err(e) = self
             .inner
             .memberlist
@@ -1067,7 +1069,6 @@ where
     }
 
     if let Some(ref tx) = self.inner.event_tx {
-      tracing::error!("debug: send query event {}", q.name);
       let ev = self.query_event(q);
 
       if let Err(e) = tx
@@ -1113,6 +1114,7 @@ where
       query
         .handle_query_response::<T, D>(
           resp,
+          self.local_id(),
           #[cfg(feature = "metrics")]
           self.inner.opts.memberlist_options.metric_labels(),
         )
