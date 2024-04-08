@@ -197,8 +197,8 @@ impl<I, A> QueryResponse<I, A> {
     resp: QueryResponseMessage<I, A>,
     #[cfg(feature = "metrics")] metrics_labels: &memberlist_core::types::MetricLabels,
   ) where
-    I: Eq + std::hash::Hash + CheapClone,
-    A: Eq + std::hash::Hash + CheapClone,
+    I: Eq + std::hash::Hash + CheapClone + core::fmt::Debug,
+    A: Eq + std::hash::Hash + CheapClone + core::fmt::Debug,
     D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
     T: Transport,
   {
@@ -207,6 +207,8 @@ impl<I, A> QueryResponse<I, A> {
     if c.closed || (Epoch::now() > self.deadline) {
       return;
     }
+
+    tracing::error!("debug: handle query response {:?}", resp.from);
 
     // Process each type of response
     if resp.ack() {
@@ -265,11 +267,13 @@ impl<I, A> QueryResponse<I, A> {
     nr: NodeResponse<I, A>,
   ) -> Option<Result<(), Error<T, D>>>
   where
-    I: Eq + std::hash::Hash + CheapClone,
-    A: Eq + std::hash::Hash + CheapClone,
+    I: Eq + std::hash::Hash + CheapClone + core::fmt::Debug,
+    A: Eq + std::hash::Hash + CheapClone + core::fmt::Debug,
     D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
     T: Transport,
   {
+    tracing::error!("debug: enter send response");
+
     // Exit early if this is a duplicate ack
     if c.responses.contains(&nr.from) {
       // TODO: metrics
@@ -282,6 +286,7 @@ impl<I, A> QueryResponse<I, A> {
         Ok(())
       } else {
         let id = nr.from.cheap_clone();
+        tracing::error!("debug: send response back {id:?}");
         futures::select! {
           _ = self.inner.channel.resp_ch.0.send(nr).fuse() => {
             c.responses.insert(id);

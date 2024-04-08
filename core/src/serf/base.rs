@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use futures::{FutureExt, StreamExt};
+use futures::FutureExt;
 use memberlist_core::{
   agnostic_lite::{Detach, RuntimeLite},
   bytes::{BufMut, Bytes, BytesMut},
@@ -974,6 +974,7 @@ where
     }
 
     if let Some(ref tx) = self.inner.event_tx {
+      tracing::error!("debug: send query event {}", q.name);
       let ev = self.query_event(q);
 
       if let Err(e) = tx
@@ -1544,8 +1545,7 @@ where
 
         // Gather responses
         let resp_rx = resp.response_rx();
-        futures::pin_mut!(resp_rx);
-        while let Some(r) = resp_rx.next().await {
+        while let Ok(r) = resp_rx.recv().await {
           // Decode the response
           if r.payload.is_empty() || r.payload[0] != MessageType::ConflictResponse as u8 {
             tracing::warn!(

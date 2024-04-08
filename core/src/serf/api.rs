@@ -369,9 +369,9 @@ where
 
     // Setup the flags
     let flags = if params.request_ack {
-      QueryFlag::empty()
+      QueryFlag::empty() | QueryFlag::ACK
     } else {
-      QueryFlag::ACK
+      QueryFlag::empty()
     };
 
     // Create the message

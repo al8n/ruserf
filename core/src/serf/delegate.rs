@@ -633,6 +633,7 @@ where
     existing: Arc<NodeState<Self::Id, Self::Address>>,
     other: Arc<NodeState<Self::Id, Self::Address>>,
   ) {
+    tracing::error!("debug: handle conflict");
     self.this().handle_node_conflict(existing, other).await;
   }
 }
