@@ -39,7 +39,7 @@ pub async fn serf_reconnect<T, F>(
   let t = serfs[1].inner.opts.memberlist_options.probe_interval();
   let (s2id, s2addr) = serfs[1].advertise_node().into_components();
   let _ = serfs.pop().unwrap();
-  <T::Runtime as RuntimeLite>::sleep(t * 5).await;
+  <T::Runtime as RuntimeLite>::sleep(t * 15).await;
 
   // Bring back s2
   let s2 = Serf::<T>::new(get_transport(s2id, s2addr).await, test_config())
@@ -64,7 +64,9 @@ pub async fn serf_reconnect<T, F>(
   .await;
 
   for s in serfs.iter() {
+    println!("start shutdown {}", s.local_id());
     s.shutdown().await.unwrap();
+    println!("finish shutdown {}", s.local_id());
   }
 }
 

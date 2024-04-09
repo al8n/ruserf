@@ -580,7 +580,7 @@ pub async fn serf_coordinates<T>(
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
-    if serfs[0].cached_coordinate(&s2id.clone()).is_err() {
+    if serfs[0].cached_coordinate(&s2id.clone()).unwrap().is_none() {
       break;
     }
 
@@ -789,9 +789,12 @@ pub async fn serf_write_keyring_file<T>(
   let existing_bytes = general_purpose::STANDARD.decode(EXISTING).unwrap();
   let sk = memberlist_core::types::SecretKey::try_from(existing_bytes.as_slice()).unwrap();
 
-  let s = Serf::<T>::new(get_transport_opts(sk), test_config())
-    .await
-    .unwrap();
+  let s = Serf::<T>::new(
+    get_transport_opts(sk),
+    test_config().with_keyring_file(Some(p.clone())),
+  )
+  .await
+  .unwrap();
   assert!(
     s.encryption_enabled(),
     "write keyring file test only works on encrypted serf"

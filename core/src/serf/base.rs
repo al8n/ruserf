@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt};
 use memberlist_core::{
   agnostic_lite::Detach,
   bytes::{BufMut, Bytes, BytesMut},
@@ -600,8 +600,6 @@ where
   T: Transport,
 {
   async fn run(self) {
-    use futures::StreamExt;
-
     let tick = <T::Runtime as RuntimeLite>::interval(self.reap_interval);
     futures::pin_mut!(tick);
     loop {
@@ -612,12 +610,16 @@ where
           Self::reap_failed(local_id, &mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
           Self::reap_left(local_id, &mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.tombstone_timeout).await;
           reap_intents(&mut ms.recent_intents, Epoch::now(), self.recent_intent_timeout);
+          if self.shutdown_rx.is_closed() {
+            break;
+          }
         }
         _ = self.shutdown_rx.recv().fuse() => {
-          return;
+          break;
         }
       }
     }
+    tracing::info!("ruserf: reaper exits");
   }
 
   fn spawn(self) -> <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()> {
@@ -666,8 +668,6 @@ where
   T: Transport,
 {
   fn spawn(self) -> <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()> {
-    use futures::StreamExt;
-
     let mut rng = rand::rngs::StdRng::from_rng(rand::thread_rng()).unwrap();
 
     <T::Runtime as RuntimeLite>::spawn(async move {
@@ -712,10 +712,12 @@ where
             }
           }
           _ = self.shutdown_rx.recv().fuse() => {
-            return;
+            break;
           }
         }
       }
+
+      tracing::info!("ruserf: reconnector exits");
     })
   }
 }
@@ -735,9 +737,11 @@ where
 {
   fn spawn<R: RuntimeLite>(self) -> <<R as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()> {
     R::spawn(async move {
+      let tick = R::interval(self.opts.check_interval);
+      futures::pin_mut!(tick);
       loop {
         futures::select! {
-          _ = R::sleep(self.opts.check_interval).fuse() => {
+          _ = tick.next().fuse() => {
             let numq = self.queue.num_queued().await;
             #[cfg(feature = "metrics")]
             {
@@ -754,10 +758,12 @@ where
             }
           }
           _ = self.shutdown_rx.recv().fuse() => {
-            return;
+            break;
           }
         }
       }
+
+      tracing::info!("ruserf: {} queue checker exits", self.name);
     })
   }
 
