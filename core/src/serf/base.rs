@@ -666,12 +666,16 @@ where
   T: Transport,
 {
   fn spawn(self) -> <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()> {
+    use futures::StreamExt;
+
     let mut rng = rand::rngs::StdRng::from_rng(rand::thread_rng()).unwrap();
 
     <T::Runtime as RuntimeLite>::spawn(async move {
+      let tick = <T::Runtime as RuntimeLite>::interval(self.reconnect_interval);
+      futures::pin_mut!(tick);
       loop {
         futures::select! {
-          _ = <T::Runtime as RuntimeLite>::sleep(self.reconnect_interval).fuse() => {
+          _ = tick.next().fuse() => {
             let mu = self.members.read().await;
             let num_failed = mu.failed_members.len();
             // Nothing to do if there are no failed members

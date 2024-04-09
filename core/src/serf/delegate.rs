@@ -818,12 +818,16 @@ where
 
   Ok(Member {
     node: node.node(),
-    tags: <D as TransformDelegate>::decode_tags(node.meta())
-      .map(|(read, tags)| {
-        tracing::trace!(read=%read, tags=?tags, "ruserf: decode tags successfully");
-        Arc::new(tags)
-      })
-      .map_err(SerfDelegateError::transform)?,
+    tags: if !node.meta().is_empty() {
+      <D as TransformDelegate>::decode_tags(node.meta())
+        .map(|(read, tags)| {
+          tracing::trace!(read=%read, tags=?tags, "ruserf: decode tags successfully");
+          Arc::new(tags)
+        })
+        .map_err(SerfDelegateError::transform)?
+    } else {
+      Default::default()
+    },
     status,
     protocol_version: ProtocolVersion::V1,
     delegate_version: DelegateVersion::V1,

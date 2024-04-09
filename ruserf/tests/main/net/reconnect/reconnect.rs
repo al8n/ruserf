@@ -13,20 +13,20 @@ macro_rules! test_mod {
           [< $rt:snake >]::[< $rt:camel Runtime >],
           transport::Lpe,
         };
-        use ruserf_core::tests::{reconnect::serf_per_node_reconnect_timeout, next_socket_addr_v4, next_socket_addr_v6};
+        use ruserf_core::tests::{reconnect::serf_reconnect, next_socket_addr_v4, next_socket_addr_v6};
         use smol_str::SmolStr;
 
         #[test]
-        fn test_serf_per_node_reconnect_timeout_v4() {
-          let name = "serf_per_node_reconnect_timeout1_v4";
+        fn test_serf_reconnect_v4() {
+          let name = "serf_reconnect1_v4";
           let mut opts = NetTransportOptions::new(SmolStr::new(name));
           opts.add_bind_address(next_socket_addr_v4(0));
 
-          let name = "serf_per_node_reconnect_timeout2_v4";
+          let name = "serf_reconnect2_v4";
           let mut opts2 = NetTransportOptions::new(SmolStr::new(name));
           opts2.add_bind_address(next_socket_addr_v4(0));
 
-          [< $rt:snake _run >](serf_per_node_reconnect_timeout::<
+          [< $rt:snake _run >](serf_reconnect::<
             NetTransport<
               SmolStr,
               SocketAddrResolver<[< $rt:camel Runtime >]>,
@@ -34,20 +34,25 @@ macro_rules! test_mod {
               Lpe<SmolStr, SocketAddr>,
               [< $rt:camel Runtime >],
             >,
-          >(opts, opts2));
+            _,
+          >(opts, opts2, |id, addr| async move {
+            let mut opts2 = NetTransportOptions::new(id);
+            opts2.add_bind_address(addr);
+            opts2
+          }));
         }
 
         #[test]
-        fn test_serf_per_node_reconnect_timeout_v6() {
-          let name = "serf_per_node_reconnect_timeout1_v6";
+        fn test_serf_reconnect_v6() {
+          let name = "serf_reconnect1_v6";
           let mut opts = NetTransportOptions::new(SmolStr::new(name));
           opts.add_bind_address(next_socket_addr_v6());
 
-          let name = "serf_per_node_reconnect_timeout2_v6";
+          let name = "serf_reconnect2_v6";
           let mut opts2 = NetTransportOptions::new(SmolStr::new(name));
           opts2.add_bind_address(next_socket_addr_v6());
 
-          [< $rt:snake _run >](serf_per_node_reconnect_timeout::<
+          [< $rt:snake _run >](serf_reconnect::<
             NetTransport<
               SmolStr,
               SocketAddrResolver<[< $rt:camel Runtime >]>,
@@ -55,7 +60,12 @@ macro_rules! test_mod {
               Lpe<SmolStr, SocketAddr>,
               [< $rt:camel Runtime >],
             >,
-          >(opts, opts2));
+            _,
+          >(opts, opts2, |id, addr| async move {
+            let mut opts2 = NetTransportOptions::new(id);
+            opts2.add_bind_address(addr);
+            opts2
+          }));
         }
       }
     }

@@ -15,21 +15,21 @@ macro_rules! test_mod {
           [< $rt:snake >]::[< $rt:camel Runtime >],
           transport::Lpe,
         };
-        use ruserf_core::tests::{reconnect::serf_reconnect, next_socket_addr_v4, next_socket_addr_v6};
+        use ruserf_core::tests::{reconnect::serf_per_node_reconnect_timeout, next_socket_addr_v4, next_socket_addr_v6};
         use smol_str::SmolStr;
 
         #[test]
-        fn test_serf_reconnect_v4() {
+        fn test_serf_per_node_reconnect_timeout_v4() {
           [< $rt:snake _run >](async move {
-            let name = "serf_reconnect1_v4";
+            let name = "serf_per_node_reconnect_timeout1_v4";
             let mut opts = QuicTransportOptions::with_stream_layer_options(SmolStr::new(name), quinn_stream_layer::<[< $rt:camel Runtime >]>().await);
             opts.add_bind_address(next_socket_addr_v4(0));
 
-            let name = "serf_reconnect2_v4";
+            let name = "serf_per_node_reconnect_timeout2_v4";
             let mut opts2 = QuicTransportOptions::with_stream_layer_options(SmolStr::new(name), quinn_stream_layer::<[< $rt:camel Runtime >]>().await);
             opts2.add_bind_address(next_socket_addr_v4(0));
 
-            serf_reconnect::<
+            serf_per_node_reconnect_timeout::<
               QuicTransport<
                 SmolStr,
                 SocketAddrResolver<[< $rt:camel Runtime >]>,
@@ -42,17 +42,17 @@ macro_rules! test_mod {
         }
 
         #[test]
-        fn test_serf_reconnect_v6() {
+        fn test_serf_per_node_reconnect_timeout_v6() {
           [< $rt:snake _run >](async move {
-            let name = "serf_reconnect1_v6";
+            let name = "serf_per_node_reconnect_timeout1_v6";
             let mut opts = QuicTransportOptions::with_stream_layer_options(SmolStr::new(name), quinn_stream_layer::<[< $rt:camel Runtime >]>().await);
             opts.add_bind_address(next_socket_addr_v6());
 
-            let name = "serf_reconnect2_v6";
+            let name = "serf_per_node_reconnect_timeout2_v6";
             let mut opts2 = QuicTransportOptions::with_stream_layer_options(SmolStr::new(name), quinn_stream_layer::<[< $rt:camel Runtime >]>().await);
             opts2.add_bind_address(next_socket_addr_v6());
 
-            serf_reconnect::<
+            serf_per_node_reconnect_timeout::<
               QuicTransport<
                 SmolStr,
                 SocketAddrResolver<[< $rt:camel Runtime >]>,

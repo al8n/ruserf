@@ -23,8 +23,6 @@ macro_rules! test_mod {
           opts.add_bind_address(next_socket_addr_v4(0));
 
           let name = "serf_reconnect_same_ip2_v4";
-          let mut opts2 = NetTransportOptions::new(SmolStr::new(name));
-          opts2.add_bind_address(next_socket_addr_v4(0));
 
           [< $rt:snake _run >](serf_reconnect_same_ip::<
             NetTransport<
@@ -35,7 +33,12 @@ macro_rules! test_mod {
               [< $rt:camel Runtime >],
             >,
             _,
-          >(opts, opts2));
+            _
+          >(opts, SmolStr::new(name), |id, addr| async move {
+            let mut opts2 = NetTransportOptions::new(id);
+            opts2.add_bind_address(addr);
+            opts2
+          }));
         }
 
         #[test]
@@ -45,8 +48,6 @@ macro_rules! test_mod {
           opts.add_bind_address(next_socket_addr_v6());
 
           let name = "serf_reconnect_same_ip2_v6";
-          let mut opts2 = NetTransportOptions::new(SmolStr::new(name));
-          opts2.add_bind_address(next_socket_addr_v6());
 
           [< $rt:snake _run >](serf_reconnect_same_ip::<
             NetTransport<
@@ -57,7 +58,12 @@ macro_rules! test_mod {
               [< $rt:camel Runtime >],
             >,
             _,
-          >(opts, opts2));
+            _,
+          >(opts, SmolStr::new(name), |id, addr| async move {
+            let mut opts2 = NetTransportOptions::new(id);
+            opts2.add_bind_address(addr);
+            opts2
+          }));
         }
       }
     }
