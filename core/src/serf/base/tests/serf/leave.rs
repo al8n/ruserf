@@ -491,19 +491,31 @@ pub async fn serf_leave_snapshot_recovery<T, F>(
 
   // Verify that s2 did not join
   let start = Epoch::now();
+  let mut cond1 = false;
+  let mut cond2 = false;
   loop {
-    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
-    let num = serfs[1].num_nodes().await;
-    if num != 1 && start.elapsed() > Duration::from_secs(7) {
-      panic!("bad members");
+    if !cond1 {
+      let num = serfs[1].num_nodes().await;
+      if num == 1 {
+        cond1 = true;
+      }
     }
 
-    let members = serfs[0].inner.members.read().await;
-    if test_member_status(&members.states, s2id.clone(), MemberStatus::Left).is_err()
-      && start.elapsed() > Duration::from_secs(7)
-    {
-      println!("{:?}", members.states);
-      panic!("timed out");
+    if !cond2 {
+      let members = serfs[0].inner.members.read().await;
+      if test_member_status(&members.states, s2id.clone(), MemberStatus::Left).is_ok() {
+        cond2 = true;
+      }
     }
+
+    if cond1 && cond2 {
+      break;
+    }
+
+    if start.elapsed() > Duration::from_secs(7) {
+      panic!("time out");
+    }
+
+    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
   }
 }

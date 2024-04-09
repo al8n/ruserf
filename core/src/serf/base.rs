@@ -562,7 +562,7 @@ macro_rules! erase_node {
 
 macro_rules! reap {
   (
-    $tx:ident <- $reconnector:ident($timeout: ident($members: ident.$ty: ident, $coord:ident))
+    $tx:ident <- $local_id:ident.$reconnector:ident($timeout: ident($members: ident.$ty: ident, $coord:ident))
   ) => {{
     let mut n = $members.$ty.len();
     let mut i = 0;
@@ -587,7 +587,7 @@ macro_rules! reap {
 
       // Delete from members and send out event
       let id = m.member.node.id();
-      tracing::info!("ruserf: event member reap: {}", id);
+      tracing::info!("ruserf: event member reap: {} reaps {}", $local_id, id);
 
       erase_node!($tx <- $coord($members[id].m));
     }
@@ -600,12 +600,17 @@ where
   T: Transport,
 {
   async fn run(self) {
+    use futures::StreamExt;
+
+    let tick = <T::Runtime as RuntimeLite>::interval(self.reap_interval);
+    futures::pin_mut!(tick);
     loop {
       futures::select! {
-        _ = <T::Runtime as RuntimeLite>::sleep(self.reap_interval).fuse() => {
+        _ = tick.next().fuse() => {
           let mut ms = self.members.write().await;
-          Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
-          Self::reap_left(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.tombstone_timeout).await;
+          let local_id = self.memberlist.local_id();
+          Self::reap_failed(local_id, &mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
+          Self::reap_left(local_id, &mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.tombstone_timeout).await;
           reap_intents(&mut ms.recent_intents, Epoch::now(), self.recent_intent_timeout);
         }
         _ = self.shutdown_rx.recv().fuse() => {
@@ -622,23 +627,25 @@ where
   }
 
   async fn reap_failed(
+    local_id: &T::Id,
     old: &mut Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     event_tx: Option<&async_channel::Sender<CrateEvent<T, D>>>,
     reconnector: Option<&D>,
     coord: Option<&CoordCore<T::Id>>,
     timeout: Duration,
   ) {
-    reap!(event_tx <- reconnector(timeout(old.failed_members, coord)))
+    reap!(event_tx <- local_id.reconnector(timeout(old.failed_members, coord)))
   }
 
   async fn reap_left(
+    local_id: &T::Id,
     old: &mut Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     event_tx: Option<&async_channel::Sender<CrateEvent<T, D>>>,
     reconnector: Option<&D>,
     coord: Option<&CoordCore<T::Id>>,
     timeout: Duration,
   ) {
-    reap!(event_tx <- reconnector(timeout(old.left_members, coord)))
+    reap!(event_tx <- local_id.reconnector(timeout(old.left_members, coord)))
   }
 }
 

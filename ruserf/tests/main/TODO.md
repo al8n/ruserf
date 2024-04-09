@@ -1,20 +1,19 @@
 # FIX
 
 - net
-  1. leave_snapshot_recovery
-  2. leave_force_leave_failed
-  3. reconnect
-  4. reconnect_same_ip
-  5. reconnect_timeout
-  6. remove_failed_node_prune
-  7. remove_failed_node
-  8. coordinates
-  9. name_resolution
-  10. write_keyring_file
-  11. remove_failed_events_leave
-  12. events_leave_avoid_infinite_rebroadcast
-  13. query
-  14. query_filter
+  1. leave_force_leave_failed
+  2. reconnect
+  3. reconnect_same_ip
+  4. reconnect_timeout
+  5. remove_failed_node_prune
+  6. remove_failed_node
+  7. coordinates
+  8. name_resolution
+  9. write_keyring_file
+  10. remove_failed_events_leave
+  11. events_leave_avoid_infinite_rebroadcast
+  12. query
+  13. query_filter
 
 - quinn
   - reap_handler

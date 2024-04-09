@@ -157,6 +157,7 @@ where
     });
 
     Reaper::<T, DefaultDelegate<T>>::reap_left(
+      s.local_id(),
       &mut members,
       None,
       None,
