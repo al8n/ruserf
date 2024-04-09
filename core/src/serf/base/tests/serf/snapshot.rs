@@ -473,10 +473,14 @@ pub async fn snapshoter_leave_rejoin<T>(
 }
 
 /// Unit tests for the serf snapshot recovery
-pub async fn serf_snapshot_recovery<T>(transport_opts1: T::Options, transport_opts2: T::Options)
-where
+pub async fn serf_snapshot_recovery<T, F>(
+  transport_opts1: T::Options,
+  transport_opts2: T::Options,
+  get_transport: impl FnOnce(T::Id, <T::Resolver as AddressResolver>::ResolvedAddress) -> F + Copy,
+) where
   T: Transport,
   T::Options: Clone,
+  F: core::future::Future<Output = T::Options>,
 {
   let td = tempfile::tempdir().unwrap();
   let snap_path = td.path().join("serf_snapshot_recovery");
@@ -490,7 +494,7 @@ where
   .await
   .unwrap();
 
-  let mut serfs = [s1, s2];
+  let mut serfs = vec![s1, s2];
   wait_until_num_nodes(1, &serfs).await;
 
   let node = serfs[1]
@@ -511,8 +515,11 @@ where
 
   // Now force the shutdown of s2 so it appears to fail.
   serfs[1].shutdown().await.unwrap();
-  <T::Runtime as RuntimeLite>::sleep(serfs[1].inner.opts.memberlist_options.probe_interval * 10)
-    .await;
+  let (s2id, s2addr) = serfs[1].advertise_node().into_components();
+  let t = serfs[1].inner.opts.memberlist_options.probe_interval * 10;
+  let _ = serfs.pop().unwrap();
+
+  <T::Runtime as RuntimeLite>::sleep(t).await;
 
   // Verify that s2 is "failed"
   {
@@ -535,7 +542,7 @@ where
   // Listen for events
   let (event_tx, event_rx) = EventProducer::bounded(4);
   let s2 = Serf::<T>::with_event_producer(
-    transport_opts2,
+    get_transport(s2id, s2addr).await,
     test_config().with_snapshot_path(Some(snap_path.clone())),
     event_tx,
   )
@@ -555,7 +562,7 @@ where
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(10)).await;
   }
 
-  serfs[1] = s2;
+  serfs.push(s2);
 
   // Verify that s2 is "alive"
   {

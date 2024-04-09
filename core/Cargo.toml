@@ -33,6 +33,7 @@ async-lock = "3"
 async-channel = "2"
 async-graphql = { version = "7", optional = true }
 byteorder.workspace = true
+crossbeam-queue = "0.3"
 derive_more.workspace = true
 futures.workspace = true
 either = "1"

@@ -209,7 +209,12 @@ impl<I, A> QueryResponse<I, A> {
       return;
     }
 
-    tracing::error!("debug: local {:?} send node response from {:?} ack {}", local, resp.from, resp.ack());
+    tracing::error!(
+      "debug: local {:?} send node response from {:?} ack {}",
+      local,
+      resp.from,
+      resp.ack()
+    );
     // Process each type of response
     if resp.ack() {
       // Exit early if this is a duplicate ack
@@ -285,7 +290,7 @@ impl<I, A> QueryResponse<I, A> {
       if c.closed {
         Ok(())
       } else {
-        let id = nr.from.cheap_clone(); 
+        let id = nr.from.cheap_clone();
         futures::select! {
           _ = self.inner.channel.resp_ch.0.send(nr).fuse() => {
             c.responses.insert(id);

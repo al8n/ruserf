@@ -177,7 +177,11 @@ where
     let this = self.this();
     let mut rebroadcast = None;
     let mut rebroadcast_queue = &this.inner.broadcasts;
-    tracing::error!("debug: local {} receive message {}", this.local_id(), msg[0]);
+    tracing::error!(
+      "debug: local {} receive message {}",
+      this.local_id(),
+      msg[0]
+    );
     match MessageType::try_from(msg[0]) {
       Ok(ty) => {
         #[cfg(any(test, feature = "test"))]
@@ -233,7 +237,11 @@ where
           MessageType::Query => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
             Ok((_, q)) => {
               if let SerfMessage::Query(q) = q {
-                tracing::error!("debug: local {} receive query message from {:?}", this.local_id(), q.from.id());
+                tracing::error!(
+                  "debug: local {} receive query message from {:?}",
+                  this.local_id(),
+                  q.from.id()
+                );
                 tracing::debug!("ruserf: query message",);
                 rebroadcast = this.handle_query(q, None).await.then(|| msg.clone());
                 rebroadcast_queue = &this.inner.query_broadcasts;
@@ -249,7 +257,11 @@ where
             match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
               Ok((_, qr)) => {
                 if let SerfMessage::QueryResponse(qr) = qr {
-                  tracing::error!("debug: local {} receive query response message {:?}", this.local_id(), qr.from.id());
+                  tracing::error!(
+                    "debug: local {} receive query response message {:?}",
+                    this.local_id(),
+                    qr.from.id()
+                  );
                   tracing::debug!("ruserf: query response message",);
                   this.handle_query_response(qr).await;
                 } else {

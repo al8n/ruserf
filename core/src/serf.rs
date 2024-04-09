@@ -4,7 +4,10 @@ use std::{
 };
 
 use async_lock::{Mutex, RwLock};
+use atomic_refcell::AtomicRefCell;
+use futures::stream::FuturesUnordered;
 use memberlist_core::{
+  agnostic_lite::{AsyncSpawner, RuntimeLite},
   queue::TransmitLimitedQueue,
   transport::{AddressResolver, Transport},
   types::MediumVec,
@@ -156,7 +159,9 @@ where
 
   pub(crate) event_core: RwLock<EventCore>,
   query_core: Arc<RwLock<QueryCore<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
-
+  handles: AtomicRefCell<
+    FuturesUnordered<<<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()>>,
+  >,
   pub(crate) opts: Options,
 
   state: parking_lot::Mutex<SerfState>,

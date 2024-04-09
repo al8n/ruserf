@@ -160,8 +160,7 @@ pub async fn serf_update<T, F>(
   transport_opts1: T::Options,
   transport_opts2: T::Options,
   get_transport: impl FnOnce(T::Id, <T::Resolver as AddressResolver>::ResolvedAddress) -> F + Copy,
-)
-where
+) where
   T: Transport,
   T::Options: Clone,
   F: core::future::Future<Output = T::Options>,
@@ -175,7 +174,7 @@ where
     .unwrap();
   let (s2id, s2addr) = s2.advertise_node().into_components();
 
-  let mut serfs = [s1, s2];
+  let mut serfs = vec![s1, s2];
   wait_until_num_nodes(1, &serfs).await;
 
   let node = serfs[1]
@@ -188,6 +187,7 @@ where
   wait_until_num_nodes(2, &serfs).await;
   // Now force the shutdown of s2 so it appears to fail.
   serfs[1].shutdown().await.unwrap();
+  let _ = serfs.pop().unwrap();
 
   // Don't wait for a failure to be detected. Bring back s2 immediately
   let start = Epoch::now();
@@ -212,7 +212,7 @@ where
   s2.join(s1node.map_address(MaybeResolvedAddress::resolved), false)
     .await
     .unwrap();
-  serfs[1] = s2;
+  serfs.push(s2);
   wait_until_num_nodes(2, &serfs).await;
 
   test_events(

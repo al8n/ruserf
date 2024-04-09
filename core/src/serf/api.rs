@@ -1,8 +1,7 @@
 use std::sync::atomic::Ordering;
 
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt};
 use memberlist_core::{
-  agnostic_lite::RuntimeLite,
   bytes::{BufMut, Bytes, BytesMut},
   tracing,
   transport::{MaybeResolvedAddress, Node},
@@ -15,9 +14,7 @@ use crate::{
   delegate::TransformDelegate,
   error::{Error, JoinError},
   event::EventProducer,
-  types::{
-    LeaveMessage, Member, MessageType, SerfMessage, Tags, UserEventMessage,
-  },
+  types::{LeaveMessage, Member, MessageType, SerfMessage, Tags, UserEventMessage},
 };
 
 use super::*;
@@ -264,9 +261,7 @@ where
     }
 
     if payload_size_before_encoding > USER_EVENT_SIZE_LIMIT {
-      return Err(Error::user_event_too_large(
-        USER_EVENT_SIZE_LIMIT,
-      ));
+      return Err(Error::user_event_too_large(USER_EVENT_SIZE_LIMIT));
     }
 
     // Create a message
@@ -594,6 +589,14 @@ where
     // Wait for the snapshoter to finish if we have one
     if let Some(ref snap) = self.inner.snapshot {
       snap.wait().await;
+    }
+
+    loop {
+      if let Ok(mut handles) = self.inner.handles.try_borrow_mut() {
+        let mut futs = core::mem::take(&mut *handles);
+        while futs.next().await.is_some() {}
+        break;
+      }
     }
 
     Ok(())

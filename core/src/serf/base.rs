@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use futures::FutureExt;
 use memberlist_core::{
-  agnostic_lite::{Detach, RuntimeLite},
+  agnostic_lite::Detach,
   bytes::{BufMut, Bytes, BytesMut},
   delegate::EventDelegate,
   tracing,
@@ -240,6 +240,7 @@ where
         buffer: query_buffer,
       })),
       opts,
+      handles: AtomicRefCell::new(FuturesUnordered::new()),
       state: parking_lot::Mutex::new(SerfState::Alive),
       join_lock: Mutex::new(()),
       snapshot: handle,
@@ -272,9 +273,10 @@ where
       this.inner.key_manager.store(that);
     }
 
+    let handles = this.inner.handles.borrow();
     // Start the background tasks. See the documentation above each method
     // for more information on their role.
-    Reaper {
+    let h = Reaper {
       coord_core: this.inner.coord_core.clone(),
       memberlist: this.inner.memberlist.clone(),
       members: this.inner.members.clone(),
@@ -286,16 +288,18 @@ where
       tombstone_timeout: this.inner.opts.tombstone_timeout,
     }
     .spawn();
+    handles.push(h);
 
-    Reconnector {
+    let h = Reconnector {
       members: this.inner.members.clone(),
       memberlist: this.inner.memberlist.clone(),
       shutdown_rx: shutdown_rx.clone(),
       reconnect_interval: this.inner.opts.reconnect_interval,
     }
     .spawn();
+    handles.push(h);
 
-    QueueChecker {
+    let h = QueueChecker {
       name: "ruserf.queue.intent",
       queue: this.inner.broadcasts.clone(),
       members: this.inner.members.clone(),
@@ -303,8 +307,9 @@ where
       shutdown_rx: shutdown_rx.clone(),
     }
     .spawn::<T::Runtime>();
+    handles.push(h);
 
-    QueueChecker {
+    let h = QueueChecker {
       name: "ruserf.queue.event",
       queue: this.inner.event_broadcasts.clone(),
       members: this.inner.members.clone(),
@@ -312,8 +317,9 @@ where
       shutdown_rx: shutdown_rx.clone(),
     }
     .spawn::<T::Runtime>();
+    handles.push(h);
 
-    QueueChecker {
+    let h = QueueChecker {
       name: "ruserf.queue.query",
       queue: this.inner.query_broadcasts.clone(),
       members: this.inner.members.clone(),
@@ -321,12 +327,14 @@ where
       shutdown_rx: shutdown_rx.clone(),
     }
     .spawn::<T::Runtime>();
+    handles.push(h);
 
     // Attempt to re-join the cluster if we have known nodes
     if !alive_nodes.is_empty() {
       let memberlist = this.inner.memberlist.clone();
       Self::handle_rejoin(memberlist, alive_nodes);
     }
+    drop(handles);
     Ok(this)
   }
 
@@ -606,10 +614,11 @@ where
       }
     }
   }
-  fn spawn(self) {
-    <T::Runtime as RuntimeLite>::spawn_detach(async move {
+
+  fn spawn(self) -> <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()> {
+    <T::Runtime as RuntimeLite>::spawn(async move {
       self.run().await;
-    });
+    })
   }
 
   async fn reap_failed(
@@ -649,10 +658,10 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  fn spawn(self) {
+  fn spawn(self) -> <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()> {
     let mut rng = rand::rngs::StdRng::from_rng(rand::thread_rng()).unwrap();
 
-    <T::Runtime as RuntimeLite>::spawn_detach(async move {
+    <T::Runtime as RuntimeLite>::spawn(async move {
       loop {
         futures::select! {
           _ = <T::Runtime as RuntimeLite>::sleep(self.reconnect_interval).fuse() => {
@@ -696,7 +705,7 @@ where
           }
         }
       }
-    });
+    })
   }
 }
 
@@ -713,8 +722,8 @@ where
   I: Send + Sync + 'static,
   A: Send + Sync + 'static,
 {
-  fn spawn<R: RuntimeLite>(self) {
-    R::spawn_detach(async move {
+  fn spawn<R: RuntimeLite>(self) -> <<R as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()> {
+    R::spawn(async move {
       loop {
         futures::select! {
           _ = R::sleep(self.opts.check_interval).fuse() => {
@@ -738,7 +747,7 @@ where
           }
         }
       }
-    });
+    })
   }
 
   async fn get_queue_max(&self) -> usize {
@@ -1045,7 +1054,12 @@ where
             "expected encoded len {} mismatch the actual encoded len {}",
             expected_encoded_len, len
           );
-          tracing::error!("debug: local {} send ack to {} ({})", self.local_id(), q.from(), ack.from);
+          tracing::error!(
+            "debug: local {} send ack to {} ({})",
+            self.local_id(),
+            q.from(),
+            ack.from
+          );
           if let Err(e) = self
             .inner
             .memberlist

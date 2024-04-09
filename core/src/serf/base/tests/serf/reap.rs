@@ -104,7 +104,7 @@ pub async fn serf_reap_handler<T>(
 
   let s1 = s.clone();
   <T::Runtime as RuntimeLite>::spawn_detach(async move {
-    <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(1)).await;
+    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(1)).await;
     s1.shutdown().await.unwrap();
   });
 
@@ -125,9 +125,9 @@ pub async fn serf_reap_handler<T>(
   assert_eq!(members.left_members.len(), 2);
 
   recent_intent(&members.recent_intents, &"alice".into(), MessageType::Join).unwrap();
-  recent_intent(&members.recent_intents, &"bob".into(), MessageType::Join).unwrap();
+  assert!(recent_intent(&members.recent_intents, &"bob".into(), MessageType::Join).is_none());
   recent_intent(&members.recent_intents, &"carol".into(), MessageType::Leave).unwrap();
-  recent_intent(&members.recent_intents, &"doug".into(), MessageType::Leave).unwrap();
+  assert!(recent_intent(&members.recent_intents, &"doug".into(), MessageType::Leave).is_none());
 }
 
 /// Unit test for reap

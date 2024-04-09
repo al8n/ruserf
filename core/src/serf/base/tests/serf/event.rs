@@ -529,12 +529,13 @@ where
 {
   let opts = test_config();
   let s = [Serf::<T>::new(transport_opts, opts).await.unwrap()];
-  
+
   wait_until_num_nodes(1, &s).await;
   let timeout = s[0].default_query_timeout().await;
   assert_eq!(
     timeout,
-    s[0].inner.opts.memberlist_options.gossip_interval() * (s[0].inner.opts.query_timeout_mult as u32)
+    s[0].inner.opts.memberlist_options.gossip_interval()
+      * (s[0].inner.opts.query_timeout_mult as u32)
   );
 
   let params = s[0].default_query_param().await;
@@ -567,13 +568,16 @@ where
   let filters = params.encode_filters::<DefaultDelegate<T>>().unwrap();
   assert_eq!(filters.len(), 3);
 
-  let (_, node_filt) = <DefaultDelegate<T> as TransformDelegate>::decode_filter(&filters[0]).unwrap();
+  let (_, node_filt) =
+    <DefaultDelegate<T> as TransformDelegate>::decode_filter(&filters[0]).unwrap();
   assert_eq!(node_filt.ty(), FilterType::Id);
 
-  let (_, tag_filt) = <DefaultDelegate<T> as TransformDelegate>::decode_filter(&filters[1]).unwrap(); 
+  let (_, tag_filt) =
+    <DefaultDelegate<T> as TransformDelegate>::decode_filter(&filters[1]).unwrap();
   assert_eq!(tag_filt.ty(), FilterType::Tag);
 
-  let (_, tag_filt) = <DefaultDelegate<T> as TransformDelegate>::decode_filter(&filters[2]).unwrap(); 
+  let (_, tag_filt) =
+    <DefaultDelegate<T> as TransformDelegate>::decode_filter(&filters[2]).unwrap();
   assert_eq!(tag_filt.ty(), FilterType::Tag);
 }
 

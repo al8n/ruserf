@@ -174,11 +174,6 @@ pub async fn serf_force_leave_failed<T>(
 
   serfs[1].shutdown().await.unwrap();
 
-  //Put s2 in failed state
-  serfs[1].shutdown().await.unwrap();
-
-  <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(10)).await;
-
   let s2id = serfs[1].local_id().clone();
 
   let start = Epoch::now();
@@ -191,12 +186,12 @@ pub async fn serf_force_leave_failed<T>(
     }
 
     if start.elapsed() > Duration::from_secs(7) {
+      println!("{:?}", members.states);
       panic!("timed out");
     }
   }
-
+  serfs[0].force_leave(s2id, true).await.unwrap();
   serfs.swap(1, 2);
-
   wait_until_num_nodes(2, &serfs[..2]).await;
 }
 
@@ -420,12 +415,13 @@ pub async fn serf_leave_rejoin_different_role<T>(
 }
 
 /// Unit tests for the serf leave snapshot recovery
-pub async fn serf_leave_snapshot_recovery<T>(
+pub async fn serf_leave_snapshot_recovery<T, F>(
   transport_opts1: T::Options,
   transport_opts2: T::Options,
+  get_transport: impl FnOnce(T::Id, <T::Resolver as AddressResolver>::ResolvedAddress) -> F + Copy,
 ) where
   T: Transport,
-  T::Options: Clone,
+  F: core::future::Future<Output = T::Options>,
 {
   let td = tempfile::tempdir().unwrap();
   let snap_path = td.path().join("serf_leave_snapshot_recovery");
@@ -437,7 +433,7 @@ pub async fn serf_leave_snapshot_recovery<T>(
   .await
   .unwrap();
   let s2 = Serf::<T>::new(
-    transport_opts2.clone(),
+    transport_opts2,
     test_config()
       .with_snapshot_path(Some(snap_path.clone()))
       .with_reap_interval(Duration::from_secs(30)),
@@ -445,7 +441,7 @@ pub async fn serf_leave_snapshot_recovery<T>(
   .await
   .unwrap();
 
-  let mut serfs = [s1, s2];
+  let mut serfs = vec![s1, s2];
   wait_until_num_nodes(1, &serfs).await;
 
   let node = serfs[1]
@@ -460,11 +456,11 @@ pub async fn serf_leave_snapshot_recovery<T>(
   // Put s2 in left state
   serfs[1].leave().await.unwrap();
   serfs[1].shutdown().await.unwrap();
+  let t = serfs[1].inner.opts.memberlist_options.probe_interval * 5;
+  let (s2id, s2addr) = serfs[1].advertise_node().into_components();
+  let _ = serfs.pop().unwrap();
 
-  <T::Runtime as RuntimeLite>::sleep(serfs[1].inner.opts.memberlist_options.probe_interval * 5)
-    .await;
-
-  let s2id = serfs[1].local_id().clone();
+  <T::Runtime as RuntimeLite>::sleep(t).await;
 
   let start = Epoch::now();
   loop {
@@ -482,14 +478,14 @@ pub async fn serf_leave_snapshot_recovery<T>(
 
   // Restart s2 from the snapshot now!
   let s2 = Serf::<T>::new(
-    transport_opts2.clone(),
+    get_transport(s2id.clone(), s2addr).await,
     test_config()
       .with_snapshot_path(Some(snap_path.clone()))
       .with_reap_interval(Duration::from_secs(30)),
   )
   .await
   .unwrap();
-  serfs[1] = s2;
+  serfs.push(s2);
 
   // Wait for the node to auto rejoin
 
@@ -506,6 +502,7 @@ pub async fn serf_leave_snapshot_recovery<T>(
     if test_member_status(&members.states, s2id.clone(), MemberStatus::Left).is_err()
       && start.elapsed() > Duration::from_secs(7)
     {
+      println!("{:?}", members.states);
       panic!("timed out");
     }
   }
