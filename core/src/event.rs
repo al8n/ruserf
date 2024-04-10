@@ -69,7 +69,6 @@ where
       }
 
       // Send the response directly to the originator
-      memberlist_core::tracing::error!("debug: event local {} send query response message to {} which from {}", self.this.local_id(), resp.from(), resp.from());
       self
         .this
         .inner

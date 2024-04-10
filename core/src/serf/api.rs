@@ -583,10 +583,8 @@ where
       *s = SerfState::Shutdown;
     }
 
-    tracing::error!("debug: shutdown memberlist");
     self.inner.memberlist.shutdown().await?;
     self.inner.shutdown_tx.close();
-    tracing::error!("debug: finish shutdown memberlist");
 
     // Wait for the snapshoter to finish if we have one
     if let Some(ref snap) = self.inner.snapshot {

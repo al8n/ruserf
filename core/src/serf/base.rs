@@ -882,7 +882,7 @@ where
       Some(mut params) => {
         params.timeout = self.default_query_timeout().await;
         params
-      },
+      }
       None => self.default_query_param().await,
     };
 
@@ -1055,11 +1055,10 @@ where
     // Filter the query
     if !self.should_process_query(&q.filters) {
       // Even if we don't process it further, we should rebroadcast,
-		  // since it is the first time we've seen this.
+      // since it is the first time we've seen this.
       return rebroadcast;
     }
 
-    tracing::error!("debug: local {} handle query wich ack {}", self.local_id(), q.ack());
     // Send ack if requested, without waiting for client to respond()
     if q.ack() {
       let ack = QueryResponseMessage {
@@ -1069,7 +1068,6 @@ where
         flags: QueryFlag::ACK,
         payload: Bytes::new(),
       };
-      tracing::error!("debug: local {} construct a response {:?}", self.local_id(), ack);
 
       let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&ack);
       let mut raw = BytesMut::with_capacity(expected_encoded_len + 1); // + 1 for message type byte
@@ -1082,12 +1080,6 @@ where
             len, expected_encoded_len,
             "expected encoded len {} mismatch the actual encoded len {}",
             expected_encoded_len, len
-          );
-          tracing::error!(
-            "debug: local {} send query response message to {} which from ({})",
-            self.local_id(),
-            q.from(),
-            ack.from
           );
           if let Err(e) = self
             .inner

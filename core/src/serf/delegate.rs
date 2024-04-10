@@ -177,11 +177,6 @@ where
     let this = self.this();
     let mut rebroadcast = None;
     let mut rebroadcast_queue = &this.inner.broadcasts;
-    tracing::error!(
-      "debug: local {} receive message {}",
-      this.local_id(),
-      msg[0]
-    );
     match MessageType::try_from(msg[0]) {
       Ok(ty) => {
         #[cfg(any(test, feature = "test"))]
@@ -237,11 +232,6 @@ where
           MessageType::Query => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
             Ok((_, q)) => {
               if let SerfMessage::Query(q) = q {
-                tracing::error!(
-                  "debug: local {} receive query message from {:?}",
-                  this.local_id(),
-                  q.from.id()
-                );
                 tracing::debug!("ruserf: query message",);
                 rebroadcast = this.handle_query(q, None).await.then(|| msg.clone());
                 rebroadcast_queue = &this.inner.query_broadcasts;
@@ -257,11 +247,6 @@ where
             match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
               Ok((_, qr)) => {
                 if let SerfMessage::QueryResponse(qr) = qr {
-                  tracing::error!(
-                    "debug: local {} receive query response message {:?}",
-                    this.local_id(),
-                    qr.from.id()
-                  );
                   tracing::debug!("ruserf: query response message",);
                   this.handle_query_response(qr).await;
                 } else {
@@ -298,7 +283,6 @@ where
     }
 
     if let Some(msg) = rebroadcast {
-      tracing::warn!("debug: local {} broadcast {}", this.local_id(), msg[0]);
       rebroadcast_queue
         .queue_broadcast(SerfBroadcast {
           msg,
@@ -333,7 +317,6 @@ where
         )
         .record(encoded_len as f64);
       }
-      tracing::error!("debug: local {} broadcast member {}", this.local_id(), msg[0]);
     }
 
     // Get any additional query broadcasts
@@ -353,7 +336,6 @@ where
         )
         .record(encoded_len as f64);
       }
-      tracing::error!("debug: local {} broadcast query {}", this.local_id(), msg[0]);
     }
 
     // Get any additional event broadcasts
@@ -373,7 +355,6 @@ where
         )
         .record(encoded_len as f64);
       }
-      tracing::error!("debug: local {} broadcast user {}", this.local_id(), msg[0]);
     }
     msgs.extend(query_msgs);
     msgs.extend(event_msgs);
@@ -650,7 +631,6 @@ where
     existing: Arc<NodeState<Self::Id, Self::Address>>,
     other: Arc<NodeState<Self::Id, Self::Address>>,
   ) {
-    tracing::error!("debug: handle conflict");
     self.this().handle_node_conflict(existing, other).await;
   }
 }

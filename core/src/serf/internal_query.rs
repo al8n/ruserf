@@ -1,7 +1,7 @@
 use async_channel::{bounded, Receiver, Sender};
 use futures::FutureExt;
 use memberlist_core::{
-  agnostic_lite::{RuntimeLite, AsyncSpawner},
+  agnostic_lite::{AsyncSpawner, RuntimeLite},
   bytes::{BufMut, Bytes, BytesMut},
   tracing,
   transport::{AddressResolver, Transport},
@@ -44,7 +44,10 @@ where
   pub(crate) fn new(
     out_tx: Sender<CrateEvent<T, D>>,
     shutdown_rx: Receiver<()>,
-  ) -> (Sender<CrateEvent<T, D>>, <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()>) {
+  ) -> (
+    Sender<CrateEvent<T, D>>,
+    <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()>,
+  ) {
     let (in_tx, in_rx) = bounded(1024);
     let this = Self {
       in_rx,

@@ -1,8 +1,12 @@
-use std::{collections::HashSet, sync::Arc, time::{Duration, Instant}};
+use std::{
+  collections::HashSet,
+  sync::Arc,
+  time::{Duration, Instant},
+};
 
 use async_channel::{Receiver, Sender};
 use async_lock::RwLock;
-use futures::FutureExt;
+use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use memberlist_core::{
   bytes::{BufMut, Bytes, BytesMut},
   tracing,
@@ -15,8 +19,7 @@ use crate::{
   delegate::{Delegate, TransformDelegate},
   error::Error,
   types::{
-    Filter, LamportTime, Member, MemberStatus, MessageType, QueryMessage,
-    QueryResponseMessage,
+    Filter, LamportTime, Member, MemberStatus, MessageType, QueryMessage, QueryResponseMessage,
   },
 };
 
@@ -88,15 +91,32 @@ pub(crate) struct QueryResponseInner<I, A> {
 #[derive(Clone)]
 pub struct QueryResponse<I, A> {
   /// The duration of the query
-  #[viewit(getter(style = "move", const, attrs(doc = "Returns the ending deadline of the query")), setter(skip))]
+  #[viewit(
+    getter(
+      style = "move",
+      const,
+      attrs(doc = "Returns the ending deadline of the query")
+    ),
+    setter(skip)
+  )]
   deadline: Instant,
 
   /// The query id
-  #[viewit(getter(style = "move", const, attrs(doc = "Returns the id of the query")), setter(skip))]
+  #[viewit(
+    getter(style = "move", const, attrs(doc = "Returns the id of the query")),
+    setter(skip)
+  )]
   id: u32,
 
   /// Stores the LTime of the query
-  #[viewit(getter(style = "move", const, attrs(doc = "Returns the Lamport Time of the query")), setter(skip))]
+  #[viewit(
+    getter(
+      style = "move",
+      const,
+      attrs(doc = "Returns the Lamport Time of the query")
+    ),
+    setter(skip)
+  )]
   ltime: LamportTime,
 
   #[viewit(getter(vis = "pub(crate)", const, style = "ref"), setter(skip))]
@@ -195,7 +215,7 @@ impl<I, A> QueryResponse<I, A> {
   pub(crate) async fn handle_query_response<T, D>(
     &self,
     resp: QueryResponseMessage<I, A>,
-    local: &T::Id,
+    _local: &T::Id,
     #[cfg(feature = "metrics")] metrics_labels: &memberlist_core::types::MetricLabels,
   ) where
     I: Eq + std::hash::Hash + CheapClone + core::fmt::Debug,
@@ -209,12 +229,6 @@ impl<I, A> QueryResponse<I, A> {
       return;
     }
 
-    tracing::error!(
-      "debug: local {:?} handle query response from {:?} ack {}",
-      local,
-      resp.from,
-      resp.ack()
-    );
     // Process each type of response
     if resp.ack() {
       // Exit early if this is a duplicate ack
@@ -252,12 +266,10 @@ impl<I, A> QueryResponse<I, A> {
       drop(c);
 
       if let Err(e) = self
-        .send_response::<T, D>(
-          NodeResponse {
-            from: resp.from,
-            payload: resp.payload,
-          },
-        )
+        .send_response::<T, D>(NodeResponse {
+          from: resp.from,
+          payload: resp.payload,
+        })
         .await
       {
         tracing::warn!("ruserf: {}", e);
@@ -267,10 +279,7 @@ impl<I, A> QueryResponse<I, A> {
 
   /// Sends a response on the response channel ensuring the channel is not closed.
   #[inline]
-  pub(crate) async fn send_response<T, D>(
-    &self,
-    nr: NodeResponse<I, A>,
-  ) -> Result<(), Error<T, D>>
+  pub(crate) async fn send_response<T, D>(&self, nr: NodeResponse<I, A>) -> Result<(), Error<T, D>>
   where
     I: Eq + std::hash::Hash + CheapClone + core::fmt::Debug,
     A: Eq + std::hash::Hash + CheapClone + core::fmt::Debug,
@@ -491,7 +500,9 @@ where
 
     // Prep the relay message, which is a wrapped version of the original.
     // let relay_msg = SerfRelayMessage::new(node, SerfMessage::QueryResponse(resp));
-    let expected_encoded_len = 1 + <D as TransformDelegate>::node_encoded_len(&node) + 1
+    let expected_encoded_len = 1
+      + <D as TransformDelegate>::node_encoded_len(&node)
+      + 1
       + <D as TransformDelegate>::message_encoded_len(&resp); // +1 for relay message type byte, +1 for the message type
     if expected_encoded_len > self.inner.opts.query_response_size_limit {
       return Err(Error::relayed_response_too_large(
@@ -511,60 +522,42 @@ where
       .map_err(Error::transform_delegate)?;
 
     debug_assert_eq!(
-      encoded,
-      expected_encoded_len,
+      encoded, expected_encoded_len,
       "expected encoded len {} mismatch the actual encoded len {}",
-      expected_encoded_len,
-      encoded
+      expected_encoded_len, encoded
     );
 
     let raw = raw.freeze();
     // Relay to a random set of peers.
     let relay_members = random_members(relay_factor as usize, members);
 
-    // let futs: FuturesUnordered<_> = relay_members
-    //   .into_iter()
-    //   .map(|m| {
-    //     let raw = raw.clone();
-    //     async move {
-    //       self
-    //         .inner
-    //         .memberlist
-    //         .send(m.node.address(), raw)
-    //         .await
-    //         .map_err(|e| (m, e))
-    //     }
-    //   })
-    //   .collect();
-
-    // let mut errs = TinyVec::new();
-    // let stream = StreamExt::filter_map(futs, |res| async move {
-    //   if let Err((m, e)) = res {
-    //     Some((m, e))
-    //   } else {
-    //     None
-    //   }
-    // });
-    // futures::pin_mut!(stream);
-
-    // while let Some(err) = stream.next().await {
-    //   errs.push(err);
-    // }
+    let futs: FuturesUnordered<_> = relay_members
+      .into_iter()
+      .map(|m| {
+        let raw = raw.clone();
+        async move {
+          self
+            .inner
+            .memberlist
+            .send(m.node.address(), raw)
+            .await
+            .map_err(|e| (m, e))
+        }
+      })
+      .collect();
 
     let mut errs = TinyVec::new();
-    for m in relay_members {
-      tracing::error!("debug: local {} send query response message which from {}", self.local_id(), resp.from);
-      if let Err(e) = self
-        .inner
-        .memberlist
-        .send(m.node.address(), raw.clone())
-        .await {
-        errs.push((m, e));
+    let stream = StreamExt::filter_map(futs, |res| async move {
+      if let Err((m, e)) = res {
+        Some((m, e))
+      } else {
+        None
       }
-    }
+    });
+    futures::pin_mut!(stream);
 
-    if !errs.is_empty() {
-      return Err(Error::relay(From::from(errs)));
+    while let Some(err) = stream.next().await {
+      errs.push(err);
     }
 
     Ok(())
