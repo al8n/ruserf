@@ -398,7 +398,7 @@ where
     min_compact_size: u64,
     rejoin_after_leave: bool,
     clock: LamportClock,
-    out_tx: Option<Sender<CrateEvent<T, D>>>,
+    out_tx: Sender<CrateEvent<T, D>>,
     shutdown_rx: Receiver<()>,
     #[cfg(feature = "metrics")] metric_labels: std::sync::Arc<memberlist_core::types::MetricLabels>,
   ) -> Result<
@@ -483,7 +483,7 @@ where
   async fn tee_stream(
     in_rx: Receiver<CrateEvent<T, D>>,
     stream_tx: Sender<CrateEvent<T, D>>,
-    out_tx: Option<Sender<CrateEvent<T, D>>>,
+    out_tx: Sender<CrateEvent<T, D>>,
     shutdown_rx: Receiver<()>,
   ) {
     macro_rules! flush_event {
@@ -495,11 +495,9 @@ where
         }
 
         // Forward the event immediately, do not block
-        if let Some(ref out_tx) = out_tx {
-          futures::select! {
-            _ = out_tx.send($event).fuse() => {}
-            default => {}
-          }
+        futures::select! {
+          _ = out_tx.send($event).fuse() => {}
+          default => {}
         }
       }};
     }

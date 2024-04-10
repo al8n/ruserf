@@ -22,7 +22,7 @@ pub async fn snapshoter<T>(
     SNAPSHOT_SIZE_LIMIT,
     false,
     clock.clone(),
-    Some(out_tx),
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -174,7 +174,7 @@ pub async fn snapshoter<T>(
     SNAPSHOT_SIZE_LIMIT,
     false,
     clock.clone(),
-    Some(out_tx),
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -201,7 +201,7 @@ pub async fn snapshoter<T>(
     SNAPSHOT_SIZE_LIMIT,
     false,
     clock.clone(),
-    Some(out_tx),
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -227,12 +227,13 @@ pub async fn snapshoter_force_compact<T>(
 
   // Create a very low limit
   let res = open_and_replay_snapshot::<_, _, DefaultDelegate<T>, _>(&p, false).unwrap();
+  let (out_tx, _out_rx) = async_channel::unbounded();
   let (event_tx, _, handle) = Snapshot::<T, DefaultDelegate<T>>::from_replay_result(
     res,
     1024,
     false,
     clock.clone(),
-    None,
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -293,12 +294,13 @@ pub async fn snapshoter_leave<T>(
   let clock = LamportClock::new();
   let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
   let res = open_and_replay_snapshot::<_, _, DefaultDelegate<T>, _>(&p, false).unwrap();
+  let (out_tx, _out_rx) = async_channel::unbounded();
   let (event_tx, _, handle) = Snapshot::<T, DefaultDelegate<T>>::from_replay_result(
     res,
     SNAPSHOT_SIZE_LIMIT,
     false,
     clock.clone(),
-    None,
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -359,12 +361,13 @@ pub async fn snapshoter_leave<T>(
   assert!(res.last_clock == 0.into());
   assert!(res.last_event_clock == 0.into());
   assert!(res.last_query_clock == 0.into());
+  let (out_tx, _out_rx) = async_channel::unbounded();
   let (_, alive_nodes, _) = Snapshot::<T, DefaultDelegate<T>>::from_replay_result(
     res,
     SNAPSHOT_SIZE_LIMIT,
     false,
     clock.clone(),
-    None,
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -388,12 +391,13 @@ pub async fn snapshoter_leave_rejoin<T>(
   let clock = LamportClock::new();
   let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
   let res = open_and_replay_snapshot::<_, _, DefaultDelegate<T>, _>(&p, true).unwrap();
+  let (out_tx, _out_rx) = async_channel::unbounded();
   let (event_tx, _, handle) = Snapshot::<T, DefaultDelegate<T>>::from_replay_result(
     res,
     SNAPSHOT_SIZE_LIMIT,
     true,
     clock.clone(),
-    None,
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -457,12 +461,13 @@ pub async fn snapshoter_leave_rejoin<T>(
   assert!(res.last_clock == 100.into());
   assert!(res.last_event_clock == 42.into());
   assert!(res.last_query_clock == 50.into());
+  let (out_tx, _out_rx) = async_channel::unbounded();
   let (_, alive_nodes, _) = Snapshot::<T, DefaultDelegate<T>>::from_replay_result(
     res,
     SNAPSHOT_SIZE_LIMIT,
     false,
     clock.clone(),
-    None,
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -617,7 +622,7 @@ async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
     SNAPSHOT_SIZE_LIMIT,
     true,
     clock.clone(),
-    Some(out_tx),
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -732,7 +737,7 @@ async fn test_snapshoter_slow_disk_not_blocking_memberlist() {
     SNAPSHOT_SIZE_LIMIT,
     true,
     clock.clone(),
-    Some(out_tx),
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),

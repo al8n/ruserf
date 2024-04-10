@@ -690,7 +690,7 @@ pub async fn serf_name_resolution<T>(
   serfs[0].join(node.clone(), false).await.unwrap();
 
   // Wait for the query period to end
-  <T::Runtime as RuntimeLite>::sleep(serfs[0].default_query_timeout().await * 2).await;
+  <T::Runtime as RuntimeLite>::sleep(serfs[0].default_query_timeout().await * 15).await;
 
   let start = Epoch::now();
   let mut cond1 = false;

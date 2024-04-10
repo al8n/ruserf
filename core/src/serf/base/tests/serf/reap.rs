@@ -156,10 +156,12 @@ where
       leave_time: Some(Epoch::now() - Duration::from_secs(10)),
     });
 
+    let (tx, _rx) = async_channel::bounded(64);
+
     Reaper::<T, DefaultDelegate<T>>::reap_left(
       s.local_id(),
       &mut members,
-      None,
+      &tx,
       None,
       None,
       Duration::from_secs(6),

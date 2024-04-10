@@ -221,7 +221,7 @@ where
 {
   let (tx, rx) = async_channel::bounded(4);
   let (_shutdown_tx, shutdown_rx) = async_channel::bounded(1);
-  let (event_tx, _handle) = SerfQueries::<T, DefaultDelegate<T>>::new(tx, shutdown_rx);
+  let (event_tx, _handle) = SerfQueries::<T, DefaultDelegate<T>>::new(Some(tx), shutdown_rx);
 
   // Push a user event
   let event = CrateEvent::from(
@@ -269,7 +269,7 @@ where
 {
   let (tx, rx) = async_channel::bounded(4);
   let (_shutdown_tx, shutdown_rx) = async_channel::bounded(1);
-  let (event_tx, _handle) = SerfQueries::<T, DefaultDelegate<T>>::new(tx, shutdown_rx);
+  let (event_tx, _handle) = SerfQueries::<T, DefaultDelegate<T>>::new(Some(tx), shutdown_rx);
 
   // Push a query
   let query = s.query_event(QueryMessage {
@@ -302,7 +302,7 @@ where
 {
   let (tx, rx) = async_channel::bounded(4);
   let (_shutdown_tx, shutdown_rx) = async_channel::bounded(1);
-  let (event_tx, _handle) = SerfQueries::<T, DefaultDelegate<T>>::new(tx, shutdown_rx);
+  let (event_tx, _handle) = SerfQueries::<T, DefaultDelegate<T>>::new(Some(tx), shutdown_rx);
 
   // Push a query
   let query = s.query_event(QueryMessage {

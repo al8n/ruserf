@@ -1,15 +1,52 @@
+use ruserf_types::QueryMessage;
+
 use super::*;
 
-const INTERNAL_PING: &str = "ruserf-ping";
-const INTERNAL_CONFLICT: &str = "ruserf-conflict";
+pub(crate) trait QueryMessageExt {
+  fn is_internal_query(&self) -> bool;
+
+  fn decode_internal_query<T: TransformDelegate>(&self) -> Option<Result<InternalQueryEvent<T::Id>, T::Error>>;
+}
+
+impl<I, A> QueryMessageExt for QueryMessage<I, A> {
+  fn is_internal_query(&self) -> bool {
+    match self.name().as_str() {
+      INTERNAL_PING | INTERNAL_CONFLICT => true,
+      #[cfg(feature = "encryption")]
+      INTERNAL_INSTALL_KEY | INTERNAL_USE_KEY | INTERNAL_REMOVE_KEY | INTERNAL_LIST_KEYS => true,
+      _ => false,
+    }
+  }
+
+  fn decode_internal_query<T: TransformDelegate>(&self) -> Option<Result<InternalQueryEvent<T::Id>, T::Error>> {
+    return Some(Ok(match self.name().as_str() {
+      INTERNAL_PING => InternalQueryEvent::Ping,
+      INTERNAL_CONFLICT => {
+        return Some(T::decode_id(&self.payload).map(|(_, id)| InternalQueryEvent::Conflict(id)));
+      }
+      #[cfg(feature = "encryption")]
+      INTERNAL_INSTALL_KEY => InternalQueryEvent::InstallKey,
+      #[cfg(feature = "encryption")]
+      INTERNAL_USE_KEY => InternalQueryEvent::UseKey,
+      #[cfg(feature = "encryption")]
+      INTERNAL_REMOVE_KEY => InternalQueryEvent::RemoveKey,
+      #[cfg(feature = "encryption")]
+      INTERNAL_LIST_KEYS => InternalQueryEvent::ListKey,
+      _ => return None,
+    }))
+  }
+}
+
+const INTERNAL_PING: &str = "_ruserf_ping";
+const INTERNAL_CONFLICT: &str = "_ruserf_conflict";
 #[cfg(feature = "encryption")]
-pub(crate) const INTERNAL_INSTALL_KEY: &str = "ruserf-install-key";
+pub(crate) const INTERNAL_INSTALL_KEY: &str = "_ruserf_install_key";
 #[cfg(feature = "encryption")]
-pub(crate) const INTERNAL_USE_KEY: &str = "ruserf-use-key";
+pub(crate) const INTERNAL_USE_KEY: &str = "_ruserf_use_key";
 #[cfg(feature = "encryption")]
-pub(crate) const INTERNAL_REMOVE_KEY: &str = "ruserf-remove-key";
+pub(crate) const INTERNAL_REMOVE_KEY: &str = "_ruserf_remove_key";
 #[cfg(feature = "encryption")]
-pub(crate) const INTERNAL_LIST_KEYS: &str = "ruserf-list-keys";
+pub(crate) const INTERNAL_LIST_KEYS: &str = "_ruserf_list_keys";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

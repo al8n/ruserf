@@ -109,14 +109,15 @@ where
           c,
         );
       }
-
-      // Listen for internal Serf queries. This is setup before the snapshotter, since
-      // we want to capture the query-time, but the internal listener does not passthrough
-      // the queries
-      let (event_tx, handle) = SerfQueries::new(event_tx, shutdown_rx.clone());
-      handles.push(handle);
+ 
       event_tx
     });
+
+    // Listen for internal Serf queries. This is setup before the snapshotter, since
+    // we want to capture the query-time, but the internal listener does not passthrough
+    // the queries
+    let (event_tx, handle) = SerfQueries::new(event_tx.clone(), shutdown_rx.clone());
+    handles.push(handle);
 
     let clock = LamportClock::new();
     let event_clock = LamportClock::new();
@@ -147,7 +148,7 @@ where
           old_clock,
           old_event_clock,
           old_query_clock,
-          Some(event_tx),
+          event_tx,
           alive_nodes,
           Some(handle),
         )
@@ -507,7 +508,7 @@ where
   coord_core: Option<Arc<CoordCore<T::Id>>>,
   memberlist: Memberlist<T, SerfDelegate<T, D>>,
   members: Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
-  event_tx: Option<async_channel::Sender<CrateEvent<T, D>>>,
+  event_tx: async_channel::Sender<CrateEvent<T, D>>,
   shutdown_rx: async_channel::Receiver<()>,
   reap_interval: Duration,
   reconnect_timeout: Duration,
@@ -528,14 +529,12 @@ macro_rules! erase_node {
     }
 
     // Send out event
-    if let Some(tx) = $tx {
-      let _ = tx
-        .send(CrateEvent::from(MemberEvent {
-          ty: MemberEventType::Reap,
-          members: Arc::new(TinyVec::from($m.member.clone())),
-        }))
-        .await;
-    }
+    let _ = $tx
+      .send(CrateEvent::from(MemberEvent {
+        ty: MemberEventType::Reap,
+        members: Arc::new(TinyVec::from($m.member.clone())),
+      }))
+      .await;
   }};
 }
 
@@ -586,8 +585,8 @@ where
         _ = tick.next().fuse() => {
           let mut ms = self.members.write().await;
           let local_id = self.memberlist.local_id();
-          Self::reap_failed(local_id, &mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
-          Self::reap_left(local_id, &mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.tombstone_timeout).await;
+          Self::reap_failed(local_id, &mut ms, &self.event_tx, self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
+          Self::reap_left(local_id, &mut ms, &self.event_tx, self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.tombstone_timeout).await;
           reap_intents(&mut ms.recent_intents, Epoch::now(), self.recent_intent_timeout);
           if self.shutdown_rx.is_closed() {
             break;
@@ -610,7 +609,7 @@ where
   async fn reap_failed(
     local_id: &T::Id,
     old: &mut Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-    event_tx: Option<&async_channel::Sender<CrateEvent<T, D>>>,
+    event_tx: &async_channel::Sender<CrateEvent<T, D>>,
     reconnector: Option<&D>,
     coord: Option<&CoordCore<T::Id>>,
     timeout: Duration,
@@ -621,7 +620,7 @@ where
   async fn reap_left(
     local_id: &T::Id,
     old: &mut Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-    event_tx: Option<&async_channel::Sender<CrateEvent<T, D>>>,
+    event_tx: &async_channel::Sender<CrateEvent<T, D>>,
     reconnector: Option<&D>,
     coord: Option<&CoordCore<T::Id>>,
     timeout: Duration,
@@ -830,11 +829,10 @@ where
       .increment(1);
     }
 
-    if let Some(ref tx) = self.inner.event_tx {
-      if let Err(e) = tx.send(msg.into()).await {
-        tracing::error!("ruserf: failed to send user event: {}", e);
-      }
+    if let Err(e) = self.inner.event_tx.send(msg.into()).await {
+      tracing::error!("ruserf: failed to send user event: {}", e);
     }
+
     true
   }
 
@@ -939,6 +937,8 @@ where
       .register_query_response(params.timeout, resp.clone())
       .await;
 
+    tracing::error!("debug: local {} queue broadcast query id: {} name: {}", self.local_id(), q.id, q.name);
+
     // Process query locally
     self.handle_query(q, ty).await;
 
@@ -991,6 +991,7 @@ where
     let mut query = self.inner.query_core.write().await;
 
     // Ignore if it is before our minimum query time
+    tracing::error!("debug: local {} handle query name {} from time {} current({}) min_time {} ack {}", self.local_id(), q.name, q.ltime, self.inner.query_clock.time(), query.min_time, q.ack());
     if q.ltime < query.min_time {
       return false;
     }
@@ -1103,18 +1104,16 @@ where
       }
     }
 
-    if let Some(ref tx) = self.inner.event_tx {
-      let ev = self.query_event(q);
+    let ev = self.query_event(q);
 
-      if let Err(e) = tx
-        .send(match ty {
-          Some(ty) => (ty, ev).into(),
-          None => ev.into(),
-        })
-        .await
-      {
-        tracing::error!(err=%e, "ruserf: failed to send query");
-      }
+    if let Err(e) = self.inner.event_tx
+      .send(match ty {
+        Some(ty) => (ty, ev).into(),
+        None => ev.into(),
+      })
+      .await
+    {
+      tracing::error!(err=%e, "ruserf: failed to send query");
     }
 
     rebroadcast
@@ -1229,15 +1228,13 @@ where
 
       (
         old_status,
-        self.inner.event_tx.as_ref().map(|tx| {
-          tx.send(
+        self.inner.event_tx.send(
             MemberEvent {
               ty: MemberEventType::Join,
               members: Arc::new(TinyVec::from(member.member.clone())),
             }
             .into(),
           )
-        }),
       )
     } else {
       // Check if we have a join or leave intent. The intent buffer
@@ -1271,15 +1268,13 @@ where
       members.states.insert(node.id().cheap_clone(), ms);
       (
         MemberStatus::None,
-        self.inner.event_tx.as_ref().map(|tx| {
-          tx.send(
+        self.inner.event_tx.send(
             MemberEvent {
               ty: MemberEventType::Join,
               members: Arc::new(TinyVec::from(member)),
             }
             .into(),
           )
-        }),
       )
     };
 
@@ -1297,10 +1292,8 @@ where
     .increment(1);
 
     tracing::info!("ruserf: member join: {}", node);
-    if let Some(fut) = fut {
-      if let Err(e) = fut.await {
-        tracing::error!(err=%e, "ruserf: failed to send member event");
-      }
+    if let Err(e) = fut.await {
+      tracing::error!(err=%e, "ruserf: failed to send member event");
     }
   }
 
@@ -1397,8 +1390,7 @@ where
 
     tracing::info!("ruserf: {}: {}", ty.as_str(), member.node());
 
-    if let Some(ref tx) = self.inner.event_tx {
-      if let Err(e) = tx
+    if let Err(e) = self.inner.event_tx
         .send(
           MemberEvent {
             ty,
@@ -1410,7 +1402,6 @@ where
       {
         tracing::error!(err=%e, "ruserf: failed to send member event: {}", e);
       }
-    }
   }
 
   pub(crate) async fn handle_node_leave_intent(&self, msg: &LeaveMessage<T::Id>) -> bool {
@@ -1509,8 +1500,8 @@ where
         // left to allow higher-level applications to handle the
         // graceful leave.
         tracing::info!("ruserf: EventMemberLeave (forced): {}", owned.member.node);
-        if let Some(ref tx) = self.inner.event_tx {
-          if let Err(e) = tx
+
+        if let Err(e) = self.inner.event_tx
             .send(
               MemberEvent {
                 ty: MemberEventType::Leave,
@@ -1522,7 +1513,6 @@ where
           {
             tracing::error!(err=%e, "ruserf: failed to send member event");
           }
-        }
 
         if msg.prune {
           self.handle_prune(&owned, *members_mut).await;
@@ -1571,8 +1561,7 @@ where
       .increment(1);
 
       tracing::info!("ruserf: member update: {}", id);
-      if let Some(ref tx) = self.inner.event_tx {
-        if let Err(e) = tx
+      if let Err(e) = self.inner.event_tx
           .send(
             MemberEvent {
               ty: MemberEventType::Update,
@@ -1584,7 +1573,6 @@ where
         {
           tracing::error!(err=%e, "ruserf: failed to send member event");
         }
-      }
     }
   }
 
@@ -1612,7 +1600,7 @@ where
       remove_old_member(&mut members.left_members, id);
     }
 
-    let tx = self.inner.event_tx.as_ref();
+    let tx = &self.inner.event_tx;
     let coord = self.inner.coord_core.as_deref();
     erase_node!(tx <- coord(members[id].member))
   }
@@ -1628,9 +1616,11 @@ where
     // Log a basic warning if the node is not us...
     if existing.id() != self.inner.memberlist.local_id() {
       tracing::warn!(
-        "ruserf: node conflict detected between {} and {}",
+        "ruserf: node conflict detected between {}({}) and {}({})",
         existing.id(),
-        other.id()
+        existing.address(),
+        other.id(),
+        other.address(),
       );
       return;
     }
@@ -1645,97 +1635,108 @@ where
     // If automatic resolution is enabled, kick off the resolution
     if self.inner.opts.enable_id_conflict_resolution {
       let this = self.clone();
-      <T::Runtime as RuntimeLite>::spawn_detach(async move {
-        // Get the local node
-        let local_id = this.inner.memberlist.local_id();
-        let encoded_id_len = <D as TransformDelegate>::id_encoded_len(local_id);
-        let mut payload = vec![0u8; encoded_id_len];
+      <T::Runtime as RuntimeLite>::spawn_detach(async move { this.resolve_node_conflict().await });
+    }
+  }
 
-        if let Err(e) = <D as TransformDelegate>::encode_id(local_id, &mut payload) {
-          tracing::error!(err=%e, "ruserf: failed to encode local id");
-          return;
-        }
+  /// Used to determine which node should remain during
+  /// a name conflict. This is done by running an internal query.
+  async fn resolve_node_conflict(&self) {
+    // Get the local node
+    let local_id = self.inner.memberlist.local_id();
+    let encoded_id_len = <D as TransformDelegate>::id_encoded_len(local_id);
+    let mut payload = vec![0u8; encoded_id_len];
 
-        // Start an id resolution query
-        let ty = InternalQueryEvent::Conflict(local_id.clone());
-        let resp = match this
-          .internal_query(SmolStr::new(ty.as_str()), payload.into(), None, ty)
-          .await
-        {
-          Ok(resp) => resp,
-          Err(e) => {
-            tracing::error!(err=%e, "ruserf: failed to start node id resolution query");
-            return;
-          }
-        };
+    if let Err(e) = <D as TransformDelegate>::encode_id(local_id, &mut payload) {
+      tracing::error!(err=%e, "ruserf: failed to encode local id");
+      return;
+    }
 
-        // Counter to determine winner
-        let mut responses = 0usize;
-        let mut matching = 0usize;
+    // Start an id resolution query
+    let ty = InternalQueryEvent::Conflict(local_id.clone());
+    let resp = match self
+      .internal_query(SmolStr::new(ty.as_str()), payload.into(), None, ty)
+      .await
+    {
+      Ok(resp) => resp,
+      Err(e) => {
+        tracing::error!(err=%e, "ruserf: failed to start node id resolution query");
+        return;
+      }
+    };
 
-        // Gather responses
-        let resp_rx = resp.response_rx();
-        while let Ok(r) = resp_rx.recv().await {
-          // Decode the response
-          if r.payload.is_empty() || r.payload[0] != MessageType::ConflictResponse as u8 {
-            tracing::warn!(
-              "ruserf: invalid conflict query response type: {:?}",
-              r.payload.as_ref()
-            );
-            continue;
-          }
+    // Counter to determine winner
+    let mut responses = 0usize;
+    let mut matching = 0usize;
 
-          match <D as TransformDelegate>::decode_message(
-            MessageType::ConflictResponse,
-            &r.payload[1..],
-          ) {
-            Ok((_, decoded)) => {
-              match decoded {
-                SerfMessage::ConflictResponse(member) => {
-                  // Update the counters
-                  responses += 1;
-                  if member.node.id().eq(local_id) {
-                    matching += 1;
-                  }
-                }
-                msg => {
-                  tracing::warn!(
-                    "ruserf: invalid conflict query response type: {}",
-                    msg.ty().as_str()
-                  );
-                  continue;
-                }
+    // Gather responses
+    let resp_rx = resp.response_rx();
+    while let Ok(r) = resp_rx.recv().await {
+      // Decode the response
+      if r.payload.is_empty() || r.payload[0] != MessageType::ConflictResponse as u8 {
+        tracing::warn!(
+          "ruserf: invalid conflict query response type: {:?}",
+          r.payload.as_ref()
+        );
+        continue;
+      }
+
+      match <D as TransformDelegate>::decode_message(
+        MessageType::ConflictResponse,
+        &r.payload[1..],
+      ) {
+        Ok((_, decoded)) => {
+          match decoded {
+            SerfMessage::ConflictResponse(member) => {
+              // Update the counters
+              responses += 1;
+              if member.node.id().eq(local_id) {
+                matching += 1;
               }
             }
-            Err(e) => {
-              tracing::error!(err=%e, "ruserf: failed to decode conflict query response");
+            msg => {
+              tracing::warn!(
+                "ruserf: invalid conflict query response type: {}",
+                msg.ty().as_str()
+              );
               continue;
             }
           }
         }
-
-        // Query over, determine if we should live
-        let majority = (responses / 2) + 1;
-        if matching >= majority {
-          tracing::info!(
-            "ruserf: majority in node id conflict resolution [{} / {}]",
-            matching,
-            responses
-          );
-          return;
+        Err(e) => {
+          tracing::error!(err=%e, "ruserf: failed to decode conflict query response");
+          continue;
         }
+      }
+    }
 
-        // Since we lost the vote, we need to exit
-        tracing::warn!(
-          "ruserf: minority in name conflict resolution, quiting [{} / {}]",
-          matching,
-          responses
-        );
+    // Query over, determine if we should live
+    let majority = (responses / 2) + 1;
+    tracing::error!("debug: local {} majority {majority}", self.local_id());
+    if matching >= majority {
+      tracing::info!(
+        "ruserf: majority in node id conflict resolution [{} / {}]",
+        matching,
+        responses
+      );
+      return;
+    }
 
-        if let Err(e) = this.shutdown().await {
-          tracing::error!(err=%e, "ruserf: failed to shutdown");
-        }
-      });
+    // Since we lost the vote, we need to exit
+    tracing::warn!(
+      "debug: local {} minority in name conflict resolution, quiting [{} / {}]",
+      self.local_id(),
+      matching,
+      responses
+    );
+    // tracing::warn!(
+    //   "ruserf: minority in name conflict resolution, quiting [{} / {}]",
+    //   matching,
+    //   responses
+    // );
+
+    if let Err(e) = self.shutdown().await {
+      tracing::error!(err=%e, "ruserf: failed to shutdown");
     }
   }
 

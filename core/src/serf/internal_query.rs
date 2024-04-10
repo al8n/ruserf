@@ -6,6 +6,7 @@ use memberlist_core::{
   tracing,
   transport::{AddressResolver, Transport},
 };
+use ruserf_types::QueryMessage;
 use smol_str::SmolStr;
 
 use crate::{
@@ -31,7 +32,7 @@ where
   T: Transport,
 {
   in_rx: Receiver<CrateEvent<T, D>>,
-  out_tx: Sender<CrateEvent<T, D>>,
+  out_tx: Option<Sender<CrateEvent<T, D>>>,
   shutdown_rx: Receiver<()>,
 }
 
@@ -42,7 +43,7 @@ where
 {
   #[allow(clippy::new_ret_no_self)]
   pub(crate) fn new(
-    out_tx: Sender<CrateEvent<T, D>>,
+    out_tx: Option<Sender<CrateEvent<T, D>>>,
     shutdown_rx: Receiver<()>,
   ) -> (
     Sender<CrateEvent<T, D>>,
@@ -65,14 +66,17 @@ where
           ev = self.in_rx.recv().fuse() => {
             match ev {
               Ok(ev) => {
+                tracing::error!("debug: serf queries handle query {:?}", ev.ty());
                 // Check if this is a query we should process
                 if ev.is_internal_query() {
                   <T::Runtime as RuntimeLite>::spawn_detach(async move {
+                    tracing::error!("debug: handle internal query");
                     Self::handle_query(ev).await;
                   });
-                } else if let Err(e) = self.out_tx.send(ev).await {
-                  tracing::error!(target="ruserf", err=%e, "failed to send event back in serf query thread");
-                  return;
+                } else if let Some(ref tx) = self.out_tx {
+                  if let Err(e) = tx.send(ev).await {
+                    tracing::error!(target="ruserf", err=%e, "failed to send event back in serf query thread");
+                  }
                 }
               },
               Err(err) => {
@@ -134,7 +138,9 @@ where
       return;
     }
 
-    tracing::debug!("ruserf: got conflict resolution query for '{}'", conflict);
+    tracing::error!("ruserf: local {} got conflict resolution query for '{}'", ev.ctx.this.inner.memberlist.local_id(), conflict);
+
+    // tracing::debug!("ruserf: got conflict resolution query for '{}'", conflict);
 
     // Look for the member info
     let out = {

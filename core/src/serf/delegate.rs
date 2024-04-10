@@ -1,13 +1,9 @@
 use crate::{
-  broadcast::SerfBroadcast,
-  delegate::{Delegate, TransformDelegate},
-  error::{SerfDelegateError, SerfError},
-  types::{
+  broadcast::SerfBroadcast, delegate::{Delegate, TransformDelegate}, error::{SerfDelegateError, SerfError}, event::QueryMessageExt, types::{
     DelegateVersion, JoinMessage, LamportTime, LeaveMessage, Member, MemberStatus,
     MemberlistDelegateVersion, MemberlistProtocolVersion, MessageType, ProtocolVersion,
     PushPullMessageRef, SerfMessage, UserEventMessage,
-  },
-  Serf,
+  }, Serf
 };
 
 use std::sync::{atomic::Ordering, Arc, OnceLock};
@@ -232,9 +228,21 @@ where
           MessageType::Query => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
             Ok((_, q)) => {
               if let SerfMessage::Query(q) = q {
+                tracing::info!("debug: local {} got query message: {}", this.local_id(), q.name);
                 tracing::debug!("ruserf: query message: {}", q.name);
-                rebroadcast = this.handle_query(q, None).await.then(|| msg.clone());
-                rebroadcast_queue = &this.inner.query_broadcasts;
+                match q.decode_internal_query::<D>() {
+                  Some(Err(e)) => {
+                    tracing::warn!(err=%e, "ruserf: failed to decode message");
+                  }
+                  Some(Ok(res)) => {
+                    rebroadcast = this.handle_query(q, Some(res)).await.then(|| msg.clone());
+                    rebroadcast_queue = &this.inner.query_broadcasts;
+                  },
+                  None => {
+                    rebroadcast = this.handle_query(q, None).await.then(|| msg.clone());
+                    rebroadcast_queue = &this.inner.query_broadcasts;
+                  },
+                };
               } else {
                 tracing::warn!("ruserf: receive unexpected message: {}", q.ty().as_str());
               }
@@ -247,7 +255,8 @@ where
             match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
               Ok((_, qr)) => {
                 if let SerfMessage::QueryResponse(qr) = qr {
-                  tracing::debug!("ruserf: query response message: {}", qr.from);
+                  tracing::error!("debug: local {} got query response message: id {} from {} flag {:?}", this.local_id(), qr.id, qr.from, qr.ack());
+                  // tracing::debug!("ruserf: query response message: {}", qr.from);
                   this.handle_query_response(qr).await;
                 } else {
                   tracing::warn!("ruserf: receive unexpected message: {}", qr.ty().as_str());
@@ -328,6 +337,7 @@ where
     for msg in query_msgs.iter() {
       let (encoded_len, _) = encoded_len(msg.clone());
       bytes_used += encoded_len;
+      tracing::error!("debug: local {} get broadcast query response", this.local_id());
       #[cfg(feature = "metrics")]
       {
         metrics::histogram!(
