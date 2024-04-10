@@ -42,7 +42,12 @@ macro_rules! test_mod {
               Lpe<SmolStr, SocketAddr>,
               [< $rt:camel Runtime >],
             >,
-          >(opts, opts2, opts3, opts4));
+            _,
+          >(opts, opts2, opts3, opts4, |id, addr| async move {
+            let mut opts2 = NetTransportOptions::new(id);
+            opts2.add_bind_address(addr);
+            opts2
+          }));
         }
 
         #[test]
@@ -71,7 +76,12 @@ macro_rules! test_mod {
               Lpe<SmolStr, SocketAddr>,
               [< $rt:camel Runtime >],
             >,
-          >(opts, opts2, opts3, opts4));
+            _,
+          >(opts, opts2, opts3, opts4, |id, addr| async move {
+            let mut opts2 = NetTransportOptions::new(id);
+            opts2.add_bind_address(addr);
+            opts2
+          }));
         }
       }
     }

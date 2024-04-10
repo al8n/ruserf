@@ -243,14 +243,15 @@ impl DropJoins {
 }
 
 /// Unit tests for the events leave avoid infinite leave rebroadcast
-pub async fn serf_events_leave_avoid_infinite_rebroadcast<T>(
+pub async fn serf_events_leave_avoid_infinite_rebroadcast<T, F>(
   transport_opts1: T::Options,
   transport_opts2: T::Options,
   transport_opts3: T::Options,
   transport_opts4: T::Options,
+  get_transport_opts: impl FnOnce(T::Id, <T::Resolver as AddressResolver>::ResolvedAddress) -> F + Copy, 
 ) where
   T: Transport,
-  T::Options: Clone,
+  F: core::future::Future<Output = T::Options>,
 {
   // This test is a variation of the normal leave test that is crafted
   // specifically to handle a situation where two unique leave events for the
@@ -263,7 +264,7 @@ pub async fn serf_events_leave_avoid_infinite_rebroadcast<T>(
   let s1 = Serf::<T>::with_event_producer(transport_opts1, config_local(test_config()), event_tx1)
     .await
     .unwrap();
-  let s2 = Serf::<T>::new(transport_opts2.clone(), config_local(test_config()))
+  let s2 = Serf::<T>::new(transport_opts2, config_local(test_config()))
     .await
     .unwrap();
 
@@ -284,7 +285,7 @@ pub async fn serf_events_leave_avoid_infinite_rebroadcast<T>(
   .await
   .unwrap();
 
-  let mut serfs = [s1, s2];
+  let mut serfs = vec![s1, s2];
   wait_until_num_nodes(1, &serfs).await;
 
   let node = serfs[1]
@@ -304,24 +305,23 @@ pub async fn serf_events_leave_avoid_infinite_rebroadcast<T>(
   // Make s3 and s4 drop inbound join messages and push-pulls for a bit so it won't see
   // s2 rejoin
   d.drop.store(1, Ordering::SeqCst);
-
+  let s2node = serfs[1].advertise_node();
+  let (s2id, s2addr) = s2node.clone().into_components();
+  let _ = serfs.pop().unwrap();
   // Bring back s2 by mimicking its name and address
   <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(2)).await;
 
   let s2 = Serf::<T>::new(
-    transport_opts2,
+    get_transport_opts(s2id, s2addr).await,
     config_local(test_config().with_rejoin_after_leave(true)),
   )
   .await
   .unwrap();
 
-  let s1node = serfs[1]
-    .inner
-    .memberlist
-    .advertise_node()
+  let s1node = s2node
     .map_address(MaybeResolvedAddress::resolved);
   s2.join(s1node.clone(), false).await.unwrap();
-  serfs[1] = s2;
+  serfs.push(s2);
   let mut serfs = serfs
     .into_iter()
     .chain([s3, s4].into_iter())
@@ -416,7 +416,7 @@ pub async fn serf_remove_failed_events_leave<T>(
   serfs[1].shutdown().await.unwrap();
 
   let t = serfs[1].inner.opts.memberlist_options.probe_interval();
-  <T::Runtime as RuntimeLite>::sleep(t * 5).await;
+  <T::Runtime as RuntimeLite>::sleep(t * 15).await;
 
   serfs[0]
     .remove_failed_node(node.id().clone())

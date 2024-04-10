@@ -23,11 +23,11 @@ macro_rules! test_mod {
           [< $rt:snake _run >](async move {
             let name = "serf_update1_v4";
             let mut opts = QuicTransportOptions::with_stream_layer_options(SmolStr::new(name), quinn_stream_layer::<[< $rt:camel Runtime >]>().await);
-            opts.add_bind_address("127.0.0.1:8889".parse().unwrap());
+            opts.add_bind_address(next_socket_addr_v4(0));
 
             let name = "serf_update2_v4";
             let mut opts2 = QuicTransportOptions::with_stream_layer_options(SmolStr::new(name), quinn_stream_layer::<[< $rt:camel Runtime >]>().await);
-            opts2.add_bind_address("127.0.0.1:8888".parse().unwrap());
+            opts2.add_bind_address(next_socket_addr_v4(0));
 
             serf_update::<
               QuicTransport<

@@ -3,10 +3,9 @@
 - net
   1. name_resolution
   2. write_keyring_file
-  3. remove_failed_events_leave
-  4. events_leave_avoid_infinite_rebroadcast
-  5. query
-  6. query_filter
+  3. events_leave_avoid_infinite_rebroadcast
+  4. query
+  5. query_filter
 
 - quinn
   - reap_handler
