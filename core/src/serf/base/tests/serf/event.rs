@@ -865,8 +865,6 @@ where
       },
     }
   }
-  println!("{:?}", acks);
-  println!("{:?}", responses);
   assert_eq!(acks.len(), 2, "missing acks {acks:?}");
   assert_eq!(responses.len(), 1, "missing responses {responses:?}");
 }

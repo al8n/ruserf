@@ -252,12 +252,6 @@ impl<I, A> QueryResponse<I, A> {
     } else {
       // Exit early if this is a duplicate response
       if c.responses.contains(&resp.from) {
-        tracing::error!(
-          "debug: local {} handle query response {} response {:?} exit",
-          _local,
-          resp.id,
-          resp.from
-        );
         #[cfg(feature = "metrics")]
         {
           metrics::counter!("ruserf.query.duplicate_responses", metrics_labels.iter()).increment(1);
@@ -271,12 +265,6 @@ impl<I, A> QueryResponse<I, A> {
       }
       drop(c);
 
-      tracing::error!(
-        "debug: local {} handle query response {} response {:?}",
-        _local,
-        resp.id,
-        resp.from
-      );
       if let Err(e) = self
         .send_response::<T, D>(NodeResponse {
           from: resp.from,

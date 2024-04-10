@@ -35,7 +35,7 @@ async-graphql = { version = "7", optional = true }
 byteorder.workspace = true
 crossbeam-queue = "0.3"
 derive_more.workspace = true
-futures.workspace = true
+futures = { workspace = true, features = ["default"] }
 either = "1"
 indexmap.workspace = true
 once_cell = "1" # remove this dependency when [feature(lazy_cell)] is stabilized

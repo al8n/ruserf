@@ -54,6 +54,7 @@ where
 
   async fn respond_with_message_and_response(
     &self,
+    respond_to: &<T::Resolver as AddressResolver>::ResolvedAddress,
     relay_factor: u8,
     raw: Bytes,
     resp: QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
@@ -69,12 +70,7 @@ where
       }
 
       // Send the response directly to the originator
-      self
-        .this
-        .inner
-        .memberlist
-        .send(resp.from.address(), raw)
-        .await?;
+      self.this.inner.memberlist.send(respond_to, raw).await?;
 
       // Relay the response through up to relayFactor other nodes
       self
@@ -92,16 +88,16 @@ where
 
   async fn respond(
     &self,
+    respond_to: &<T::Resolver as AddressResolver>::ResolvedAddress,
     id: u32,
     ltime: LamportTime,
     relay_factor: u8,
-    from: Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     msg: Bytes,
   ) -> Result<(), Error<T, D>> {
     let resp = QueryResponseMessage {
       ltime,
       id,
-      from,
+      from: self.this.advertise_node(),
       flags: QueryFlag::empty(),
       payload: msg,
     };
@@ -116,7 +112,7 @@ where
       "expected encoded len {expected_encoded_len} is not match the actual encoded len {len}"
     );
     self
-      .respond_with_message_and_response(relay_factor, buf.freeze(), resp)
+      .respond_with_message_and_response(respond_to, relay_factor, buf.freeze(), resp)
       .await
   }
 }
@@ -257,7 +253,7 @@ where
   ) -> Result<(), Error<T, D>> {
     self
       .ctx
-      .respond_with_message_and_response(self.relay_factor, raw, resp)
+      .respond_with_message_and_response(self.from.address(), self.relay_factor, raw, resp)
       .await
   }
 
@@ -266,10 +262,10 @@ where
     self
       .ctx
       .respond(
+        self.from().address(),
         self.id,
         self.ltime,
         self.relay_factor,
-        self.from.cheap_clone(),
         msg,
       )
       .await

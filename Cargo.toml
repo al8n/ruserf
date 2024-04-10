@@ -18,7 +18,7 @@ license = "MPL-2.0"
 [workspace.dependencies]
 byteorder = "1"
 derive_more = "0.99"
-futures = "=0.3.29"
+futures = { version = "0.3", default-features = false }
 serde = { version = "1", features = ["derive"] }
 humantime-serde = "1"
 indexmap = "2"

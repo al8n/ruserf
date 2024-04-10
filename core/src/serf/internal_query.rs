@@ -65,11 +65,9 @@ where
           ev = self.in_rx.recv().fuse() => {
             match ev {
               Ok(ev) => {
-                tracing::error!("debug: serf queries handle query {:?}", ev.ty());
                 // Check if this is a query we should process
                 if ev.is_internal_query() {
                   <T::Runtime as RuntimeLite>::spawn_detach(async move {
-                    tracing::error!("debug: handle internal query");
                     Self::handle_query(ev).await;
                   });
                 } else if let Some(ref tx) = self.out_tx {

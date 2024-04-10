@@ -937,13 +937,6 @@ where
       .register_query_response(params.timeout, resp.clone())
       .await;
 
-    tracing::error!(
-      "debug: local {} queue broadcast query id: {} name: {}",
-      self.local_id(),
-      q.id,
-      q.name
-    );
-
     // Process query locally
     self.handle_query(q, ty).await;
 
@@ -996,15 +989,6 @@ where
     let mut query = self.inner.query_core.write().await;
 
     // Ignore if it is before our minimum query time
-    tracing::error!(
-      "debug: local {} handle query name {} from time {} current({}) min_time {} ack {}",
-      self.local_id(),
-      q.name,
-      q.ltime,
-      self.inner.query_clock.time(),
-      query.min_time,
-      q.ack()
-    );
     if q.ltime < query.min_time {
       return false;
     }
@@ -1732,7 +1716,6 @@ where
 
     // Query over, determine if we should live
     let majority = (responses / 2) + 1;
-    tracing::error!("debug: local {} majority {majority}", self.local_id());
     if matching >= majority {
       tracing::info!(
         "ruserf: majority in node id conflict resolution [{} / {}]",
@@ -1744,16 +1727,10 @@ where
 
     // Since we lost the vote, we need to exit
     tracing::warn!(
-      "debug: local {} minority in name conflict resolution, quiting [{} / {}]",
-      self.local_id(),
+      "ruserf: minority in name conflict resolution, quiting [{} / {}]",
       matching,
       responses
     );
-    // tracing::warn!(
-    //   "ruserf: minority in name conflict resolution, quiting [{} / {}]",
-    //   matching,
-    //   responses
-    // );
 
     if let Err(e) = self.shutdown().await {
       tracing::error!(err=%e, "ruserf: failed to shutdown");
