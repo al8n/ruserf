@@ -83,6 +83,7 @@ where
 
     let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
 
+    let handles = FuturesUnordered::new();
     let event_tx = ev.map(|mut event_tx| {
       // Check if serf member event coalescing is enabled
       if opts.coalesce_period > Duration::ZERO && opts.quiescent_period > Duration::ZERO {
@@ -112,7 +113,9 @@ where
       // Listen for internal Serf queries. This is setup before the snapshotter, since
       // we want to capture the query-time, but the internal listener does not passthrough
       // the queries
-      SerfQueries::new(event_tx, shutdown_rx.clone())
+      let (event_tx, handle) = SerfQueries::new(event_tx, shutdown_rx.clone());
+      handles.push(handle);
+      event_tx
     });
 
     let clock = LamportClock::new();
@@ -240,7 +243,7 @@ where
         buffer: query_buffer,
       })),
       opts,
-      handles: AtomicRefCell::new(FuturesUnordered::new()),
+      handles: AtomicRefCell::new(handles),
       state: parking_lot::Mutex::new(SerfState::Alive),
       join_lock: Mutex::new(()),
       snapshot: handle,
@@ -351,30 +354,6 @@ where
     }
 
     false
-  }
-
-  /// Used to setup the listeners for the query,
-  /// and to schedule closing the query after the timeout.
-  pub(crate) async fn register_query_response(
-    &self,
-    timeout: Duration,
-    resp: QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  ) {
-    let tresps = self.inner.query_core.clone();
-    let mut resps = self.inner.query_core.write().await;
-    // Map the LTime to the QueryResponse. This is necessarily 1-to-1,
-    // since we increment the time for each new query.
-    let ltime = resp.ltime;
-    resps.responses.insert(ltime, resp);
-
-    // Setup a timer to close the response and deregister after the timeout
-    <T::Runtime as RuntimeLite>::spawn_after(timeout, async move {
-      let mut resps = tresps.write().await;
-      if let Some(resp) = resps.responses.remove(&ltime) {
-        resp.close().await;
-      }
-    })
-    .detach();
   }
 
   /// Takes a Serf message type, encodes it for the wire, and queues
@@ -899,7 +878,11 @@ where
   {
     // Provide default parameters if none given.
     let params = match params {
-      Some(params) => params,
+      Some(params) if params.timeout != Duration::ZERO => params,
+      Some(mut params) => {
+        params.timeout = self.default_query_timeout().await;
+        params
+      },
       None => self.default_query_param().await,
     };
 
@@ -913,7 +896,7 @@ where
 
     // Setup the flags
     let flags = if params.request_ack {
-      QueryFlag::empty() | QueryFlag::ACK
+      QueryFlag::ACK
     } else {
       QueryFlag::empty()
     };
@@ -962,13 +945,37 @@ where
     // Start broadcasting the event
     self
       .inner
-      .broadcasts
+      .query_broadcasts
       .queue_broadcast(SerfBroadcast {
         msg: raw.freeze(),
         notify_tx: None,
       })
       .await;
     Ok(resp)
+  }
+
+  /// Used to setup the listeners for the query,
+  /// and to schedule closing the query after the timeout.
+  pub(crate) async fn register_query_response(
+    &self,
+    timeout: Duration,
+    resp: QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) {
+    let tresps = self.inner.query_core.clone();
+    let mut resps = self.inner.query_core.write().await;
+    // Map the LTime to the QueryResponse. This is necessarily 1-to-1,
+    // since we increment the time for each new query.
+    let ltime = resp.ltime;
+    resps.responses.insert(ltime, resp);
+
+    // Setup a timer to close the response and deregister after the timeout
+    <T::Runtime as RuntimeLite>::spawn_after(timeout, async move {
+      let mut resps = tresps.write().await;
+      if let Some(resp) = resps.responses.remove(&ltime) {
+        resp.close().await;
+      }
+    })
+    .detach();
   }
 
   /// Called when a query broadcast is
@@ -1005,10 +1012,12 @@ where
     let idx = u64::from(q.ltime % q_time) as usize;
     let seen = query.buffer[idx].as_mut();
     if let Some(seen) = seen {
-      for &prev in seen.query_ids.iter() {
-        if q.id == prev {
-          // Seen this ID already
-          return false;
+      if seen.ltime == q.ltime {
+        for &prev in seen.query_ids.iter() {
+          if q.id == prev {
+            // Seen this ID already
+            return false;
+          }
         }
       }
       seen.query_ids.push(q.id);
@@ -1045,10 +1054,12 @@ where
 
     // Filter the query
     if !self.should_process_query(&q.filters) {
+      // Even if we don't process it further, we should rebroadcast,
+		  // since it is the first time we've seen this.
       return rebroadcast;
     }
 
-    tracing::error!("debug: local {} check ack {}", self.local_id(), q.ack());
+    tracing::error!("debug: local {} handle query wich ack {}", self.local_id(), q.ack());
     // Send ack if requested, without waiting for client to respond()
     if q.ack() {
       let ack = QueryResponseMessage {
@@ -1058,6 +1069,7 @@ where
         flags: QueryFlag::ACK,
         payload: Bytes::new(),
       };
+      tracing::error!("debug: local {} construct a response {:?}", self.local_id(), ack);
 
       let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&ack);
       let mut raw = BytesMut::with_capacity(expected_encoded_len + 1); // + 1 for message type byte
@@ -1072,7 +1084,7 @@ where
             expected_encoded_len, len
           );
           tracing::error!(
-            "debug: local {} send ack to {} ({})",
+            "debug: local {} send query response message to {} which from ({})",
             self.local_id(),
             q.from(),
             ack.from

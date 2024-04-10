@@ -1,7 +1,7 @@
 use async_channel::{bounded, Receiver, Sender};
 use futures::FutureExt;
 use memberlist_core::{
-  agnostic_lite::RuntimeLite,
+  agnostic_lite::{RuntimeLite, AsyncSpawner},
   bytes::{BufMut, Bytes, BytesMut},
   tracing,
   transport::{AddressResolver, Transport},
@@ -44,20 +44,19 @@ where
   pub(crate) fn new(
     out_tx: Sender<CrateEvent<T, D>>,
     shutdown_rx: Receiver<()>,
-  ) -> Sender<CrateEvent<T, D>> {
+  ) -> (Sender<CrateEvent<T, D>>, <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()>) {
     let (in_tx, in_rx) = bounded(1024);
     let this = Self {
       in_rx,
       out_tx,
       shutdown_rx,
     };
-    this.stream();
-    in_tx
+    (in_tx, this.stream())
   }
 
   /// A long running routine to ingest the event stream
-  fn stream(self) {
-    <T::Runtime as RuntimeLite>::spawn_detach(async move {
+  fn stream(self) -> <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()> {
+    <T::Runtime as RuntimeLite>::spawn(async move {
       loop {
         futures::select! {
           ev = self.in_rx.recv().fuse() => {
@@ -84,7 +83,7 @@ where
           }
         }
       }
-    });
+    })
   }
 
   async fn handle_query(ev: CrateEvent<T, D>) {

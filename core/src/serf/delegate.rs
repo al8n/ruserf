@@ -298,6 +298,7 @@ where
     }
 
     if let Some(msg) = rebroadcast {
+      tracing::warn!("debug: local {} broadcast {}", this.local_id(), msg[0]);
       rebroadcast_queue
         .queue_broadcast(SerfBroadcast {
           msg,
@@ -332,6 +333,7 @@ where
         )
         .record(encoded_len as f64);
       }
+      tracing::error!("debug: local {} broadcast member {}", this.local_id(), msg[0]);
     }
 
     // Get any additional query broadcasts
@@ -351,6 +353,7 @@ where
         )
         .record(encoded_len as f64);
       }
+      tracing::error!("debug: local {} broadcast query {}", this.local_id(), msg[0]);
     }
 
     // Get any additional event broadcasts
@@ -359,7 +362,7 @@ where
       .event_broadcasts
       .get_broadcasts(overhead, limit - bytes_used)
       .await;
-    for msg in query_msgs.iter() {
+    for msg in event_msgs.iter() {
       let (encoded_len, _) = encoded_len(msg.clone());
       bytes_used += encoded_len;
       #[cfg(feature = "metrics")]
@@ -370,8 +373,8 @@ where
         )
         .record(encoded_len as f64);
       }
+      tracing::error!("debug: local {} broadcast user {}", this.local_id(), msg[0]);
     }
-
     msgs.extend(query_msgs);
     msgs.extend(event_msgs);
     msgs

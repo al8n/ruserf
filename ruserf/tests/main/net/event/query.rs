@@ -20,11 +20,13 @@ macro_rules! test_mod {
         fn test_serf_query_v4() {
           let name = "serf_query1_v4";
           let mut opts = NetTransportOptions::new(SmolStr::new(name));
-          opts.add_bind_address(next_socket_addr_v4(0));
+          // opts.add_bind_address(next_socket_addr_v4(0));
+          opts.add_bind_address("127.0.0.1:8888".parse().unwrap());
 
           let name = "serf_query2_v4";
           let mut opts2 = NetTransportOptions::new(SmolStr::new(name));
-          opts2.add_bind_address(next_socket_addr_v4(0));
+          // opts2.add_bind_address(next_socket_addr_v4(0));
+          opts2.add_bind_address("127.0.0.1:8889".parse().unwrap());
 
           [< $rt:snake _run >](serf_query::<
             NetTransport<
