@@ -117,7 +117,7 @@ where
   #[cfg(feature = "encryption")]
   #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
   pub fn encryption_enabled(&self) -> bool {
-    self.inner.memberlist.keyring().is_some()
+    self.inner.memberlist.encryption_enabled()
   }
 
   /// Returns a receiver that can be used to wait for
@@ -365,7 +365,7 @@ where
         if ignore_old {
           self.inner.event_join_ignore.store(false, Ordering::SeqCst);
         }
-        
+
         Ok(node)
       }
       Err(e) => {

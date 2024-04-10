@@ -6,7 +6,6 @@ use memberlist_core::{
   tracing,
   transport::{AddressResolver, Transport},
 };
-use ruserf_types::QueryMessage;
 use smol_str::SmolStr;
 
 use crate::{
@@ -138,7 +137,11 @@ where
       return;
     }
 
-    tracing::error!("ruserf: local {} got conflict resolution query for '{}'", ev.ctx.this.inner.memberlist.local_id(), conflict);
+    tracing::error!(
+      "ruserf: local {} got conflict resolution query for '{}'",
+      ev.ctx.this.inner.memberlist.local_id(),
+      conflict
+    );
 
     // tracing::debug!("ruserf: got conflict resolution query for '{}'", conflict);
 
@@ -215,37 +218,39 @@ where
 
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
-        err = "no keyring to modify (encryption not enabled)",
-        "ruserf: encryption not enabled"
+        err = "encryption is not enabled",
+        "ruserf: fail to handle install key"
       );
-      response.message = SmolStr::new("No keyring to modify (encryption not enabled)");
+      response.message = SmolStr::new("encryption is not enabled");
       Self::send_key_response(q, &mut response).await;
       return;
     }
 
     tracing::info!("ruserf: received install-key query");
     let kr = q.ctx.this.inner.memberlist.keyring();
-    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
-      let kr = kr.unwrap();
-      kr.insert(req.key.unwrap()).await;
-      if q.ctx.this.inner.opts.keyring_file.is_some() {
-        if let Err(e) = q.ctx.this.write_keyring_file().await {
-          tracing::error!(err=%e, "ruserf: failed to write keyring file");
-          response.message = SmolStr::new(e.to_string());
-          Self::send_key_response(q, &mut response).await;
-          return;
+    match kr {
+      Some(kr) => {
+        kr.insert(req.key.unwrap()).await;
+        if q.ctx.this.inner.opts.keyring_file.is_some() {
+          if let Err(e) = q.ctx.this.write_keyring_file().await {
+            tracing::error!(err=%e, "ruserf: failed to write keyring file");
+            response.message = SmolStr::new(e.to_string());
+            Self::send_key_response(q, &mut response).await;
+            return;
+          }
         }
-      }
 
-      response.result = true;
-      Self::send_key_response(q, &mut response).await;
-    } else {
-      tracing::error!(
-        err = "encryption enabled but keyring is empty",
-        "ruserf: keyring is empty"
-      );
-      response.message = SmolStr::new("encryption enabled but keyring is empty");
-      Self::send_key_response(q, &mut response).await;
+        response.result = true;
+        Self::send_key_response(q, &mut response).await;
+      }
+      None => {
+        tracing::error!(
+          err = "encryption enabled but keyring is empty",
+          "ruserf: fail to handle install key"
+        );
+        response.message = SmolStr::new("encryption enabled but keyring is empty");
+        Self::send_key_response(q, &mut response).await;
+      }
     }
   }
 
@@ -277,43 +282,45 @@ where
 
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
-        err = "no keyring to modify (encryption not enabled)",
-        "ruserf: encryption is disabled"
+        err = "encryption is not enabled",
+        "ruserf: fail to handle use key"
       );
-      response.message = SmolStr::new("No keyring to modify (encryption not enabled)");
+      response.message = SmolStr::new("encryption is not enabled");
       Self::send_key_response(q, &mut response).await;
       return;
     }
 
     tracing::info!("ruserf: received use-key query");
     let kr = q.ctx.this.inner.memberlist.keyring();
-    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
-      let kr = kr.unwrap();
-      if let Err(e) = kr.use_key(&req.key.unwrap()).await {
-        tracing::error!(err=%e, "ruserf: failed to change primary key");
-        response.message = SmolStr::new(e.to_string());
-        Self::send_key_response(q, &mut response).await;
-        return;
-      }
-
-      if q.ctx.this.inner.opts.keyring_file.is_some() {
-        if let Err(e) = q.ctx.this.write_keyring_file().await {
-          tracing::error!(err=%e, "ruserf: failed to write keyring file");
+    match kr {
+      Some(kr) => {
+        if let Err(e) = kr.use_key(&req.key.unwrap()).await {
+          tracing::error!(err=%e, "ruserf: failed to change primary key");
           response.message = SmolStr::new(e.to_string());
           Self::send_key_response(q, &mut response).await;
           return;
         }
-      }
 
-      response.result = true;
-      Self::send_key_response(q, &mut response).await;
-    } else {
-      tracing::error!(
-        err = "encryption enabled but keyring is empty",
-        "ruserf: keyring is empty"
-      );
-      response.message = SmolStr::new("encryption enabled but keyring is empty");
-      Self::send_key_response(q, &mut response).await;
+        if q.ctx.this.inner.opts.keyring_file.is_some() {
+          if let Err(e) = q.ctx.this.write_keyring_file().await {
+            tracing::error!(err=%e, "ruserf: failed to write keyring file");
+            response.message = SmolStr::new(e.to_string());
+            Self::send_key_response(q, &mut response).await;
+            return;
+          }
+        }
+
+        response.result = true;
+        Self::send_key_response(q, &mut response).await;
+      }
+      None => {
+        tracing::error!(
+          err = "encryption enabled but keyring is empty",
+          "ruserf: fail to handle use key"
+        );
+        response.message = SmolStr::new("encryption enabled but keyring is empty");
+        Self::send_key_response(q, &mut response).await;
+      }
     }
   }
 
@@ -345,43 +352,45 @@ where
 
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
-        err = "no keyring to modify (encryption not enabled)",
-        "ruserf: encryption is disabled"
+        err = "encryption is not enabled",
+        "ruserf: fail to handle remove key"
       );
-      response.message = SmolStr::new("No keyring to modify (encryption not enabled)");
+      response.message = SmolStr::new("encryption is not enabled");
       Self::send_key_response(q, &mut response).await;
       return;
     }
 
     tracing::info!("ruserf: received remove-key query");
     let kr = q.ctx.this.inner.memberlist.keyring();
-    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
-      let kr = kr.unwrap();
-      if let Err(e) = kr.remove(&req.key.unwrap()).await {
-        tracing::error!(err=%e, "ruserf: failed to remove key");
-        response.message = SmolStr::new(e.to_string());
-        Self::send_key_response(q, &mut response).await;
-        return;
-      }
-
-      if q.ctx.this.inner.opts.keyring_file.is_some() {
-        if let Err(e) = q.ctx.this.write_keyring_file().await {
-          tracing::error!(err=%e, "ruserf: failed to write keyring file");
+    match kr {
+      Some(kr) => {
+        if let Err(e) = kr.remove(&req.key.unwrap()).await {
+          tracing::error!(err=%e, "ruserf: failed to remove key");
           response.message = SmolStr::new(e.to_string());
           Self::send_key_response(q, &mut response).await;
           return;
         }
-      }
 
-      response.result = true;
-      Self::send_key_response(q, &mut response).await;
-    } else {
-      tracing::error!(
-        err = "encryption enabled but keyring is empty",
-        "ruserf: keyring is empty"
-      );
-      response.message = SmolStr::new("encryption enabled but keyring is empty");
-      Self::send_key_response(q, &mut response).await;
+        if q.ctx.this.inner.opts.keyring_file.is_some() {
+          if let Err(e) = q.ctx.this.write_keyring_file().await {
+            tracing::error!(err=%e, "ruserf: failed to write keyring file");
+            response.message = SmolStr::new(e.to_string());
+            Self::send_key_response(q, &mut response).await;
+            return;
+          }
+        }
+
+        response.result = true;
+        Self::send_key_response(q, &mut response).await;
+      }
+      None => {
+        tracing::error!(
+          err = "encryption enabled but keyring is empty",
+          "ruserf: fail to handle remove key"
+        );
+        response.message = SmolStr::new("encryption enabled but keyring is empty");
+        Self::send_key_response(q, &mut response).await;
+      }
     }
   }
 
@@ -393,33 +402,35 @@ where
     let mut response = KeyResponseMessage::default();
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
-        err = "keyring is empty (encryption not enabled)",
-        "ruserf: encryption is disabled"
+        err = "encryption is not enabled",
+        "ruserf: fail to handle list keys"
       );
-      response.message = SmolStr::new("Keyring is empty (encryption not enabled)");
+      response.message = SmolStr::new("encryption is not enabled");
       Self::send_key_response(q, &mut response).await;
       return;
     }
 
     tracing::info!("ruserf: received list-keys query");
     let kr = q.ctx.this.inner.memberlist.keyring();
-    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
-      let kr = kr.unwrap();
-      for k in kr.keys().await {
-        response.keys.push(k);
-      }
+    match kr {
+      Some(kr) => {
+        for k in kr.keys().await {
+          response.keys.push(k);
+        }
 
-      let primary_key = kr.primary_key().await;
-      response.primary_key = Some(primary_key);
-      response.result = true;
-      Self::send_key_response(q, &mut response).await;
-    } else {
-      tracing::error!(
-        err = "keyring is empty",
-        "ruserf: encryption enabled but keyring is empty"
-      );
-      response.message = SmolStr::new("encryption enabled but keyring is empty");
-      Self::send_key_response(q, &mut response).await;
+        let primary_key = kr.primary_key().await;
+        response.primary_key = Some(primary_key);
+        response.result = true;
+        Self::send_key_response(q, &mut response).await;
+      }
+      None => {
+        tracing::error!(
+          err = "encryption enabled but keyring is empty",
+          "ruserf: fail to handle list keys"
+        );
+        response.message = SmolStr::new("encryption enabled but keyring is empty");
+        Self::send_key_response(q, &mut response).await;
+      }
     }
   }
 

@@ -109,7 +109,7 @@ where
           c,
         );
       }
- 
+
       event_tx
     });
 
@@ -937,7 +937,12 @@ where
       .register_query_response(params.timeout, resp.clone())
       .await;
 
-    tracing::error!("debug: local {} queue broadcast query id: {} name: {}", self.local_id(), q.id, q.name);
+    tracing::error!(
+      "debug: local {} queue broadcast query id: {} name: {}",
+      self.local_id(),
+      q.id,
+      q.name
+    );
 
     // Process query locally
     self.handle_query(q, ty).await;
@@ -991,7 +996,15 @@ where
     let mut query = self.inner.query_core.write().await;
 
     // Ignore if it is before our minimum query time
-    tracing::error!("debug: local {} handle query name {} from time {} current({}) min_time {} ack {}", self.local_id(), q.name, q.ltime, self.inner.query_clock.time(), query.min_time, q.ack());
+    tracing::error!(
+      "debug: local {} handle query name {} from time {} current({}) min_time {} ack {}",
+      self.local_id(),
+      q.name,
+      q.ltime,
+      self.inner.query_clock.time(),
+      query.min_time,
+      q.ack()
+    );
     if q.ltime < query.min_time {
       return false;
     }
@@ -1106,7 +1119,9 @@ where
 
     let ev = self.query_event(q);
 
-    if let Err(e) = self.inner.event_tx
+    if let Err(e) = self
+      .inner
+      .event_tx
       .send(match ty {
         Some(ty) => (ty, ev).into(),
         None => ev.into(),
@@ -1229,12 +1244,12 @@ where
       (
         old_status,
         self.inner.event_tx.send(
-            MemberEvent {
-              ty: MemberEventType::Join,
-              members: Arc::new(TinyVec::from(member.member.clone())),
-            }
-            .into(),
-          )
+          MemberEvent {
+            ty: MemberEventType::Join,
+            members: Arc::new(TinyVec::from(member.member.clone())),
+          }
+          .into(),
+        ),
       )
     } else {
       // Check if we have a join or leave intent. The intent buffer
@@ -1269,12 +1284,12 @@ where
       (
         MemberStatus::None,
         self.inner.event_tx.send(
-            MemberEvent {
-              ty: MemberEventType::Join,
-              members: Arc::new(TinyVec::from(member)),
-            }
-            .into(),
-          )
+          MemberEvent {
+            ty: MemberEventType::Join,
+            members: Arc::new(TinyVec::from(member)),
+          }
+          .into(),
+        ),
       )
     };
 
@@ -1390,18 +1405,20 @@ where
 
     tracing::info!("ruserf: {}: {}", ty.as_str(), member.node());
 
-    if let Err(e) = self.inner.event_tx
-        .send(
-          MemberEvent {
-            ty,
-            members: Arc::new(TinyVec::from(member)),
-          }
-          .into(),
-        )
-        .await
-      {
-        tracing::error!(err=%e, "ruserf: failed to send member event: {}", e);
-      }
+    if let Err(e) = self
+      .inner
+      .event_tx
+      .send(
+        MemberEvent {
+          ty,
+          members: Arc::new(TinyVec::from(member)),
+        }
+        .into(),
+      )
+      .await
+    {
+      tracing::error!(err=%e, "ruserf: failed to send member event: {}", e);
+    }
   }
 
   pub(crate) async fn handle_node_leave_intent(&self, msg: &LeaveMessage<T::Id>) -> bool {
@@ -1501,18 +1518,20 @@ where
         // graceful leave.
         tracing::info!("ruserf: EventMemberLeave (forced): {}", owned.member.node);
 
-        if let Err(e) = self.inner.event_tx
-            .send(
-              MemberEvent {
-                ty: MemberEventType::Leave,
-                members: Arc::new(TinyVec::from(owned.member.clone())),
-              }
-              .into(),
-            )
-            .await
-          {
-            tracing::error!(err=%e, "ruserf: failed to send member event");
-          }
+        if let Err(e) = self
+          .inner
+          .event_tx
+          .send(
+            MemberEvent {
+              ty: MemberEventType::Leave,
+              members: Arc::new(TinyVec::from(owned.member.clone())),
+            }
+            .into(),
+          )
+          .await
+        {
+          tracing::error!(err=%e, "ruserf: failed to send member event");
+        }
 
         if msg.prune {
           self.handle_prune(&owned, *members_mut).await;
@@ -1561,18 +1580,20 @@ where
       .increment(1);
 
       tracing::info!("ruserf: member update: {}", id);
-      if let Err(e) = self.inner.event_tx
-          .send(
-            MemberEvent {
-              ty: MemberEventType::Update,
-              members: Arc::new(TinyVec::from(ms.member.clone())),
-            }
-            .into(),
-          )
-          .await
-        {
-          tracing::error!(err=%e, "ruserf: failed to send member event");
-        }
+      if let Err(e) = self
+        .inner
+        .event_tx
+        .send(
+          MemberEvent {
+            ty: MemberEventType::Update,
+            members: Arc::new(TinyVec::from(ms.member.clone())),
+          }
+          .into(),
+        )
+        .await
+      {
+        tracing::error!(err=%e, "ruserf: failed to send member event");
+      }
     }
   }
 
@@ -1681,10 +1702,8 @@ where
         continue;
       }
 
-      match <D as TransformDelegate>::decode_message(
-        MessageType::ConflictResponse,
-        &r.payload[1..],
-      ) {
+      match <D as TransformDelegate>::decode_message(MessageType::ConflictResponse, &r.payload[1..])
+      {
         Ok((_, decoded)) => {
           match decoded {
             SerfMessage::ConflictResponse(member) => {

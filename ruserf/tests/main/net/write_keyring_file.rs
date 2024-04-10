@@ -30,7 +30,7 @@ macro_rules! test_mod {
               Lpe<SmolStr, SocketAddr>,
               [< $rt:camel Runtime >],
             >,
-          >(|kr| opts.with_primary_key(Some(kr))));
+          >(|kr| opts.with_primary_key(Some(kr)).with_gossip_verify_outgoing(true).with_encryption_algo(Some(ruserf::net::security::EncryptionAlgo::default()))));
         }
 
         #[test]
@@ -47,7 +47,7 @@ macro_rules! test_mod {
               Lpe<SmolStr, SocketAddr>,
               [< $rt:camel Runtime >],
             >,
-          >(|kr| opts.with_primary_key(Some(kr))));
+          >(|kr| opts.with_primary_key(Some(kr)).with_gossip_verify_outgoing(true).with_encryption_algo(Some(ruserf::net::security::EncryptionAlgo::default()))));
         }
       }
     }

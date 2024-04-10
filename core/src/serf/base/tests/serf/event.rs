@@ -248,7 +248,7 @@ pub async fn serf_events_leave_avoid_infinite_rebroadcast<T, F>(
   transport_opts2: T::Options,
   transport_opts3: T::Options,
   transport_opts4: T::Options,
-  get_transport_opts: impl FnOnce(T::Id, <T::Resolver as AddressResolver>::ResolvedAddress) -> F + Copy, 
+  get_transport_opts: impl FnOnce(T::Id, <T::Resolver as AddressResolver>::ResolvedAddress) -> F + Copy,
 ) where
   T: Transport,
   F: core::future::Future<Output = T::Options>,

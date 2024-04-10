@@ -3,22 +3,15 @@ use ruserf_types::QueryMessage;
 use super::*;
 
 pub(crate) trait QueryMessageExt {
-  fn is_internal_query(&self) -> bool;
-
-  fn decode_internal_query<T: TransformDelegate>(&self) -> Option<Result<InternalQueryEvent<T::Id>, T::Error>>;
+  fn decode_internal_query<T: TransformDelegate>(
+    &self,
+  ) -> Option<Result<InternalQueryEvent<T::Id>, T::Error>>;
 }
 
 impl<I, A> QueryMessageExt for QueryMessage<I, A> {
-  fn is_internal_query(&self) -> bool {
-    match self.name().as_str() {
-      INTERNAL_PING | INTERNAL_CONFLICT => true,
-      #[cfg(feature = "encryption")]
-      INTERNAL_INSTALL_KEY | INTERNAL_USE_KEY | INTERNAL_REMOVE_KEY | INTERNAL_LIST_KEYS => true,
-      _ => false,
-    }
-  }
-
-  fn decode_internal_query<T: TransformDelegate>(&self) -> Option<Result<InternalQueryEvent<T::Id>, T::Error>> {
+  fn decode_internal_query<T: TransformDelegate>(
+    &self,
+  ) -> Option<Result<InternalQueryEvent<T::Id>, T::Error>> {
     return Some(Ok(match self.name().as_str() {
       INTERNAL_PING => InternalQueryEvent::Ping,
       INTERNAL_CONFLICT => {
@@ -33,7 +26,7 @@ impl<I, A> QueryMessageExt for QueryMessage<I, A> {
       #[cfg(feature = "encryption")]
       INTERNAL_LIST_KEYS => InternalQueryEvent::ListKey,
       _ => return None,
-    }))
+    }));
   }
 }
 

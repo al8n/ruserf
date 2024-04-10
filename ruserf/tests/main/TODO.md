@@ -2,8 +2,7 @@
 
 - net
   1. name_resolution
-  2. write_keyring_file
-  3. query_filter
+  2. query_filter
 
 - quinn
   - reap_handler
