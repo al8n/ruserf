@@ -357,14 +357,21 @@ where
       Ok(node) => {
         // Start broadcasting the update
         if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
-          self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+          if ignore_old {
+            self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+          }
           return Err(e);
         }
-        self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+        if ignore_old {
+          self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+        }
+        
         Ok(node)
       }
       Err(e) => {
-        self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+        if ignore_old {
+          self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+        }
         Err(Error::from(e))
       }
     }

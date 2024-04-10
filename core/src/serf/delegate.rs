@@ -192,7 +192,7 @@ where
           MessageType::Leave => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
             Ok((_, l)) => {
               if let SerfMessage::Leave(l) = &l {
-                tracing::debug!("ruserf: leave message",);
+                tracing::debug!("ruserf: leave message: {}", l.id());
                 rebroadcast = this.handle_node_leave_intent(l).await.then(|| msg.clone());
               } else {
                 tracing::warn!("ruserf: receive unexpected message: {}", l.ty().as_str());
@@ -205,7 +205,7 @@ where
           MessageType::Join => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
             Ok((_, j)) => {
               if let SerfMessage::Join(j) = &j {
-                tracing::debug!("ruserf: join message",);
+                tracing::debug!("ruserf: join message: {}", j.id());
                 rebroadcast = this.handle_node_join_intent(j).await.then(|| msg.clone());
               } else {
                 tracing::warn!("ruserf: receive unexpected message: {}", j.ty().as_str());
@@ -218,7 +218,7 @@ where
           MessageType::UserEvent => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
             Ok((_, ue)) => {
               if let SerfMessage::UserEvent(ue) = ue {
-                tracing::debug!("ruserf: user event message",);
+                tracing::debug!("ruserf: user event message: {}", ue.name);
                 rebroadcast = this.handle_user_event(ue).await.then(|| msg.clone());
                 rebroadcast_queue = &this.inner.event_broadcasts;
               } else {
@@ -232,7 +232,7 @@ where
           MessageType::Query => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
             Ok((_, q)) => {
               if let SerfMessage::Query(q) = q {
-                tracing::debug!("ruserf: query message",);
+                tracing::debug!("ruserf: query message: {}", q.name);
                 rebroadcast = this.handle_query(q, None).await.then(|| msg.clone());
                 rebroadcast_queue = &this.inner.query_broadcasts;
               } else {
@@ -247,7 +247,7 @@ where
             match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
               Ok((_, qr)) => {
                 if let SerfMessage::QueryResponse(qr) = qr {
-                  tracing::debug!("ruserf: query response message",);
+                  tracing::debug!("ruserf: query response message: {}", qr.from);
                   this.handle_query_response(qr).await;
                 } else {
                   tracing::warn!("ruserf: receive unexpected message: {}", qr.ty().as_str());

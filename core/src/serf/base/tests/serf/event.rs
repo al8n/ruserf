@@ -308,6 +308,7 @@ pub async fn serf_events_leave_avoid_infinite_rebroadcast<T, F>(
   let s2node = serfs[1].advertise_node();
   let (s2id, s2addr) = s2node.clone().into_components();
   let _ = serfs.pop().unwrap();
+
   // Bring back s2 by mimicking its name and address
   <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(2)).await;
 
@@ -318,14 +319,15 @@ pub async fn serf_events_leave_avoid_infinite_rebroadcast<T, F>(
   .await
   .unwrap();
 
-  let s1node = s2node
+  let s1node = serfs[0]
+    .advertise_node()
     .map_address(MaybeResolvedAddress::resolved);
   s2.join(s1node.clone(), false).await.unwrap();
+
   serfs.push(s2);
-  let mut serfs = serfs
-    .into_iter()
-    .chain([s3, s4].into_iter())
-    .collect::<Vec<_>>();
+  serfs.push(s3);
+  serfs.push(s4);
+
   wait_until_num_nodes(4, &serfs).await;
 
   // Now leave a second time but before s3 and s4 see the rejoin (due to the gate)
