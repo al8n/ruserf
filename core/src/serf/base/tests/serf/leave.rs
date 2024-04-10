@@ -186,7 +186,6 @@ pub async fn serf_force_leave_failed<T>(
     }
 
     if start.elapsed() > Duration::from_secs(7) {
-      println!("{:?}", members.states);
       panic!("timed out");
     }
   }

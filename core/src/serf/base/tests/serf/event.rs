@@ -856,7 +856,7 @@ where
       },
       r = resp_rx.recv().fuse() => {
         let r = r.unwrap();
-        // assert_eq!(r.from, serfs[0].advertise_node());
+        assert_eq!(r.from, serfs[0].advertise_node());
         assert_eq!(r.payload, Bytes::from_static(b"test"));
         responses.push(r);
       },

@@ -1665,6 +1665,7 @@ where
   async fn resolve_node_conflict(&self) {
     // Get the local node
     let local_id = self.inner.memberlist.local_id();
+    let local_advertise_addr = self.inner.memberlist.advertise_address();
     let encoded_id_len = <D as TransformDelegate>::id_encoded_len(local_id);
     let mut payload = vec![0u8; encoded_id_len];
 
@@ -1709,7 +1710,7 @@ where
             SerfMessage::ConflictResponse(member) => {
               // Update the counters
               responses += 1;
-              if member.node.id().eq(local_id) {
+              if member.node.address().eq(local_advertise_addr) {
                 matching += 1;
               }
             }
