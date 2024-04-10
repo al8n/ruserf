@@ -598,7 +598,7 @@ where
         }
       }
     }
-    tracing::info!("ruserf: reaper exits");
+    tracing::debug!("ruserf: reaper exits");
   }
 
   fn spawn(self) -> <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()> {
@@ -696,7 +696,7 @@ where
         }
       }
 
-      tracing::info!("ruserf: reconnector exits");
+      tracing::debug!("ruserf: reconnector exits");
     })
   }
 }
@@ -742,7 +742,7 @@ where
         }
       }
 
-      tracing::info!("ruserf: {} queue checker exits", self.name);
+      tracing::debug!("ruserf: {} queue checker exits", self.name);
     })
   }
 
