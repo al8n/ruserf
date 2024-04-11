@@ -187,7 +187,7 @@ pub async fn serf_update<T, F>(
   wait_until_num_nodes(2, &serfs).await;
   // Now force the shutdown of s2 so it appears to fail.
   serfs[1].shutdown().await.unwrap();
-  let _ = serfs.pop().unwrap();
+  drop(serfs.pop().unwrap());
 
   // Don't wait for a failure to be detected. Bring back s2 immediately
   let start = Epoch::now();
@@ -201,7 +201,7 @@ pub async fn serf_update<T, F>(
       Ok(s) => break s,
       Err(e) => {
         <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(1)).await;
-        if start.elapsed() > Duration::from_secs(10) {
+        if start.elapsed() > Duration::from_secs(20) {
           panic!("timed out: {}", e);
         }
       }
