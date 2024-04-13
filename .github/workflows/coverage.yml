@@ -1,0 +1,86 @@
+name: coverage
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'README.md'
+      - 'COPYRIGHT'
+      - 'LICENSE*'
+      - '**.md'
+      - '**.txt'
+      - 'art'
+  pull_request:
+    paths-ignore:
+      - 'README.md'
+      - 'COPYRIGHT'
+      - 'LICENSE*'
+      - '**.md'
+      - '**.txt'
+      - 'art'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage-report:
+    name: Generate Coverage for ${{ matrix.crate }}-${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - crate: core
+            features: "test,metrics"
+            name: "ruserf-core"
+          - crate: types 
+            features: "metrics,encryption"
+            name: "ruserf-types"
+          - crate: ruserf
+            features: "test,tokio,tcp,compression,encryption,metrics"
+            name: "ruserf-tcp-compression-encryption"
+          - crate: ruserf
+            features: "test,tokio,native-tls,metrics"
+            name: "ruserf-native-tls"
+          - crate: ruserf
+            features: "test,tokio,quinn,compression,metrics"
+            name: "ruserf-quinn-compression"
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install latest nightly
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          override: true
+      - name: Setup loopback interface
+        run: ci/setup_subnet_ubuntu.sh
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin
+      - name: Run Coverage and Generate Report
+        run: |
+          cargo tarpaulin --out xml --no-default-features --features ${{ matrix.features }} --no-fail-fast --output-dir $PWD -j 1
+        working-directory: ${{ matrix.crate }}
+        continue-on-error: true
+      - name: Upload Coverage Report as Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.crate }}/cobertura.xml
+
+  upload-codecov:
+    needs: coverage-report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Download all coverage reports
+        uses: actions/download-artifact@v3
+        with:
+          path: reports/
+      - name: List contents of the reports directory
+        run: ls -a reports
+      - name: Upload to codecov.io
+        uses: codecov/codecov-action@v3
+        with:
+          directory: reports
+          fail_ci_if_error: false
