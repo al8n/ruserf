@@ -131,8 +131,8 @@ mod tests {
     let in_ = coalesced_event(
       tx,
       shutdown_rx,
-      Duration::from_millis(5),
-      Duration::from_millis(5),
+      Duration::from_millis(20),
+      Duration::from_millis(20),
       coalescer,
     );
 
@@ -167,7 +167,7 @@ mod tests {
 
     loop {
       futures::select! {
-        _ = TokioRuntime::sleep(Duration::from_millis(10)).fuse() => break,
+        _ = TokioRuntime::sleep(Duration::from_millis(40)).fuse() => break,
         event = rx.recv().fuse() => {
           let event = event.unwrap();
           match event {

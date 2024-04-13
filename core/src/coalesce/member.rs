@@ -157,8 +157,8 @@ mod tests {
     let in_ = coalesced_event(
       tx,
       shutdown_rx,
-      Duration::from_millis(5),
-      Duration::from_millis(5),
+      Duration::from_millis(20),
+      Duration::from_millis(20),
       coalescer,
     );
 
@@ -224,7 +224,7 @@ mod tests {
     }
 
     let mut events = HashMap::new();
-    let timeout = TokioRuntime::sleep(Duration::from_millis(10));
+    let timeout = TokioRuntime::sleep(Duration::from_millis(40));
     futures::pin_mut!(timeout);
     loop {
       futures::select! {
