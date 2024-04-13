@@ -1,11 +1,12 @@
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{
+  collections::HashSet,
+  sync::Arc,
+  time::{Duration, Instant},
+};
 
 use async_channel::{Receiver, Sender};
-use async_lock::Mutex;
-use futures::{
-  stream::{FuturesUnordered, StreamExt},
-  FutureExt,
-};
+use async_lock::RwLock;
+use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use memberlist_core::{
   bytes::{BufMut, Bytes, BytesMut},
   tracing,
@@ -18,8 +19,7 @@ use crate::{
   delegate::{Delegate, TransformDelegate},
   error::Error,
   types::{
-    Epoch, Filter, LamportTime, Member, MemberStatus, MessageType, QueryMessage,
-    QueryResponseMessage,
+    Filter, LamportTime, Member, MemberStatus, MessageType, QueryMessage, QueryResponseMessage,
   },
 };
 
@@ -81,7 +81,7 @@ pub(crate) struct QueryResponseCore<I, A> {
 }
 
 pub(crate) struct QueryResponseInner<I, A> {
-  core: Mutex<QueryResponseCore<I, A>>,
+  core: RwLock<QueryResponseCore<I, A>>,
   channel: QueryResponseChannel<I, A>,
 }
 
@@ -91,15 +91,35 @@ pub(crate) struct QueryResponseInner<I, A> {
 #[derive(Clone)]
 pub struct QueryResponse<I, A> {
   /// The duration of the query
-  deadline: Epoch,
+  #[viewit(
+    getter(
+      style = "move",
+      const,
+      attrs(doc = "Returns the ending deadline of the query")
+    ),
+    setter(skip)
+  )]
+  deadline: Instant,
 
   /// The query id
+  #[viewit(
+    getter(style = "move", const, attrs(doc = "Returns the id of the query")),
+    setter(skip)
+  )]
   id: u32,
 
   /// Stores the LTime of the query
+  #[viewit(
+    getter(
+      style = "move",
+      const,
+      attrs(doc = "Returns the Lamport Time of the query")
+    ),
+    setter(skip)
+  )]
   ltime: LamportTime,
 
-  #[viewit(getter(vis = "pub(crate)", const, style = "ref"))]
+  #[viewit(getter(vis = "pub(crate)", const, style = "ref"), setter(skip))]
   inner: Arc<QueryResponseInner<I, A>>,
 }
 
@@ -109,7 +129,7 @@ impl<I, A> QueryResponse<I, A> {
       q.id(),
       q.ltime(),
       num_nodes,
-      Epoch::now() + q.timeout(),
+      Instant::now() + q.timeout(),
       q.ack(),
     )
   }
@@ -121,7 +141,7 @@ impl<I, A> QueryResponse<I, A> {
     id: u32,
     ltime: LamportTime,
     num_nodes: usize,
-    deadline: Epoch,
+    deadline: Instant,
     ack: bool,
   ) -> Self {
     let (ack_ch, acks) = if ack {
@@ -138,7 +158,7 @@ impl<I, A> QueryResponse<I, A> {
       id,
       ltime,
       inner: Arc::new(QueryResponseInner {
-        core: Mutex::new(QueryResponseCore {
+        core: RwLock::new(QueryResponseCore {
           closed: false,
           acks,
           responses: HashSet::with_capacity(num_nodes),
@@ -151,15 +171,15 @@ impl<I, A> QueryResponse<I, A> {
     }
   }
 
-  /// Returns a channel that can be used to listen for acks.
-  /// Channel will be closed when the query is finished. This is nil,
-  /// if the query did not specify RequestAck.
+  /// Returns a receiver that can be used to listen for acks.
+  /// Channel will be closed when the query is finished. This is `None`,
+  /// if the query did not specify `request_ack`.
   #[inline]
   pub fn ack_rx(&self) -> Option<async_channel::Receiver<Node<I, A>>> {
     self.inner.channel.ack_ch.as_ref().map(|(_, r)| r.clone())
   }
 
-  /// Returns a channel that can be used to listen for responses.
+  /// Returns a receiver that can be used to listen for responses.
   /// Channel will be closed when the query is finished.
   #[inline]
   pub fn response_rx(&self) -> async_channel::Receiver<NodeResponse<I, A>> {
@@ -169,15 +189,15 @@ impl<I, A> QueryResponse<I, A> {
   /// Returns if the query is finished running
   #[inline]
   pub async fn finished(&self) -> bool {
-    let c = self.inner.core.lock().await;
-    c.closed || (Epoch::now() > self.deadline)
+    let c = self.inner.core.read().await;
+    c.closed || (Instant::now() > self.deadline)
   }
 
   /// Used to close the query, which will close the underlying
   /// channels and prevent further deliveries
   #[inline]
   pub async fn close(&self) {
-    let mut c = self.inner.core.lock().await;
+    let mut c = self.inner.core.write().await;
     if c.closed {
       return;
     }
@@ -195,16 +215,17 @@ impl<I, A> QueryResponse<I, A> {
   pub(crate) async fn handle_query_response<T, D>(
     &self,
     resp: QueryResponseMessage<I, A>,
+    _local: &T::Id,
     #[cfg(feature = "metrics")] metrics_labels: &memberlist_core::types::MetricLabels,
   ) where
-    I: Eq + std::hash::Hash + CheapClone,
-    A: Eq + std::hash::Hash + CheapClone,
+    I: Eq + std::hash::Hash + CheapClone + core::fmt::Debug,
+    A: Eq + std::hash::Hash + CheapClone + core::fmt::Debug,
     D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
     T: Transport,
   {
     // Check if the query is closed
-    let mut c = self.inner.core.lock().await;
-    if c.closed || (Epoch::now() > self.deadline) {
+    let c = self.inner.core.read().await;
+    if c.closed || (Instant::now() > self.deadline) {
       return;
     }
 
@@ -224,7 +245,8 @@ impl<I, A> QueryResponse<I, A> {
         metrics::counter!("ruserf.query.acks", metrics_labels.iter()).increment(1);
       }
 
-      if let Some(Err(e)) = self.send_ack::<T, D>(&mut *c, &resp).await {
+      drop(c);
+      if let Err(e) = self.send_ack::<T, D>(&resp).await {
         tracing::warn!("ruserf: {}", e);
       }
     } else {
@@ -241,15 +263,13 @@ impl<I, A> QueryResponse<I, A> {
       {
         metrics::counter!("ruserf.query.responses", metrics_labels.iter()).increment(1);
       }
+      drop(c);
 
-      if let Some(Err(e)) = self
-        .send_response::<T, D>(
-          &mut *c,
-          NodeResponse {
-            from: resp.from,
-            payload: resp.payload,
-          },
-        )
+      if let Err(e) = self
+        .send_response::<T, D>(NodeResponse {
+          from: resp.from,
+          payload: resp.payload,
+        })
         .await
       {
         tracing::warn!("ruserf: {}", e);
@@ -259,80 +279,68 @@ impl<I, A> QueryResponse<I, A> {
 
   /// Sends a response on the response channel ensuring the channel is not closed.
   #[inline]
-  pub(crate) async fn send_response<T, D>(
-    &self,
-    c: &mut QueryResponseCore<I, A>,
-    nr: NodeResponse<I, A>,
-  ) -> Option<Result<(), Error<T, D>>>
+  pub(crate) async fn send_response<T, D>(&self, nr: NodeResponse<I, A>) -> Result<(), Error<T, D>>
   where
-    I: Eq + std::hash::Hash + CheapClone,
-    A: Eq + std::hash::Hash + CheapClone,
+    I: Eq + std::hash::Hash + CheapClone + core::fmt::Debug,
+    A: Eq + std::hash::Hash + CheapClone + core::fmt::Debug,
     D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
     T: Transport,
   {
+    let mut c = self.inner.core.write().await;
     // Exit early if this is a duplicate ack
     if c.responses.contains(&nr.from) {
-      // TODO: metrics
-      return None;
+      return Ok(());
     }
 
-    Some({
-      // TODO: metrics
-      if c.closed {
-        Ok(())
-      } else {
-        let id = nr.from.cheap_clone();
-        futures::select! {
-          _ = self.inner.channel.resp_ch.0.send(nr).fuse() => {
-            c.responses.insert(id);
-            Ok(())
-          },
-          default => {
-            Err(Error::QueryResponseDeliveryFailed)
-          }
+    if c.closed {
+      Ok(())
+    } else {
+      let id = nr.from.cheap_clone();
+      futures::select! {
+        _ = self.inner.channel.resp_ch.0.send(nr).fuse() => {
+          c.responses.insert(id);
+          Ok(())
+        },
+        default => {
+          Err(Error::query_response_delivery_failed())
         }
       }
-    })
+    }
   }
 
   /// Sends a response on the ack channel ensuring the channel is not closed.
   #[inline]
   pub(crate) async fn send_ack<T, D>(
     &self,
-    c: &mut QueryResponseCore<I, A>,
     nr: &QueryResponseMessage<I, A>,
-  ) -> Option<Result<(), Error<T, D>>>
+  ) -> Result<(), Error<T, D>>
   where
     I: Eq + std::hash::Hash + CheapClone,
     A: Eq + std::hash::Hash + CheapClone,
     D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
     T: Transport,
   {
+    let mut c = self.inner.core.write().await;
     // Exit early if this is a duplicate ack
     if c.acks.contains(&nr.from) {
-      // TODO: metrics
-      return None;
+      return Ok(());
     }
 
-    Some({
-      // TODO: metrics
-
-      if c.closed {
-        Ok(())
-      } else if let Some((tx, _)) = &self.inner.channel.ack_ch {
-        futures::select! {
-          _ = tx.send(nr.from.cheap_clone()).fuse() => {
-            c.acks.insert(nr.from.clone());
-            Ok(())
-          },
-          default => {
-            Err(Error::QueryResponseDeliveryFailed)
-          }
+    if c.closed {
+      Ok(())
+    } else if let Some((tx, _)) = &self.inner.channel.ack_ch {
+      futures::select! {
+        _ = tx.send(nr.from.cheap_clone()).fuse() => {
+          c.acks.insert(nr.from.clone());
+          Ok(())
+        },
+        default => {
+          Err(Error::query_response_delivery_failed())
         }
-      } else {
-        Ok(())
       }
-    })
+    } else {
+      Ok(())
+    }
   }
 }
 
@@ -383,7 +391,7 @@ where
     let n = self.inner.memberlist.num_online_members().await;
     let mut timeout = self.inner.opts.memberlist_options.gossip_interval();
     timeout *= self.inner.opts.query_timeout_mult as u32;
-    timeout *= (f64::log10((n + 1) as f64) + 0.5) as u32; // Using ceil approximation
+    timeout *= ((n + 1) as f64).log10().ceil() as u32; // Using ceil approximation
     timeout
   }
 
@@ -404,6 +412,7 @@ where
         return false;
       }
 
+      // Decode the filter
       let filter = match <D as TransformDelegate>::decode_filter(filter) {
         Ok((read, filter)) => {
           tracing::trace!(read=%read, filter=?filter, "ruserf: decoded filter successully");
@@ -476,10 +485,10 @@ where
         .states
         .iter()
         .filter_map(|(id, m)| {
-          if m.member.status != MemberStatus::Alive || id == self.inner.memberlist.local_id() {
-            None
-          } else {
+          if m.member.status == MemberStatus::Alive && id != self.inner.memberlist.local_id() {
             Some(m.member.clone())
+          } else {
+            None
           }
         })
         .collect::<SmallVec<_>>()
@@ -491,10 +500,12 @@ where
 
     // Prep the relay message, which is a wrapped version of the original.
     // let relay_msg = SerfRelayMessage::new(node, SerfMessage::QueryResponse(resp));
-    let expected_encoded_len = <D as TransformDelegate>::node_encoded_len(&node)
-      + <D as TransformDelegate>::message_encoded_len(&resp);
+    let expected_encoded_len = 1
+      + <D as TransformDelegate>::node_encoded_len(&node)
+      + 1
+      + <D as TransformDelegate>::message_encoded_len(&resp); // +1 for relay message type byte, +1 for the message type
     if expected_encoded_len > self.inner.opts.query_response_size_limit {
-      return Err(Error::RelayedResponseTooLarge(
+      return Err(Error::relayed_response_too_large(
         self.inner.opts.query_response_size_limit,
       ));
     }
@@ -504,21 +515,19 @@ where
     raw.resize(expected_encoded_len + 1 + 1, 0);
     let mut encoded = 1;
     encoded += <D as TransformDelegate>::encode_node(&node, &mut raw[encoded..])
-      .map_err(Error::transform)?;
+      .map_err(Error::transform_delegate)?;
     raw[encoded] = MessageType::QueryResponse as u8;
     encoded += 1;
     encoded += <D as TransformDelegate>::encode_message(&resp, &mut raw[encoded..])
-      .map_err(Error::transform)?;
+      .map_err(Error::transform_delegate)?;
 
     debug_assert_eq!(
-      encoded - 1 - 1,
-      expected_encoded_len,
+      encoded, expected_encoded_len,
       "expected encoded len {} mismatch the actual encoded len {}",
-      expected_encoded_len,
-      encoded
+      expected_encoded_len, encoded
     );
 
-    let raw = Bytes::from(raw);
+    let raw = raw.freeze();
     // Relay to a random set of peers.
     let relay_members = random_members(relay_factor as usize, members);
 
@@ -549,10 +558,6 @@ where
 
     while let Some(err) = stream.next().await {
       errs.push(err);
-    }
-
-    if !errs.is_empty() {
-      return Err(Error::Relay(From::from(errs)));
     }
 
     Ok(())

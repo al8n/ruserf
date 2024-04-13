@@ -1,25 +1,30 @@
-use std::{marker::PhantomData, net::IpAddr};
+use std::marker::PhantomData;
+
+use memberlist_core::transport::resolver::socket_addr::SocketAddrResolver;
 
 use crate::delegate::ReconnectDelegate;
 
 use super::*;
 
 /// Unit test for reconnect
-pub async fn serf_reconnect<T>(transport_opts1: T::Options, transport_opts2: T::Options)
-where
+pub async fn serf_reconnect<T, F>(
+  transport_opts1: T::Options,
+  transport_opts2: T::Options,
+  get_transport: impl FnOnce(T::Id, <T::Resolver as AddressResolver>::ResolvedAddress) -> F + Copy,
+) where
   T: Transport,
-  T::Options: Clone,
+  F: core::future::Future<Output = T::Options>,
 {
-  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let (event_tx, event_rx) = EventProducer::bounded(64);
 
   let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
     .await
     .unwrap();
-  let s2 = Serf::<T>::new(transport_opts2.clone(), test_config())
+  let s2 = Serf::<T>::new(transport_opts2, test_config())
     .await
     .unwrap();
 
-  let mut serfs = [s1, s2];
+  let mut serfs = vec![s1, s2];
   wait_until_num_nodes(1, &serfs).await;
 
   let node = serfs[1]
@@ -32,13 +37,15 @@ where
   serfs[1].shutdown().await.unwrap();
 
   let t = serfs[1].inner.opts.memberlist_options.probe_interval();
-  <T::Runtime as RuntimeLite>::sleep(t * 5).await;
+  let (s2id, s2addr) = serfs[1].advertise_node().into_components();
+  let _ = serfs.pop().unwrap();
+  <T::Runtime as RuntimeLite>::sleep(t * 15).await;
 
   // Bring back s2
-  let s2 = Serf::<T>::new(transport_opts2, test_config())
+  let s2 = Serf::<T>::new(get_transport(s2id, s2addr).await, test_config())
     .await
     .unwrap();
-  serfs[1] = s2;
+  serfs.push(s2);
 
   wait_until_num_nodes(2, &serfs).await;
 
@@ -57,33 +64,46 @@ where
   .await;
 
   for s in serfs.iter() {
+    println!("start shutdown {}", s.local_id());
     s.shutdown().await.unwrap();
+    println!("finish shutdown {}", s.local_id());
   }
 }
 
 /// Unit test for reconnect
-pub async fn serf_reconnect_same_ip<T>(
+pub async fn serf_reconnect_same_ip<T, R, F>(
   transport_opts1: T::Options,
-  transport_opts2: T::Options,
-  get_ip: impl Fn(&<T::Resolver as AddressResolver>::ResolvedAddress) -> IpAddr,
+  transport2_id: T::Id,
+  get_transport: impl FnOnce(T::Id, <T::Resolver as AddressResolver>::ResolvedAddress) -> F + Copy,
 ) where
-  T: Transport,
+  T: Transport<Id = SmolStr, Resolver = SocketAddrResolver<R>>,
   T::Options: Clone,
+  R: RuntimeLite,
+  F: core::future::Future<Output = T::Options>,
 {
-  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let (event_tx, event_rx) = EventProducer::bounded(64);
 
   let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
     .await
     .unwrap();
-  let s2 = Serf::<T>::new(transport_opts2.clone(), test_config())
-    .await
-    .unwrap();
+  let s2addr = {
+    let mut addr = *s1.advertise_node().address();
+    let port = addr.port() + 1;
+    addr.set_port(port);
+    addr
+  };
+  let s2 = Serf::<T>::new(
+    get_transport(transport2_id.clone(), s2addr).await,
+    test_config(),
+  )
+  .await
+  .unwrap();
 
-  let ip1 = get_ip(s1.inner.memberlist.advertise_address());
-  let ip2 = get_ip(s2.inner.memberlist.advertise_address());
+  let ip1 = s1.inner.memberlist.advertise_address().ip();
+  let ip2 = s2.inner.memberlist.advertise_address().ip();
   assert_eq!(ip1, ip2, "require same ip address 1: {ip1} 2: {ip2}");
 
-  let mut serfs = [s1, s2];
+  let mut serfs = vec![s1, s2];
   wait_until_num_nodes(1, &serfs).await;
 
   let node = serfs[1]
@@ -96,13 +116,17 @@ pub async fn serf_reconnect_same_ip<T>(
   serfs[1].shutdown().await.unwrap();
 
   let t = serfs[1].inner.opts.memberlist_options.probe_interval();
+  let _ = serfs.pop().unwrap();
   <T::Runtime as RuntimeLite>::sleep(t * 5).await;
 
   // Bring back s2
-  let s2 = Serf::<T>::new(transport_opts2, test_config())
-    .await
-    .unwrap();
-  serfs[1] = s2;
+  let s2 = Serf::<T>::new(
+    get_transport(transport2_id.clone(), s2addr).await,
+    test_config(),
+  )
+  .await
+  .unwrap();
+  serfs.push(s2);
 
   wait_until_num_nodes(2, &serfs).await;
 
@@ -145,6 +169,7 @@ where
     _member: &Member<Self::Id, Self::Address>,
     _timeout: Duration,
   ) -> Duration {
+    self.called.store(true, Ordering::SeqCst);
     self.timeout
   }
 }
@@ -159,7 +184,7 @@ pub async fn serf_per_node_reconnect_timeout<T>(
   let (event_tx, event_rx) = EventProducer::bounded(4);
 
   let ro1 = ReconnectOverride {
-    timeout: Duration::from_secs(1),
+    timeout: Duration::from_micros(1),
     called: Arc::new(AtomicBool::new(false)),
     _marker: PhantomData,
   };

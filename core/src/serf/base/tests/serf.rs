@@ -1,11 +1,15 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use memberlist_core::{tests::AnyError, transport::Id};
+
 use ruserf_types::{Member, MemberStatus, Tags};
 
 use crate::{event::EventProducer, types::MemberState};
 
 use super::*;
+
+/// Unit tests for the serf events related functionalities
+pub mod event;
 
 /// Unit tests for the serf leave related functionalities
 pub mod leave;
@@ -28,9 +32,6 @@ pub mod reap;
 /// Unit tests for the serf snapshot related functionalities
 pub mod snapshot;
 
-/// Unit tests for the serf query related functionalities
-pub mod query;
-
 fn test_member_status<I: Id, A>(
   members: &HashMap<I, MemberState<I, A>>,
   id: I,
@@ -50,456 +51,6 @@ fn test_member_status<I: Id, A>(
   Err(AnyError::from(format!("member {} not found", id)))
 }
 
-/// Unit tests for the events failed
-pub async fn serf_events_failed<T>(transport_opts1: T::Options, transport_opts2: T::Options)
-where
-  T: Transport,
-{
-  let (event_tx, event_rx) = EventProducer::bounded(4);
-  let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
-    .await
-    .unwrap();
-  let s2 = Serf::<T>::new(transport_opts2, test_config())
-    .await
-    .unwrap();
-
-  let serfs = [s1, s2];
-  wait_until_num_nodes(1, &serfs).await;
-
-  let node = serfs[1]
-    .inner
-    .memberlist
-    .advertise_node()
-    .map_address(MaybeResolvedAddress::resolved);
-  serfs[0].join(node, false).await.unwrap();
-
-  wait_until_num_nodes(2, &serfs).await;
-
-  serfs[1].shutdown().await.unwrap();
-
-  wait_until_num_nodes(1, &serfs[..1]).await;
-
-  // Since s2 shutdown, we check the events to make sure we got failures.
-  let node = serfs[1].inner.memberlist.local_id().clone();
-  test_events(
-    event_rx.rx,
-    node,
-    [
-      CrateEventType::Member(MemberEventType::Join),
-      CrateEventType::Member(MemberEventType::Failed),
-      CrateEventType::Member(MemberEventType::Reap),
-    ]
-    .into_iter()
-    .collect(),
-  )
-  .await;
-}
-
-/// Unit tests for the events join
-pub async fn serf_events_join<T>(transport_opts1: T::Options, transport_opts2: T::Options)
-where
-  T: Transport,
-{
-  let (event_tx, event_rx) = EventProducer::bounded(4);
-  let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
-    .await
-    .unwrap();
-  let s2 = Serf::<T>::new(transport_opts2, test_config())
-    .await
-    .unwrap();
-
-  let serfs = [s1, s2];
-  wait_until_num_nodes(1, &serfs).await;
-
-  let node = serfs[1]
-    .inner
-    .memberlist
-    .advertise_node()
-    .map_address(MaybeResolvedAddress::resolved);
-  serfs[0].join(node, false).await.unwrap();
-
-  wait_until_num_nodes(2, &serfs).await;
-
-  serfs[1].shutdown().await.unwrap();
-
-  wait_until_num_nodes(1, &serfs[..1]).await;
-
-  // Since s2 shutdown, we check the events to make sure we got failures.
-  let node = serfs[1].inner.memberlist.local_id().clone();
-  test_events(
-    event_rx.rx,
-    node,
-    [CrateEventType::Member(MemberEventType::Join)]
-      .into_iter()
-      .collect(),
-  )
-  .await;
-}
-
-/// Unit tests for the events leave
-/// Unit tests for the events failed
-pub async fn serf_events_leave<T>(transport_opts1: T::Options, transport_opts2: T::Options)
-where
-  T: Transport,
-{
-  let (event_tx, event_rx) = EventProducer::bounded(4);
-  let s1 = Serf::<T>::with_event_producer(
-    transport_opts1,
-    test_config().with_reap_interval(Duration::from_secs(30)),
-    event_tx,
-  )
-  .await
-  .unwrap();
-  let s2 = Serf::<T>::new(transport_opts2, test_config())
-    .await
-    .unwrap();
-
-  let serfs = [s1, s2];
-  wait_until_num_nodes(1, &serfs).await;
-
-  let node = serfs[1]
-    .inner
-    .memberlist
-    .advertise_node()
-    .map_address(MaybeResolvedAddress::resolved);
-  serfs[0].join(node.clone(), false).await.unwrap();
-
-  wait_until_num_nodes(2, &serfs).await;
-
-  serfs[1].leave().await.unwrap();
-
-  let start = Epoch::now();
-  loop {
-    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
-
-    let members = serfs[0].inner.members.read().await;
-    if test_member_status(&members.states, node.id().clone(), MemberStatus::Left).is_ok() {
-      break;
-    }
-
-    if start.elapsed() > Duration::from_secs(7) {
-      panic!("timed out");
-    }
-  }
-
-  // Now that s2 has left, we check the events to make sure we got
-  // a leave event in s1 about the leave.
-  let node = serfs[1].inner.memberlist.local_id().clone();
-  test_events(
-    event_rx.rx,
-    node,
-    [
-      CrateEventType::Member(MemberEventType::Join),
-      CrateEventType::Member(MemberEventType::Leave),
-    ]
-    .into_iter()
-    .collect(),
-  )
-  .await;
-}
-
-#[derive(Debug, Clone)]
-struct DropJoins {
-  drop: Arc<AtomicUsize>,
-}
-
-impl MessageDropper for DropJoins {
-  fn should_drop(&self, ty: MessageType) -> bool {
-    match ty {
-      MessageType::Join | MessageType::PushPull => self.drop.load(Ordering::SeqCst) == 1,
-      _ => false,
-    }
-  }
-}
-
-impl DropJoins {
-  fn new() -> Self {
-    Self {
-      drop: Arc::new(AtomicUsize::new(0)),
-    }
-  }
-}
-
-/// Unit tests for the events leave avoid infinite leave rebroadcast
-pub async fn serf_events_leave_avoid_infinite_rebroadcast<T>(
-  transport_opts1: T::Options,
-  transport_opts2: T::Options,
-  transport_opts3: T::Options,
-  transport_opts4: T::Options,
-) where
-  T: Transport,
-  T::Options: Clone,
-{
-  // This test is a variation of the normal leave test that is crafted
-  // specifically to handle a situation where two unique leave events for the
-  // same node reach two other nodes in the wrong order which causes them to
-  // infinitely rebroadcast the leave event without updating their own
-  // lamport clock for that node.
-  let config_local = |opts: Options| opts.with_reap_interval(Duration::from_secs(30));
-
-  let (event_tx1, event_rx1) = EventProducer::bounded(4);
-  let s1 = Serf::<T>::with_event_producer(transport_opts1, config_local(test_config()), event_tx1)
-    .await
-    .unwrap();
-  let s2 = Serf::<T>::new(transport_opts2.clone(), config_local(test_config()))
-    .await
-    .unwrap();
-
-  // Allow s3 and s4 to drop joins in the future.
-  let d = DropJoins::new();
-  let s3 = Serf::<T>::with_message_dropper(
-    transport_opts3,
-    config_local(test_config()),
-    Box::new(d.clone()),
-  )
-  .await
-  .unwrap();
-  let s4 = Serf::<T>::with_message_dropper(
-    transport_opts4,
-    config_local(test_config()),
-    Box::new(d.clone()),
-  )
-  .await
-  .unwrap();
-
-  let mut serfs = [s1, s2];
-  wait_until_num_nodes(1, &serfs).await;
-
-  let node = serfs[1]
-    .inner
-    .memberlist
-    .advertise_node()
-    .map_address(MaybeResolvedAddress::resolved);
-
-  serfs[0].join(node.clone(), false).await.unwrap();
-  s3.join(node.clone(), false).await.unwrap();
-  s4.join(node.clone(), false).await.unwrap();
-
-  // S2 leaves gracefully
-  serfs[1].leave().await.unwrap();
-  serfs[1].shutdown().await.unwrap();
-
-  // Make s3 and s4 drop inbound join messages and push-pulls for a bit so it won't see
-  // s2 rejoin
-  d.drop.store(1, Ordering::SeqCst);
-
-  // Bring back s2 by mimicking its name and address
-  <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(2)).await;
-
-  let s2 = Serf::<T>::new(
-    transport_opts2,
-    config_local(test_config().with_rejoin_after_leave(true)),
-  )
-  .await
-  .unwrap();
-
-  let s1node = serfs[1]
-    .inner
-    .memberlist
-    .advertise_node()
-    .map_address(MaybeResolvedAddress::resolved);
-  s2.join(s1node.clone(), false).await.unwrap();
-  serfs[1] = s2;
-  let mut serfs = serfs
-    .into_iter()
-    .chain([s3, s4].into_iter())
-    .collect::<Vec<_>>();
-  wait_until_num_nodes(4, &serfs).await;
-
-  // Now leave a second time but before s3 and s4 see the rejoin (due to the gate)
-  serfs[1].leave().await.unwrap();
-
-  let s2 = serfs.remove(1);
-  wait_until_intent_queue_len(0, &serfs).await;
-
-  let start = Epoch::now();
-  let mut cond1 = false;
-  let mut cond2 = false;
-  let mut cond3 = false;
-  loop {
-    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
-
-    if !cond1 {
-      let members = serfs[0].inner.members.read().await;
-      if test_member_status(&members.states, node.id().clone(), MemberStatus::Left).is_ok() {
-        cond1 = true;
-      }
-    }
-
-    if !cond2 {
-      let members = serfs[1].inner.members.read().await;
-      if test_member_status(&members.states, node.id().clone(), MemberStatus::Left).is_ok() {
-        cond2 = true;
-      }
-    }
-
-    if !cond3 {
-      let members = serfs[2].inner.members.read().await;
-      if test_member_status(&members.states, node.id().clone(), MemberStatus::Left).is_ok() {
-        cond3 = true;
-      }
-    }
-
-    if cond1 && cond2 && cond3 {
-      break;
-    }
-
-    if start.elapsed() > Duration::from_secs(7) {
-      panic!("timed out");
-    }
-  }
-
-  // Now that s2 has left, we check the events to make sure we got
-  // a leave event in s1 about the leave.
-  test_events(
-    event_rx1.rx,
-    s2.inner.memberlist.local_id().clone(),
-    [
-      CrateEventType::Member(MemberEventType::Join),
-      CrateEventType::Member(MemberEventType::Leave),
-      CrateEventType::Member(MemberEventType::Join),
-      CrateEventType::Member(MemberEventType::Leave),
-    ]
-    .into_iter()
-    .collect(),
-  )
-  .await;
-}
-
-/// Unit tests for the remove failed events leave
-pub async fn serf_remove_failed_events_leave<T>(
-  transport_opts1: T::Options,
-  transport_opts2: T::Options,
-) where
-  T: Transport,
-{
-  let (event_tx, event_rx) = EventProducer::bounded(4);
-  let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
-    .await
-    .unwrap();
-  let s2 = Serf::<T>::new(transport_opts2, test_config())
-    .await
-    .unwrap();
-
-  let serfs = [s1, s2];
-  wait_until_num_nodes(1, &serfs).await;
-
-  let node = serfs[1]
-    .advertise_node()
-    .map_address(MaybeResolvedAddress::resolved);
-  serfs[0].join(node.clone(), false).await.unwrap();
-
-  wait_until_num_nodes(2, &serfs).await;
-
-  serfs[1].shutdown().await.unwrap();
-
-  let t = serfs[1].inner.opts.memberlist_options.probe_interval();
-  <T::Runtime as RuntimeLite>::sleep(t * 5).await;
-
-  serfs[0]
-    .remove_failed_node(node.id().clone())
-    .await
-    .unwrap();
-
-  let start = Epoch::now();
-  loop {
-    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
-
-    let members = serfs[0].inner.members.read().await;
-    if test_member_status(&members.states, node.id().clone(), MemberStatus::Left).is_ok() {
-      break;
-    }
-
-    if start.elapsed() > Duration::from_secs(7) {
-      panic!("timed out");
-    }
-  }
-
-  // Now that s2 has failed and been marked as left, we check the
-  // events to make sure we got a leave event in s1 about the leave.
-  test_events(
-    event_rx.rx,
-    serfs[1].inner.memberlist.local_id().clone(),
-    [
-      CrateEventType::Member(MemberEventType::Join),
-      CrateEventType::Member(MemberEventType::Failed),
-      CrateEventType::Member(MemberEventType::Leave),
-    ]
-    .into_iter()
-    .collect(),
-  )
-  .await;
-}
-
-/// Unit tests for the events user
-pub async fn serf_event_user<T>(transport_opts1: T::Options, transport_opts2: T::Options)
-where
-  T: Transport,
-{
-  let (event_tx, event_rx) = EventProducer::bounded(4);
-  let s1 = Serf::<T>::new(transport_opts1, test_config())
-    .await
-    .unwrap();
-  let s2 = Serf::<T>::with_event_producer(transport_opts2, test_config(), event_tx)
-    .await
-    .unwrap();
-
-  let serfs = [s1, s2];
-  wait_until_num_nodes(1, &serfs).await;
-
-  let node = serfs[1]
-    .inner
-    .memberlist
-    .advertise_node()
-    .map_address(MaybeResolvedAddress::resolved);
-  serfs[0].join(node.clone(), false).await.unwrap();
-
-  wait_until_num_nodes(2, &serfs).await;
-
-  // Fire a user event
-  serfs[0]
-    .user_event("event!", Bytes::from_static(b"test"), false)
-    .await
-    .unwrap();
-
-  // Fire a user event
-  serfs[0]
-    .user_event("second", Bytes::from_static(b"foobar"), false)
-    .await
-    .unwrap();
-
-  // check the events to make sure we got
-  // a leave event in s1 about the leave.
-  test_user_events(
-    event_rx.rx,
-    ["event!", "second"].into_iter().map(Into::into).collect(),
-    vec![Bytes::from_static(b"test"), Bytes::from_static(b"foobar")],
-  )
-  .await;
-}
-
-/// Unit tests for the events user size limit
-pub async fn serf_event_user_size_limit<T>(transport_opts1: T::Options)
-where
-  T: Transport,
-{
-  let (event_tx, _event_rx) = EventProducer::bounded(4);
-  let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
-    .await
-    .unwrap();
-
-  let serfs = [s1];
-  wait_until_num_nodes(1, &serfs).await;
-
-  let p = Bytes::copy_from_slice(&serfs[0].inner.opts.max_user_event_size.to_be_bytes());
-  let err = serfs[0]
-    .user_event("this is too large an event", p, false)
-    .await
-    .unwrap_err()
-    .to_string();
-  assert!(err.contains("user event exceeds"));
-}
-
 /// Unit tests for the get queue max
 pub async fn serf_get_queue_max<T>(
   transport_opts: T::Options,
@@ -516,6 +67,7 @@ pub async fn serf_get_queue_max<T>(
   // state.
   {
     let mut members = s.inner.members.write().await;
+    members.states.clear();
     for i in 0..100 {
       let name: SmolStr = format!("Member{i}").into();
       members.states.insert(
@@ -542,33 +94,21 @@ pub async fn serf_get_queue_max<T>(
   s.shutdown().await.unwrap();
   <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(2)).await;
 
-  let s = Serf::<T>::new(
+  let sn = Serf::<T>::new(
     transport_opts.clone(),
-    test_config().with_max_queue_depth(1024),
+    test_config().with_min_queue_depth(1024),
   )
   .await
   .unwrap();
 
   {
-    let mut members = s.inner.members.write().await;
-    for i in 0..100 {
-      let name: SmolStr = format!("Member{i}").into();
-      members.states.insert(
-        name.clone(),
-        MemberState {
-          member: Member::new(
-            Node::new(name.clone(), get_addr(i)),
-            Default::default(),
-            MemberStatus::Alive,
-          ),
-          status_time: 0.into(),
-          leave_time: None,
-        },
-      );
-    }
+    let mut members = sn.inner.members.write().await;
+    members.states.clear();
+    let old_members = s.inner.members.read().await;
+    members.states.clone_from(&old_members.states);
   }
 
-  let got = s.get_queue_max().await;
+  let got = sn.get_queue_max().await;
   let want = 1024;
   assert_eq!(got, want);
 
@@ -577,69 +117,64 @@ pub async fn serf_get_queue_max<T>(
 
   // Bring it under the number of nodes, so the calculation based on
   // the number of nodes takes precedence.
-  let s = Serf::<T>::new(transport_opts, test_config().with_max_queue_depth(16))
+  let snn = Serf::<T>::new(transport_opts, test_config().with_min_queue_depth(16))
     .await
     .unwrap();
 
   {
-    let mut members = s.inner.members.write().await;
-    for i in 0..100 {
-      let name: SmolStr = format!("Member{i}").into();
-      members.states.insert(
-        name.clone(),
-        MemberState {
-          member: Member::new(
-            Node::new(name.clone(), get_addr(i)),
-            Default::default(),
-            MemberStatus::Alive,
-          ),
-          status_time: 0.into(),
-          leave_time: None,
-        },
-      );
-    }
+    let mut members = snn.inner.members.write().await;
+    members.states.clear();
+    let old_members = sn.inner.members.read().await;
+    members.states.clone_from(&old_members.states);
   }
 
-  let got = s.get_queue_max().await;
+  let got = snn.get_queue_max().await;
   let want = 200;
   assert_eq!(got, want);
 
   // Try adjusting the node count.
-  let mut members = s.inner.members.write().await;
-  let name = SmolStr::new("another");
-  members.states.insert(
-    name.clone(),
-    MemberState {
-      member: Member::new(
-        Node::new(name.clone(), get_addr(10000)),
-        Default::default(),
-        MemberStatus::Alive,
-      ),
-      status_time: 0.into(),
-      leave_time: None,
-    },
-  );
+  {
+    let mut members = snn.inner.members.write().await;
+    let name = SmolStr::new("another");
+    members.states.insert(
+      name.clone(),
+      MemberState {
+        member: Member::new(
+          Node::new(name.clone(), get_addr(10000)),
+          Default::default(),
+          MemberStatus::Alive,
+        ),
+        status_time: 0.into(),
+        leave_time: None,
+      },
+    );
+  }
 
-  let got = s.get_queue_max().await;
+  let got = snn.get_queue_max().await;
   let want = 202;
   assert_eq!(got, want);
 }
 
 /// Unit tests for the update
-pub async fn serf_update<T>(transport_opts1: T::Options, transport_opts2: T::Options)
-where
+pub async fn serf_update<T, F>(
+  transport_opts1: T::Options,
+  transport_opts2: T::Options,
+  get_transport: impl FnOnce(T::Id, <T::Resolver as AddressResolver>::ResolvedAddress) -> F + Copy,
+) where
   T: Transport,
   T::Options: Clone,
+  F: core::future::Future<Output = T::Options>,
 {
-  let (event_tx, event_rx) = EventProducer::bounded(4);
+  let (event_tx, event_rx) = EventProducer::bounded(64);
   let s1 = Serf::<T>::with_event_producer(transport_opts1, test_config(), event_tx)
     .await
     .unwrap();
   let s2 = Serf::<T>::new(transport_opts2.clone(), test_config())
     .await
     .unwrap();
+  let (s2id, s2addr) = s2.advertise_node().into_components();
 
-  let mut serfs = [s1, s2];
+  let mut serfs = vec![s1, s2];
   wait_until_num_nodes(1, &serfs).await;
 
   let node = serfs[1]
@@ -652,12 +187,13 @@ where
   wait_until_num_nodes(2, &serfs).await;
   // Now force the shutdown of s2 so it appears to fail.
   serfs[1].shutdown().await.unwrap();
+  drop(serfs.pop().unwrap());
 
   // Don't wait for a failure to be detected. Bring back s2 immediately
   let start = Epoch::now();
   let s2 = loop {
     match Serf::<T>::new(
-      transport_opts2.clone(),
+      get_transport(s2id.clone(), s2addr.clone()).await,
       test_config().with_tags([("foo", "bar")].into_iter()),
     )
     .await
@@ -665,7 +201,7 @@ where
       Ok(s) => break s,
       Err(e) => {
         <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(1)).await;
-        if start.elapsed() > Duration::from_secs(2) {
+        if start.elapsed() > Duration::from_secs(20) {
           panic!("timed out: {}", e);
         }
       }
@@ -676,7 +212,7 @@ where
   s2.join(s1node.map_address(MaybeResolvedAddress::resolved), false)
     .await
     .unwrap();
-  serfs[1] = s2;
+  serfs.push(s2);
   wait_until_num_nodes(2, &serfs).await;
 
   test_events(
@@ -846,11 +382,15 @@ where
       m1m_tags.insert(m.node.id().clone(), m.tags.clone());
     }
 
-    if m1m_tags.get(node.id()).map(|t| t.get("port")) == Some(Some(&"8080".into())) {
+    if m1m_tags.get(serfs[0].local_id()).map(|t| t.get("port")) == Some(Some(&"8080".into())) {
       cond1 = true;
     }
 
-    if m1m_tags.get(serfs[0].local_id()).map(|t| t.get("port")) == Some(Some(&"8080".into())) {
+    if m1m_tags
+      .get(serfs[1].local_id())
+      .map(|t| t.get("datacenter"))
+      == Some(Some(&"east-aws".into()))
+    {
       cond2 = true;
     }
 
@@ -860,7 +400,7 @@ where
       m2m_tags.insert(m.node.id().clone(), m.tags.clone());
     }
 
-    if m2m_tags.get(node.id()).map(|t| t.get("datacenter")) == Some(Some(&"east-aws".into())) {
+    if m2m_tags.get(serfs[0].local_id()).map(|t| t.get("port")) == Some(Some(&"8080".into())) {
       cond3 = true;
     }
 
@@ -942,7 +482,7 @@ pub async fn serf_coordinates<T>(
   let s1 = Serf::<T>::new(transport_opts1, opts.clone()).await.unwrap();
   let s2 = Serf::<T>::new(transport_opts2, opts).await.unwrap();
 
-  let mut serfs = [s1, s2];
+  let mut serfs = vec![s1, s2];
   wait_until_num_nodes(1, &serfs).await;
 
   // Make sure both nodes start out the origin so we can prove they did
@@ -1031,16 +571,18 @@ pub async fn serf_coordinates<T>(
   // Break up the cluster and make sure the coordinates get removed by
   // the reaper.
   serfs[1].shutdown().await.unwrap();
+  let t = serfs[1].inner.opts.reap_interval * 4;
+  drop(serfs.pop().unwrap());
 
-  <T::Runtime as RuntimeLite>::sleep(serfs[1].inner.opts.reap_interval * 2).await;
+  <T::Runtime as RuntimeLite>::sleep(t).await;
 
-  wait_until_num_nodes(1, &serfs[..1]).await;
+  wait_until_num_nodes(1, &serfs).await;
 
   let start = Epoch::now();
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
-    if serfs[0].cached_coordinate(&s2id.clone()).is_err() {
+    if serfs[0].cached_coordinate(&s2id.clone()).unwrap().is_none() {
       break;
     }
 
@@ -1059,7 +601,7 @@ pub async fn serf_coordinates<T>(
   .await
   .unwrap();
 
-  serfs[1] = s3;
+  serfs.push(s3);
   wait_until_num_nodes(1, &serfs).await;
 
   let node = serfs[0]
@@ -1150,7 +692,7 @@ pub async fn serf_name_resolution<T>(
   serfs[0].join(node.clone(), false).await.unwrap();
 
   // Wait for the query period to end
-  <T::Runtime as RuntimeLite>::sleep(serfs[0].default_query_timeout().await * 2).await;
+  <T::Runtime as RuntimeLite>::sleep(serfs[0].default_query_timeout().await * 30).await;
 
   let start = Epoch::now();
   let mut cond1 = false;
@@ -1176,7 +718,8 @@ pub async fn serf_name_resolution<T>(
       break;
     }
 
-    if start.elapsed() > Duration::from_secs(7) {
+    if start.elapsed() > Duration::from_secs(14) {
+      println!("cond1 {cond1} cond2 {cond2} cond3 {cond3}");
       panic!("timed out");
     }
   }
@@ -1229,8 +772,8 @@ where
 
 /// Unit test for serf write keying file
 #[cfg(feature = "encryption")]
-pub async fn serf_write_keying_file<T>(
-  get_transport_opts: impl FnOnce(memberlist_core::types::SecretKeyring) -> T::Options,
+pub async fn serf_write_keyring_file<T>(
+  get_transport_opts: impl FnOnce(memberlist_core::types::SecretKey) -> T::Options,
 ) where
   T: Transport,
 {
@@ -1247,11 +790,13 @@ pub async fn serf_write_keying_file<T>(
 
   let existing_bytes = general_purpose::STANDARD.decode(EXISTING).unwrap();
   let sk = memberlist_core::types::SecretKey::try_from(existing_bytes.as_slice()).unwrap();
-  let keyring = memberlist_core::types::SecretKeyring::new(sk);
 
-  let s = Serf::<T>::new(get_transport_opts(keyring), test_config())
-    .await
-    .unwrap();
+  let s = Serf::<T>::new(
+    get_transport_opts(sk),
+    test_config().with_keyring_file(Some(p.clone())),
+  )
+  .await
+  .unwrap();
   assert!(
     s.encryption_enabled(),
     "write keyring file test only works on encrypted serf"

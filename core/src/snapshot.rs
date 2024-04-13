@@ -15,7 +15,7 @@ use async_channel::{Receiver, Sender};
 use byteorder::{LittleEndian, ReadBytesExt};
 use futures::FutureExt;
 use memberlist_core::{
-  agnostic_lite::RuntimeLite,
+  agnostic_lite::{AsyncSpawner, RuntimeLite},
   bytes::{BufMut, BytesMut},
   tracing,
   transport::{AddressResolver, Id, MaybeResolvedAddress, Node, Transport},
@@ -39,7 +39,7 @@ const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 const CLOCK_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
 
 /// The extention we use for the temporary file during compaction
-const TMP_EXT: &str = ".compact";
+const TMP_EXT: &str = "compact";
 
 /// How often we attempt to recover from
 /// errors writing to the snapshot file.
@@ -398,7 +398,7 @@ where
     min_compact_size: u64,
     rejoin_after_leave: bool,
     clock: LamportClock,
-    out_tx: Option<Sender<CrateEvent<T, D>>>,
+    out_tx: Sender<CrateEvent<T, D>>,
     shutdown_rx: Receiver<()>,
     #[cfg(feature = "metrics")] metric_labels: std::sync::Arc<memberlist_core::types::MetricLabels>,
   ) -> Result<
@@ -459,13 +459,13 @@ where
     alive_nodes.shuffle(&mut rand::thread_rng());
 
     // Start handling new commands
-    <T::Runtime as RuntimeLite>::spawn_detach(Self::tee_stream(
+    let handle = <T::Runtime as RuntimeLite>::spawn(Self::tee_stream(
       in_rx,
       stream_tx,
       out_tx,
       shutdown_rx.clone(),
     ));
-    <T::Runtime as RuntimeLite>::spawn_detach(this.stream());
+    <T::Runtime as RuntimeLite>::spawn_detach(this.stream(handle));
 
     Ok((
       in_tx,
@@ -483,7 +483,7 @@ where
   async fn tee_stream(
     in_rx: Receiver<CrateEvent<T, D>>,
     stream_tx: Sender<CrateEvent<T, D>>,
-    out_tx: Option<Sender<CrateEvent<T, D>>>,
+    out_tx: Sender<CrateEvent<T, D>>,
     shutdown_rx: Receiver<()>,
   ) {
     macro_rules! flush_event {
@@ -495,11 +495,9 @@ where
         }
 
         // Forward the event immediately, do not block
-        if let Some(ref out_tx) = out_tx {
-          futures::select! {
-            _ = out_tx.send($event).fuse() => {}
-            default => {}
-          }
+        futures::select! {
+          _ = out_tx.send($event).fuse() => {}
+          default => {}
         }
       }};
     }
@@ -507,14 +505,10 @@ where
     loop {
       futures::select! {
         ev = in_rx.recv().fuse() => {
-          match ev {
-            Ok(ev) => {
-              flush_event!(ev)
-            },
-            Err(e) => {
-              tracing::error!(err=%e, "ruserf: tee stream: fail to receive from inbound channel");
-              return;
-            }
+          if let Ok(ev) = ev {
+            flush_event!(ev)
+          } else {
+            break;
           }
         }
         _ = shutdown_rx.recv().fuse() => {
@@ -527,23 +521,23 @@ where
     loop {
       futures::select! {
         ev = in_rx.recv().fuse() => {
-          match ev {
-            Ok(ev) => {
-              flush_event!(ev)
-            },
-            Err(e) => {
-              tracing::error!(err=%e, "ruserf: tee stream: fail to receive from inbound channel");
-              return;
-            }
+          if let Ok(ev) = ev {
+            flush_event!(ev)
+          } else {
+            break;
           }
         }
-        default => return,
+        default => break,
       }
     }
+    tracing::info!("ruserf: snapshotter tee stream exits");
   }
 
   /// Long running routine that is used to handle events
-  async fn stream(mut self) {
+  async fn stream(
+    mut self,
+    tee_handle: <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()>,
+  ) {
     let mut clock_ticker = <T::Runtime as RuntimeLite>::interval(CLOCK_UPDATE_INTERVAL);
 
     // flushEvent is used to handle writing out an event
@@ -551,7 +545,7 @@ where
       ($this:ident <- $event:ident) => {{
         // Stop recording events after a leave is issued
         if $this.leaving {
-          return;
+          break;
         }
 
         match &$event {
@@ -569,73 +563,74 @@ where
           self.leaving = true;
 
           // If we plan to re-join, keep our state
-          if self.rejoin_after_leave {
+          if !self.rejoin_after_leave {
             self.alive_nodes.clear();
           }
           self.try_append(SnapshotRecord::Leave);
-          let fh = self.fh.as_mut().unwrap();
-          if let Err(e) = fh.flush() {
-            tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
-          }
 
-          if let Err(e) = fh.get_mut().sync_all() {
-            tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
+          if let Some(fh) = self.fh.as_mut() {
+            if let Err(e) = fh.flush() {
+              tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
+            }
+
+            if let Err(e) = fh.get_mut().sync_all() {
+              tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
+            }
           }
         }
         ev = self.stream_rx.recv().fuse() => {
-          match ev {
-            Ok(ev) => flush_event!(self <- ev),
-            Err(e) => {
-              tracing::error!(target="ruserf", err=%e, "stream channel is closed");
-              return;
-            },
+          if let Ok(ev) = ev {
+            flush_event!(self <- ev)
+          } else {
+            break;
           }
         }
         _ = futures::StreamExt::next(&mut clock_ticker).fuse() => {
           self.update_clock();
         }
         _ = self.shutdown_rx.recv().fuse() => {
-          // Setup a timeout
-          let flush_timeout = <T::Runtime as RuntimeLite>::sleep(SHUTDOWN_FLUSH_TIMEOUT);
-          futures::pin_mut!(flush_timeout);
-
-          // snapshot the clock
-          self.update_clock();
-
-          // Clear out the buffers
-          loop {
-            futures::select! {
-              ev = self.stream_rx.recv().fuse() => {
-                match ev {
-                  Ok(ev) => flush_event!(self <- ev),
-                  Err(e) => {
-                    tracing::error!(target="ruserf", err=%e, "stream channel is closed");
-                    return;
-                  },
-                }
-              }
-              _ = (&mut flush_timeout).fuse() => {
-                break;
-              }
-              default => {
-                break;
-              }
-            }
-          }
-
-          let fh = self.fh.as_mut().unwrap();
-          if let Err(e) = fh.flush() {
-            tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
-          }
-
-          if let Err(e) = fh.get_mut().sync_all() {
-            tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
-          }
-          self.wait_tx.close();
-          return;
+          break;
         }
       }
     }
+
+    // Setup a timeout
+    let flush_timeout = <T::Runtime as RuntimeLite>::sleep(SHUTDOWN_FLUSH_TIMEOUT);
+    futures::pin_mut!(flush_timeout);
+
+    // snapshot the clock
+    self.update_clock();
+
+    // Clear out the buffers
+    loop {
+      futures::select! {
+        ev = self.stream_rx.recv().fuse() => {
+          if let Ok(ev) = ev {
+            flush_event!(self <- ev)
+          }
+        }
+        _ = (&mut flush_timeout).fuse() => {
+          break;
+        }
+        default => {
+          break;
+        }
+      }
+    }
+
+    if let Some(fh) = self.fh.as_mut() {
+      if let Err(e) = fh.flush() {
+        tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
+      }
+
+      if let Err(e) = fh.get_mut().sync_all() {
+        tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
+      }
+    }
+
+    self.wait_tx.close();
+    tee_handle.await;
+    tracing::info!("ruserf: snapshotter stream exits");
   }
 
   /// Used to handle a single user event
@@ -653,7 +648,7 @@ where
   /// Used to handle a single query event
   fn process_query_event(&mut self, ltime: LamportTime) {
     // Ignore old clocks
-    if ltime <= self.last_event_clock {
+    if ltime <= self.last_query_clock {
       return;
     }
 
@@ -691,7 +686,7 @@ where
   /// periodically due to race conditions with join and leave intents
   fn update_clock(&mut self) {
     let t: u64 = self.clock.time().into();
-    let last_seen = LamportTime::from(t.wrapping_sub(1));
+    let last_seen = LamportTime::from(t.saturating_sub(1));
     if last_seen > self.last_clock {
       self.last_clock = last_seen;
       self.try_append(SnapshotRecord::Clock(self.last_clock));
@@ -757,8 +752,8 @@ where
   fn snapshot_max_size(&self) -> u64 {
     let nodes = self.alive_nodes.len() as u64;
     let est_size = nodes * SNAPSHOT_BYTES_PER_NODE as u64;
-
-    (est_size * SNAPSHOT_COMPACTION_THRESHOLD as u64).min(self.min_compact_size)
+    let threshold = est_size * SNAPSHOT_COMPACTION_THRESHOLD as u64;
+    threshold.max(self.min_compact_size)
   }
 
   /// Used to compact the snapshot once it is too large
@@ -838,7 +833,11 @@ where
     drop(old);
 
     // Delete the old file
-    std::fs::remove_file(&self.path).map_err(SnapshotError::Remove)?;
+    if let Err(e) = std::fs::remove_file(&self.path) {
+      if !matches!(e.kind(), std::io::ErrorKind::NotFound) {
+        return Err(SnapshotError::Remove(e));
+      }
+    }
 
     // Move the new file into place
     std::fs::rename(&new_path, &self.path).map_err(SnapshotError::Install)?;

@@ -1,7 +1,7 @@
 #![doc = include_str!("../../README.md")]
 #![doc(html_logo_url = "https://raw.githubusercontent.com/al8n/ruserf/main/art/logo_72x72.png")]
 #![forbid(unsafe_code)]
-// #![deny(warnings, missing_docs)]
+#![deny(warnings)]
 #![allow(clippy::type_complexity)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(docsrs, allow(unused_attributes))]
@@ -98,7 +98,8 @@ pub mod tests {
     use std::sync::Once;
     static TRACE: Once = Once::new();
     TRACE.call_once(|| {
-      let filter = std::env::var("RUSERF_TESTING_LOG").unwrap_or_else(|_| "info".to_owned());
+      let filter =
+        std::env::var("RUSERF_TESTING_LOG").unwrap_or_else(|_| "ruserf_core=trace".to_owned());
       memberlist_core::tracing::subscriber::set_global_default(
         tracing_subscriber::fmt::fmt()
           .without_time()

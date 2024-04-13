@@ -11,13 +11,14 @@ description = "Types for the `ruserf` crate"
 [features]
 encryption = ["memberlist-types/encryption", "futures"]
 serde = ["dep:serde", "indexmap/serde", "memberlist-types/serde", "smol_str/serde", "bitflags/serde"]
+metrics = ["memberlist-types/metrics"]
 
 [dependencies]
 bitflags = "2"
 byteorder.workspace = true
 bytemuck = { version = "1", features = ["derive"] }
 derive_more.workspace = true
-futures = { workspace = true, optional = true, default-features = false, features = ["alloc"] }
+futures = { workspace = true, optional = true, features = ["alloc"] }
 indexmap.workspace = true
 memberlist-types.workspace = true
 smol_str.workspace = true

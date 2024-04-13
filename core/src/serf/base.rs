@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use futures::{FutureExt, StreamExt};
 use memberlist_core::{
-  agnostic_lite::{Detach, RuntimeLite},
+  agnostic_lite::Detach,
   bytes::{BufMut, Bytes, BytesMut},
   delegate::EventDelegate,
   tracing,
@@ -33,8 +33,8 @@ use self::internal_query::SerfQueries;
 use super::*;
 
 /// Re-export the unit tests
-#[cfg(any(test, feature = "test"))]
-#[cfg_attr(docsrs, doc(cfg(any(test, feature = "test"))))]
+#[cfg(feature = "test")]
+#[cfg_attr(docsrs, doc(cfg(feature = "test")))]
 pub mod tests;
 
 impl<T, D> Serf<T, D>
@@ -42,7 +42,7 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  #[cfg(any(test, feature = "test"))]
+  #[cfg(feature = "test")]
   pub(crate) async fn with_message_dropper(
     transport: T::Options,
     opts: Options,
@@ -53,7 +53,7 @@ where
       None,
       transport,
       opts,
-      #[cfg(any(test, feature = "test"))]
+      #[cfg(feature = "test")]
       Some(message_dropper),
     )
     .await
@@ -67,7 +67,7 @@ where
     #[cfg(any(test, feature = "test"))] message_dropper: Option<Box<dyn delegate::MessageDropper>>,
   ) -> Result<Self, Error<T, D>> {
     if opts.max_user_event_size > USER_EVENT_SIZE_LIMIT {
-      return Err(Error::UserEventLimitTooLarge(USER_EVENT_SIZE_LIMIT));
+      return Err(Error::user_event_limit_too_large(USER_EVENT_SIZE_LIMIT));
     }
 
     // Check that the meta data length is okay
@@ -76,13 +76,14 @@ where
       if !tags.as_ref().is_empty() {
         let len = <D as TransformDelegate>::tags_encoded_len(&tags);
         if len > Meta::MAX_SIZE {
-          return Err(Error::TagsTooLarge(len));
+          return Err(Error::tags_too_large(len));
         }
       }
     }
 
     let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
 
+    let handles = FuturesUnordered::new();
     let event_tx = ev.map(|mut event_tx| {
       // Check if serf member event coalescing is enabled
       if opts.coalesce_period > Duration::ZERO && opts.quiescent_period > Duration::ZERO {
@@ -109,11 +110,14 @@ where
         );
       }
 
-      // Listen for internal Serf queries. This is setup before the snapshotter, since
-      // we want to capture the query-time, but the internal listener does not passthrough
-      // the queries
-      SerfQueries::new(event_tx, shutdown_rx.clone())
+      event_tx
     });
+
+    // Listen for internal Serf queries. This is setup before the snapshotter, since
+    // we want to capture the query-time, but the internal listener does not passthrough
+    // the queries
+    let (event_tx, handle) = SerfQueries::new(event_tx.clone(), shutdown_rx.clone());
+    handles.push(handle);
 
     let clock = LamportClock::new();
     let event_clock = LamportClock::new();
@@ -144,7 +148,7 @@ where
           old_clock,
           old_event_clock,
           old_query_clock,
-          Some(event_tx),
+          event_tx,
           alive_nodes,
           Some(handle),
         )
@@ -185,8 +189,8 @@ where
     ));
 
     // Create a buffer for events and queries
-    let event_buffer = Vec::with_capacity(opts.event_buffer_size);
-    let query_buffer = Vec::with_capacity(opts.query_buffer_size);
+    let event_buffer = vec![None; opts.event_buffer_size];
+    let query_buffer = vec![None; opts.query_buffer_size];
 
     // Ensure our lamport clock is at least 1, so that the default
     // join LTime of 0 does not cause issues
@@ -206,13 +210,13 @@ where
         #[cfg(any(test, feature = "test"))]
         {
           match message_dropper {
-            Some(dropper) => SerfDelegate::with_dropper(delegate, dropper),
-            None => SerfDelegate::new(delegate),
+            Some(dropper) => SerfDelegate::with_dropper(delegate, dropper, opts.tags.clone()),
+            None => SerfDelegate::new(delegate, opts.tags.clone()),
           }
         }
         #[cfg(not(any(test, feature = "test")))]
         {
-          SerfDelegate::new(delegate)
+          SerfDelegate::new(delegate, opts.tags.clone())
         }
       },
       transport,
@@ -240,6 +244,7 @@ where
         buffer: query_buffer,
       })),
       opts,
+      handles: AtomicRefCell::new(handles),
       state: parking_lot::Mutex::new(SerfState::Alive),
       join_lock: Mutex::new(()),
       snapshot: handle,
@@ -261,7 +266,9 @@ where
     let memberlist_delegate = this.inner.memberlist.delegate().unwrap();
     memberlist_delegate.store(that);
     let local_node = this.inner.memberlist.local_state().await;
-    memberlist_delegate.notify_join(local_node).await;
+    if let Some(local_node) = local_node {
+      memberlist_delegate.notify_join(local_node).await;
+    }
 
     // update key manager
     #[cfg(feature = "encryption")]
@@ -270,9 +277,10 @@ where
       this.inner.key_manager.store(that);
     }
 
+    let handles = this.inner.handles.borrow();
     // Start the background tasks. See the documentation above each method
     // for more information on their role.
-    Reaper {
+    let h = Reaper {
       coord_core: this.inner.coord_core.clone(),
       memberlist: this.inner.memberlist.clone(),
       members: this.inner.members.clone(),
@@ -284,16 +292,18 @@ where
       tombstone_timeout: this.inner.opts.tombstone_timeout,
     }
     .spawn();
+    handles.push(h);
 
-    Reconnector {
+    let h = Reconnector {
       members: this.inner.members.clone(),
       memberlist: this.inner.memberlist.clone(),
       shutdown_rx: shutdown_rx.clone(),
       reconnect_interval: this.inner.opts.reconnect_interval,
     }
     .spawn();
+    handles.push(h);
 
-    QueueChecker {
+    let h = QueueChecker {
       name: "ruserf.queue.intent",
       queue: this.inner.broadcasts.clone(),
       members: this.inner.members.clone(),
@@ -301,8 +311,9 @@ where
       shutdown_rx: shutdown_rx.clone(),
     }
     .spawn::<T::Runtime>();
+    handles.push(h);
 
-    QueueChecker {
+    let h = QueueChecker {
       name: "ruserf.queue.event",
       queue: this.inner.event_broadcasts.clone(),
       members: this.inner.members.clone(),
@@ -310,8 +321,9 @@ where
       shutdown_rx: shutdown_rx.clone(),
     }
     .spawn::<T::Runtime>();
+    handles.push(h);
 
-    QueueChecker {
+    let h = QueueChecker {
       name: "ruserf.queue.query",
       queue: this.inner.query_broadcasts.clone(),
       members: this.inner.members.clone(),
@@ -319,12 +331,14 @@ where
       shutdown_rx: shutdown_rx.clone(),
     }
     .spawn::<T::Runtime>();
+    handles.push(h);
 
     // Attempt to re-join the cluster if we have known nodes
     if !alive_nodes.is_empty() {
       let memberlist = this.inner.memberlist.clone();
       Self::handle_rejoin(memberlist, alive_nodes);
     }
+    drop(handles);
     Ok(this)
   }
 
@@ -343,30 +357,6 @@ where
     false
   }
 
-  /// Used to setup the listeners for the query,
-  /// and to schedule closing the query after the timeout.
-  pub(crate) async fn register_query_response(
-    &self,
-    timeout: Duration,
-    resp: QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-  ) {
-    let tresps = self.inner.query_core.clone();
-    let mut resps = self.inner.query_core.write().await;
-    // Map the LTime to the QueryResponse. This is necessarily 1-to-1,
-    // since we increment the time for each new query.
-    let ltime = resp.ltime;
-    resps.responses.insert(ltime, resp);
-
-    // Setup a timer to close the response and deregister after the timeout
-    <T::Runtime as RuntimeLite>::spawn_after(timeout, async move {
-      let mut resps = tresps.write().await;
-      if let Some(resp) = resps.responses.remove(&ltime) {
-        resp.close().await;
-      }
-    })
-    .detach();
-  }
-
   /// Takes a Serf message type, encodes it for the wire, and queues
   /// the broadcast. If a notify channel is given, this channel will be closed
   /// when the broadcast is sent.
@@ -380,8 +370,8 @@ where
     let mut raw = BytesMut::with_capacity(expected_encoded_len + 1); // + 1 for message type byte
     raw.put_u8(ty as u8);
     raw.resize(expected_encoded_len + 1, 0);
-    let len =
-      <D as TransformDelegate>::encode_message(&msg, &mut raw[1..]).map_err(Error::transform)?;
+    let len = <D as TransformDelegate>::encode_message(&msg, &mut raw[1..])
+      .map_err(Error::transform_delegate)?;
     debug_assert_eq!(
       len, expected_encoded_len,
       "expected encoded len {} mismatch the actual encoded len {}",
@@ -463,7 +453,7 @@ where
     Ok(())
   }
 
-  #[cfg(any(feature = "test", test))]
+  #[cfg(feature = "test")]
   pub(crate) async fn get_queue_max(&self) -> usize {
     let mut max = self.inner.opts.max_queue_depth;
     if self.inner.opts.min_queue_depth > 0 {
@@ -505,8 +495,8 @@ where
     // Wait for the broadcast
     <T::Runtime as RuntimeLite>::timeout(self.inner.opts.broadcast_timeout, nrx.recv())
       .await
-      .map_err(|_| Error::RemovalBroadcastTimeout)?
-      .map_err(|_| Error::BroadcastChannelClosed)
+      .map_err(|_| Error::removal_broadcast_timeout())?
+      .map_err(|_| Error::broadcast_channel_closed())
   }
 }
 
@@ -518,7 +508,7 @@ where
   coord_core: Option<Arc<CoordCore<T::Id>>>,
   memberlist: Memberlist<T, SerfDelegate<T, D>>,
   members: Arc<RwLock<Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>>,
-  event_tx: Option<async_channel::Sender<CrateEvent<T, D>>>,
+  event_tx: async_channel::Sender<CrateEvent<T, D>>,
   shutdown_rx: async_channel::Receiver<()>,
   reap_interval: Duration,
   reconnect_timeout: Duration,
@@ -539,20 +529,18 @@ macro_rules! erase_node {
     }
 
     // Send out event
-    if let Some(tx) = $tx {
-      let _ = tx
-        .send(CrateEvent::from(MemberEvent {
-          ty: MemberEventType::Reap,
-          members: Arc::new(TinyVec::from($m.member.clone())),
-        }))
-        .await;
-    }
+    let _ = $tx
+      .send(CrateEvent::from(MemberEvent {
+        ty: MemberEventType::Reap,
+        members: Arc::new(TinyVec::from($m.member.clone())),
+      }))
+      .await;
   }};
 }
 
 macro_rules! reap {
   (
-    $tx:ident <- $reconnector:ident($timeout: ident($members: ident.$ty: ident, $coord:ident))
+    $tx:ident <- $local_id:ident.$reconnector:ident($timeout: ident($members: ident.$ty: ident, $coord:ident))
   ) => {{
     let mut n = $members.$ty.len();
     let mut i = 0;
@@ -577,7 +565,7 @@ macro_rules! reap {
 
       // Delete from members and send out event
       let id = m.member.node.id();
-      tracing::info!("ruserf: event member reap: {}", id);
+      tracing::info!("ruserf: event member reap: {} reaps {}", $local_id, id);
 
       erase_node!($tx <- $coord($members[id].m));
     }
@@ -590,44 +578,54 @@ where
   T: Transport,
 {
   async fn run(self) {
+    let tick = <T::Runtime as RuntimeLite>::interval(self.reap_interval);
+    futures::pin_mut!(tick);
     loop {
       futures::select! {
-        _ = <T::Runtime as RuntimeLite>::sleep(self.reap_interval).fuse() => {
+        _ = tick.next().fuse() => {
           let mut ms = self.members.write().await;
-          Self::reap_failed(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
-          Self::reap_left(&mut ms, self.event_tx.as_ref(), self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.tombstone_timeout).await;
+          let local_id = self.memberlist.local_id();
+          Self::reap_failed(local_id, &mut ms, &self.event_tx, self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.reconnect_timeout).await;
+          Self::reap_left(local_id, &mut ms, &self.event_tx, self.memberlist.delegate().and_then(|d| d.delegate()), self.coord_core.as_deref(), self.tombstone_timeout).await;
           reap_intents(&mut ms.recent_intents, Epoch::now(), self.recent_intent_timeout);
+          if self.shutdown_rx.is_closed() {
+            break;
+          }
         }
         _ = self.shutdown_rx.recv().fuse() => {
-          return;
+          break;
         }
       }
     }
+    tracing::debug!("ruserf: reaper exits");
   }
-  fn spawn(self) {
-    <T::Runtime as RuntimeLite>::spawn_detach(async move {
+
+  fn spawn(self) -> <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()> {
+    <T::Runtime as RuntimeLite>::spawn(async move {
       self.run().await;
-    });
+    })
   }
 
   async fn reap_failed(
+    local_id: &T::Id,
     old: &mut Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-    event_tx: Option<&async_channel::Sender<CrateEvent<T, D>>>,
+    event_tx: &async_channel::Sender<CrateEvent<T, D>>,
     reconnector: Option<&D>,
     coord: Option<&CoordCore<T::Id>>,
     timeout: Duration,
   ) {
-    reap!(event_tx <- reconnector(timeout(old.failed_members, coord)))
+    reap!(event_tx <- local_id.reconnector(timeout(old.failed_members, coord)))
   }
 
   async fn reap_left(
+    local_id: &T::Id,
     old: &mut Members<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
-    event_tx: Option<&async_channel::Sender<CrateEvent<T, D>>>,
+    event_tx: &async_channel::Sender<CrateEvent<T, D>>,
     reconnector: Option<&D>,
     coord: Option<&CoordCore<T::Id>>,
     timeout: Duration,
   ) {
-    reap!(event_tx <- reconnector(timeout(old.left_members, coord)))
+    reap!(event_tx <- local_id.reconnector(timeout(old.left_members, coord)))
   }
 }
 
@@ -647,13 +645,15 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  fn spawn(self) {
+  fn spawn(self) -> <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()> {
     let mut rng = rand::rngs::StdRng::from_rng(rand::thread_rng()).unwrap();
 
-    <T::Runtime as RuntimeLite>::spawn_detach(async move {
+    <T::Runtime as RuntimeLite>::spawn(async move {
+      let tick = <T::Runtime as RuntimeLite>::interval(self.reconnect_interval);
+      futures::pin_mut!(tick);
       loop {
         futures::select! {
-          _ = <T::Runtime as RuntimeLite>::sleep(self.reconnect_interval).fuse() => {
+          _ = tick.next().fuse() => {
             let mu = self.members.read().await;
             let num_failed = mu.failed_members.len();
             // Nothing to do if there are no failed members
@@ -690,11 +690,13 @@ where
             }
           }
           _ = self.shutdown_rx.recv().fuse() => {
-            return;
+            break;
           }
         }
       }
-    });
+
+      tracing::debug!("ruserf: reconnector exits");
+    })
   }
 }
 
@@ -711,11 +713,13 @@ where
   I: Send + Sync + 'static,
   A: Send + Sync + 'static,
 {
-  fn spawn<R: RuntimeLite>(self) {
-    R::spawn_detach(async move {
+  fn spawn<R: RuntimeLite>(self) -> <<R as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()> {
+    R::spawn(async move {
+      let tick = R::interval(self.opts.check_interval);
+      futures::pin_mut!(tick);
       loop {
         futures::select! {
-          _ = R::sleep(self.opts.check_interval).fuse() => {
+          _ = tick.next().fuse() => {
             let numq = self.queue.num_queued().await;
             #[cfg(feature = "metrics")]
             {
@@ -732,11 +736,13 @@ where
             }
           }
           _ = self.shutdown_rx.recv().fuse() => {
-            return;
+            break;
           }
         }
       }
-    });
+
+      tracing::debug!("ruserf: {} queue checker exits", self.name);
+    })
   }
 
   async fn get_queue_max(&self) -> usize {
@@ -823,11 +829,10 @@ where
       .increment(1);
     }
 
-    if let Some(ref tx) = self.inner.event_tx {
-      if let Err(e) = tx.send(msg.into()).await {
-        tracing::error!("ruserf: failed to send user event: {}", e);
-      }
+    if let Err(e) = self.inner.event_tx.send(msg.into()).await {
+      tracing::error!("ruserf: failed to send user event: {}", e);
     }
+
     true
   }
 
@@ -848,6 +853,127 @@ where
       from: q.from,
       relay_factor: q.relay_factor,
     }
+  }
+
+  pub(crate) async fn internal_query(
+    &self,
+    name: SmolStr,
+    payload: Bytes,
+    params: Option<QueryParam<T::Id>>,
+    ty: InternalQueryEvent<T::Id>,
+  ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
+  {
+    self.query_in(name, payload, params, Some(ty)).await
+  }
+
+  pub(crate) async fn query_in(
+    &self,
+    name: SmolStr,
+    payload: Bytes,
+    params: Option<QueryParam<T::Id>>,
+    ty: Option<InternalQueryEvent<T::Id>>,
+  ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
+  {
+    // Provide default parameters if none given.
+    let params = match params {
+      Some(params) if params.timeout != Duration::ZERO => params,
+      Some(mut params) => {
+        params.timeout = self.default_query_timeout().await;
+        params
+      }
+      None => self.default_query_param().await,
+    };
+
+    // Get the local node
+    let local = self.inner.memberlist.advertise_node();
+
+    // Encode the filters
+    let filters = params
+      .encode_filters::<D>()
+      .map_err(Error::transform_delegate)?;
+
+    // Setup the flags
+    let flags = if params.request_ack {
+      QueryFlag::ACK
+    } else {
+      QueryFlag::empty()
+    };
+
+    // Create the message
+    let q = QueryMessage {
+      ltime: self.inner.query_clock.time(),
+      id: rand::random(),
+      from: local.cheap_clone(),
+      filters,
+      flags,
+      relay_factor: params.relay_factor,
+      timeout: params.timeout,
+      name: name.clone(),
+      payload,
+    };
+
+    // Encode the query
+    let len = <D as TransformDelegate>::message_encoded_len(&q);
+
+    // Check the size
+    if len > self.inner.opts.query_size_limit {
+      return Err(Error::query_too_large(len));
+    }
+
+    let mut raw = BytesMut::with_capacity(len + 1); // + 1 for message type byte
+    raw.put_u8(MessageType::Query as u8);
+    raw.resize(len + 1, 0);
+    let actual_encoded_len = <D as TransformDelegate>::encode_message(&q, &mut raw[1..])
+      .map_err(Error::transform_delegate)?;
+    debug_assert_eq!(
+      actual_encoded_len, len,
+      "expected encoded len {} mismatch the actual encoded len {}",
+      len, actual_encoded_len
+    );
+
+    // Register QueryResponse to track acks and responses
+    let resp = QueryResponse::from_query(&q, self.inner.memberlist.num_online_members().await);
+    self
+      .register_query_response(params.timeout, resp.clone())
+      .await;
+
+    // Process query locally
+    self.handle_query(q, ty).await;
+
+    // Start broadcasting the event
+    self
+      .inner
+      .query_broadcasts
+      .queue_broadcast(SerfBroadcast {
+        msg: raw.freeze(),
+        notify_tx: None,
+      })
+      .await;
+    Ok(resp)
+  }
+
+  /// Used to setup the listeners for the query,
+  /// and to schedule closing the query after the timeout.
+  pub(crate) async fn register_query_response(
+    &self,
+    timeout: Duration,
+    resp: QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+  ) {
+    let tresps = self.inner.query_core.clone();
+    let mut resps = self.inner.query_core.write().await;
+    // Map the LTime to the QueryResponse. This is necessarily 1-to-1,
+    // since we increment the time for each new query.
+    let ltime = resp.ltime;
+    resps.responses.insert(ltime, resp);
+
+    // Setup a timer to close the response and deregister after the timeout
+    <T::Runtime as RuntimeLite>::spawn_after(timeout, async move {
+      let mut resps = tresps.write().await;
+      if let Some(resp) = resps.responses.remove(&ltime) {
+        resp.close().await;
+      }
+    })
+    .detach();
   }
 
   /// Called when a query broadcast is
@@ -884,10 +1010,12 @@ where
     let idx = u64::from(q.ltime % q_time) as usize;
     let seen = query.buffer[idx].as_mut();
     if let Some(seen) = seen {
-      for &prev in seen.query_ids.iter() {
-        if q.id == prev {
-          // Seen this ID already
-          return false;
+      if seen.ltime == q.ltime {
+        for &prev in seen.query_ids.iter() {
+          if q.id == prev {
+            // Seen this ID already
+            return false;
+          }
         }
       }
       seen.query_ids.push(q.id);
@@ -924,6 +1052,8 @@ where
 
     // Filter the query
     if !self.should_process_query(&q.filters) {
+      // Even if we don't process it further, we should rebroadcast,
+      // since it is the first time we've seen this.
       return rebroadcast;
     }
 
@@ -971,18 +1101,18 @@ where
       }
     }
 
-    if let Some(ref tx) = self.inner.event_tx {
-      let ev = self.query_event(q);
+    let ev = self.query_event(q);
 
-      if let Err(e) = tx
-        .send(match ty {
-          Some(ty) => (ty, ev).into(),
-          None => ev.into(),
-        })
-        .await
-      {
-        tracing::error!(err=%e, "ruserf: failed to send query");
-      }
+    if let Err(e) = self
+      .inner
+      .event_tx
+      .send(match ty {
+        Some(ty) => (ty, ev).into(),
+        None => ev.into(),
+      })
+      .await
+    {
+      tracing::error!(err=%e, "ruserf: failed to send query");
     }
 
     rebroadcast
@@ -1017,6 +1147,7 @@ where
       query
         .handle_query_response::<T, D>(
           resp,
+          self.local_id(),
           #[cfg(feature = "metrics")]
           self.inner.opts.memberlist_options.metric_labels(),
         )
@@ -1049,19 +1180,24 @@ where
     }
 
     let node = n.node();
-    let tags = match <D as TransformDelegate>::decode_tags(n.meta()) {
-      Ok((readed, tags)) => {
-        tracing::trace!(read = %readed, tags=?tags, "ruserf: decode tags successfully");
-        tags
+    let tags = if !n.meta().is_empty() {
+      match <D as TransformDelegate>::decode_tags(n.meta()) {
+        Ok((readed, tags)) => {
+          tracing::trace!(read = %readed, tags=?tags, "ruserf: decode tags successfully");
+          tags
+        }
+        Err(e) => {
+          tracing::error!(err=%e, "ruserf: failed to decode tags");
+          return;
+        }
       }
-      Err(e) => {
-        tracing::error!(err=%e, "ruserf: failed to decode tags");
-        return;
-      }
+    } else {
+      Default::default()
     };
 
     let (old_status, fut) = if let Some(member) = members.states.get_mut(node.id()) {
       let old_status = member.member.status;
+      #[cfg(feature = "metrics")]
       let dead_time = member.leave_time.map(|t| t.elapsed());
       #[cfg(feature = "metrics")]
       if old_status == MemberStatus::Failed {
@@ -1092,15 +1228,13 @@ where
 
       (
         old_status,
-        self.inner.event_tx.as_ref().map(|tx| {
-          tx.send(
-            MemberEvent {
-              ty: MemberEventType::Join,
-              members: Arc::new(TinyVec::from(member.member.clone())),
-            }
-            .into(),
-          )
-        }),
+        self.inner.event_tx.send(
+          MemberEvent {
+            ty: MemberEventType::Join,
+            members: Arc::new(TinyVec::from(member.member.clone())),
+          }
+          .into(),
+        ),
       )
     } else {
       // Check if we have a join or leave intent. The intent buffer
@@ -1134,15 +1268,13 @@ where
       members.states.insert(node.id().cheap_clone(), ms);
       (
         MemberStatus::None,
-        self.inner.event_tx.as_ref().map(|tx| {
-          tx.send(
-            MemberEvent {
-              ty: MemberEventType::Join,
-              members: Arc::new(TinyVec::from(member)),
-            }
-            .into(),
-          )
-        }),
+        self.inner.event_tx.send(
+          MemberEvent {
+            ty: MemberEventType::Join,
+            members: Arc::new(TinyVec::from(member)),
+          }
+          .into(),
+        ),
       )
     };
 
@@ -1160,10 +1292,8 @@ where
     .increment(1);
 
     tracing::info!("ruserf: member join: {}", node);
-    if let Some(fut) = fut {
-      if let Err(e) = fut.await {
-        tracing::error!(err=%e, "ruserf: failed to send member event");
-      }
+    if let Err(e) = fut.await {
+      tracing::error!(err=%e, "ruserf: failed to send member event");
     }
   }
 
@@ -1260,19 +1390,19 @@ where
 
     tracing::info!("ruserf: {}: {}", ty.as_str(), member.node());
 
-    if let Some(ref tx) = self.inner.event_tx {
-      if let Err(e) = tx
-        .send(
-          MemberEvent {
-            ty,
-            members: Arc::new(TinyVec::from(member)),
-          }
-          .into(),
-        )
-        .await
-      {
-        tracing::error!(err=%e, "ruserf: failed to send member event: {}", e);
-      }
+    if let Err(e) = self
+      .inner
+      .event_tx
+      .send(
+        MemberEvent {
+          ty,
+          members: Arc::new(TinyVec::from(member)),
+        }
+        .into(),
+      )
+      .await
+    {
+      tracing::error!(err=%e, "ruserf: failed to send member event: {}", e);
     }
   }
 
@@ -1340,13 +1470,17 @@ where
         member.member.status = MemberStatus::Leaving;
 
         if msg.prune {
-          self.handle_prune(member, *members.borrow_mut()).await;
+          let owned = member.clone();
+          drop(members_mut);
+          self.handle_prune(&owned, *members.borrow_mut()).await;
         }
         true
       }
       MemberStatus::Leaving | MemberStatus::Left => {
         if msg.prune {
-          self.handle_prune(member, *members.borrow_mut()).await;
+          let owned = member.clone();
+          drop(members_mut);
+          self.handle_prune(&owned, *members.borrow_mut()).await;
         }
         true
       }
@@ -1368,19 +1502,20 @@ where
         // left to allow higher-level applications to handle the
         // graceful leave.
         tracing::info!("ruserf: EventMemberLeave (forced): {}", owned.member.node);
-        if let Some(ref tx) = self.inner.event_tx {
-          if let Err(e) = tx
-            .send(
-              MemberEvent {
-                ty: MemberEventType::Leave,
-                members: Arc::new(TinyVec::from(owned.member.clone())),
-              }
-              .into(),
-            )
-            .await
-          {
-            tracing::error!(err=%e, "ruserf: failed to send member event");
-          }
+
+        if let Err(e) = self
+          .inner
+          .event_tx
+          .send(
+            MemberEvent {
+              ty: MemberEventType::Leave,
+              members: Arc::new(TinyVec::from(owned.member.clone())),
+            }
+            .into(),
+          )
+          .await
+        {
+          tracing::error!(err=%e, "ruserf: failed to send member event");
         }
 
         if msg.prune {
@@ -1430,19 +1565,19 @@ where
       .increment(1);
 
       tracing::info!("ruserf: member update: {}", id);
-      if let Some(ref tx) = self.inner.event_tx {
-        if let Err(e) = tx
-          .send(
-            MemberEvent {
-              ty: MemberEventType::Update,
-              members: Arc::new(TinyVec::from(ms.member.clone())),
-            }
-            .into(),
-          )
-          .await
-        {
-          tracing::error!(err=%e, "ruserf: failed to send member event");
-        }
+      if let Err(e) = self
+        .inner
+        .event_tx
+        .send(
+          MemberEvent {
+            ty: MemberEventType::Update,
+            members: Arc::new(TinyVec::from(ms.member.clone())),
+          }
+          .into(),
+        )
+        .await
+      {
+        tracing::error!(err=%e, "ruserf: failed to send member event");
       }
     }
   }
@@ -1471,7 +1606,7 @@ where
       remove_old_member(&mut members.left_members, id);
     }
 
-    let tx = self.inner.event_tx.as_ref();
+    let tx = &self.inner.event_tx;
     let coord = self.inner.coord_core.as_deref();
     erase_node!(tx <- coord(members[id].member))
   }
@@ -1487,9 +1622,11 @@ where
     // Log a basic warning if the node is not us...
     if existing.id() != self.inner.memberlist.local_id() {
       tracing::warn!(
-        "ruserf: node conflict detected between {} and {}",
+        "ruserf: node conflict detected between {}({}) and {}({})",
         existing.id(),
-        other.id()
+        existing.address(),
+        other.id(),
+        other.address(),
       );
       return;
     }
@@ -1504,98 +1641,100 @@ where
     // If automatic resolution is enabled, kick off the resolution
     if self.inner.opts.enable_id_conflict_resolution {
       let this = self.clone();
-      <T::Runtime as RuntimeLite>::spawn_detach(async move {
-        // Get the local node
-        let local_id = this.inner.memberlist.local_id();
-        let encoded_id_len = <D as TransformDelegate>::id_encoded_len(local_id);
-        let mut payload = vec![0u8; encoded_id_len];
+      <T::Runtime as RuntimeLite>::spawn_detach(async move { this.resolve_node_conflict().await });
+    }
+  }
 
-        if let Err(e) = <D as TransformDelegate>::encode_id(local_id, &mut payload) {
-          tracing::error!(err=%e, "ruserf: failed to encode local id");
-          return;
-        }
+  /// Used to determine which node should remain during
+  /// a name conflict. This is done by running an internal query.
+  async fn resolve_node_conflict(&self) {
+    // Get the local node
+    let local_id = self.inner.memberlist.local_id();
+    let local_advertise_addr = self.inner.memberlist.advertise_address();
+    let encoded_id_len = <D as TransformDelegate>::id_encoded_len(local_id);
+    let mut payload = vec![0u8; encoded_id_len];
 
-        // Start an id resolution query
-        let ty = InternalQueryEvent::Conflict(local_id.clone());
-        let resp = match this
-          .internal_query(SmolStr::new(ty.as_str()), payload.into(), None, ty)
-          .await
-        {
-          Ok(resp) => resp,
-          Err(e) => {
-            tracing::error!(err=%e, "ruserf: failed to start node id resolution query");
-            return;
-          }
-        };
+    if let Err(e) = <D as TransformDelegate>::encode_id(local_id, &mut payload) {
+      tracing::error!(err=%e, "ruserf: failed to encode local id");
+      return;
+    }
 
-        // Counter to determine winner
-        let mut responses = 0usize;
-        let mut matching = 0usize;
+    // Start an id resolution query
+    let ty = InternalQueryEvent::Conflict(local_id.clone());
+    let resp = match self
+      .internal_query(SmolStr::new(ty.as_str()), payload.into(), None, ty)
+      .await
+    {
+      Ok(resp) => resp,
+      Err(e) => {
+        tracing::error!(err=%e, "ruserf: failed to start node id resolution query");
+        return;
+      }
+    };
 
-        // Gather responses
-        let resp_rx = resp.response_rx();
-        futures::pin_mut!(resp_rx);
-        while let Some(r) = resp_rx.next().await {
-          // Decode the response
-          if r.payload.is_empty() || r.payload[0] != MessageType::ConflictResponse as u8 {
-            tracing::warn!(
-              "ruserf: invalid conflict query response type: {:?}",
-              r.payload.as_ref()
-            );
-            continue;
-          }
+    // Counter to determine winner
+    let mut responses = 0usize;
+    let mut matching = 0usize;
 
-          match <D as TransformDelegate>::decode_message(
-            MessageType::ConflictResponse,
-            &r.payload[1..],
-          ) {
-            Ok((_, decoded)) => {
-              match decoded {
-                SerfMessage::ConflictResponse(member) => {
-                  // Update the counters
-                  responses += 1;
-                  if member.node.id().eq(local_id) {
-                    matching += 1;
-                  }
-                }
-                msg => {
-                  tracing::warn!(
-                    "ruserf: invalid conflict query response type: {}",
-                    msg.ty().as_str()
-                  );
-                  continue;
-                }
+    // Gather responses
+    let resp_rx = resp.response_rx();
+    while let Ok(r) = resp_rx.recv().await {
+      // Decode the response
+      if r.payload.is_empty() || r.payload[0] != MessageType::ConflictResponse as u8 {
+        tracing::warn!(
+          "ruserf: invalid conflict query response type: {:?}",
+          r.payload.as_ref()
+        );
+        continue;
+      }
+
+      match <D as TransformDelegate>::decode_message(MessageType::ConflictResponse, &r.payload[1..])
+      {
+        Ok((_, decoded)) => {
+          match decoded {
+            SerfMessage::ConflictResponse(member) => {
+              // Update the counters
+              responses += 1;
+              if member.node.address().eq(local_advertise_addr) {
+                matching += 1;
               }
             }
-            Err(e) => {
-              tracing::error!(err=%e, "ruserf: failed to decode conflict query response");
+            msg => {
+              tracing::warn!(
+                "ruserf: invalid conflict query response type: {}",
+                msg.ty().as_str()
+              );
               continue;
             }
           }
         }
-
-        // Query over, determine if we should live
-        let majority = (responses / 2) + 1;
-        if matching >= majority {
-          tracing::info!(
-            "ruserf: majority in node id conflict resolution [{} / {}]",
-            matching,
-            responses
-          );
-          return;
+        Err(e) => {
+          tracing::error!(err=%e, "ruserf: failed to decode conflict query response");
+          continue;
         }
+      }
+    }
 
-        // Since we lost the vote, we need to exit
-        tracing::warn!(
-          "ruserf: minority in name conflict resolution, quiting [{} / {}]",
-          matching,
-          responses
-        );
+    // Query over, determine if we should live
+    let majority = (responses / 2) + 1;
+    if matching >= majority {
+      tracing::info!(
+        "ruserf: majority in node id conflict resolution [{} / {}]",
+        matching,
+        responses
+      );
+      return;
+    }
 
-        if let Err(e) = this.shutdown().await {
-          tracing::error!(err=%e, "ruserf: failed to shutdown");
-        }
-      });
+    // Since we lost the vote, we need to exit
+    tracing::warn!(
+      "ruserf: minority in name conflict resolution, quiting [{} / {}]",
+      matching,
+      responses
+    );
+
+    if let Err(e) = self.shutdown().await {
+      tracing::error!(err=%e, "ruserf: failed to shutdown");
     }
   }
 

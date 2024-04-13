@@ -1,5 +1,3 @@
-> Note: This project is not ready and under big refactoring.
-
 <div align="center">
 
 <img src="https://raw.githubusercontent.com/al8n/ruserf/main/art/logo.png" height = "200px">
@@ -10,12 +8,12 @@
 </div>
 <div align="center">
 
-A highly customable, adaptable, runtime agnostic and WASM/WASI friendly Gossip protocol which helps manage cluster membership and member failure detection.
+A highly customable, adaptable, runtime agnostic and WASM/WASI friendly decentralized solution for service discovery and orchestration that is lightweight, highly available, and fault tolerant.
 
 Port and improve [HashiCorp's serf](https://github.com/hashicorp/serf) to Rust.
 
 [<img alt="github" src="https://img.shields.io/badge/github-al8n/ruserf-8da0cb?style=for-the-badge&logo=Github" height="22">][Github-url]
-<img alt="LoC" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fal8n%2F9632112cb0a7fb0112e6c74778398c35%2Fraw%2Fruserf" height="22">
+<img alt="LoC" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fal8n%2Fd29ceff54c025fe4e8b144a51efb9324%2Fraw%2Fruserf" height="22">
 [<img alt="Build" src="https://img.shields.io/github/actions/workflow/status/al8n/ruserf/coverage.yml?logo=Github-Actions&style=for-the-badge" height="22">][CI-url]
 [<img alt="codecov" src="https://img.shields.io/codecov/c/gh/al8n/ruserf?style=for-the-badge&token=6R3QFWRWHL&logo=codecov" height="22">][codecov-url]
 
@@ -31,7 +29,7 @@ English | [简体中文][zh-cn-url]
 
 ## Introduction
 
-ruserf is a rust crate that manages cluster membership and member failure detection using a gossip based protocol.
+ruserf is a decentralized solution for service discovery and orchestration that is lightweight, highly available, and fault tolerant.
 
 The use cases for such a library are far-reaching: all distributed systems require membership, and ruserf is a re-usable solution to managing cluster membership and node failure detection.
 
@@ -92,29 +90,17 @@ Here are the layers:
 
     Here are the sub delegate traits:
 
-    - **`AliveDelegate`**
-
-      Used to involve a client in processing a node "alive" message. When a node joins, either through a packet gossip or promised push/pull, we update the state of that node via an alive message. This can be used to filter a node out and prevent it from being considered a peer using application specific logic.
-
-    - **`ConflictDelegate`**
-
-      Used to inform a client that a node has attempted to join which would result in a name conflict. This happens if two clients are configured with the same name but different addresses.
-
-    - **`EventDelegate`**
-
-      A simpler delegate that is used only to receive notifications about members joining and leaving. The methods in this delegate may be called by multiple threads, but never concurrently. This allows you to reason about ordering.
-
     - **`MergeDelegate`**
 
       Used to involve a client in a potential cluster merge operation. Namely, when a node does a promised push/pull (as part of a join), the delegate is involved and allowed to cancel the join based on custom logic. The merge delegate is NOT invoked as part of the push-pull anti-entropy.
 
-    - **`NodeDelegate`**
+    - **`TransformDelegate`**
 
-      Used to manage node related events. e.g. metadata
+      A delegate for encoding and decoding. Used to control how `ruserf` should encode/decode messages.
 
-    - **`PingDelegate`**
+    - **`ReconnectDelegate`**
 
-      Used to notify an observer how long it took for a ping message to complete a round trip. It can also be used for writing arbitrary byte slices into ack messages. Note that in order to be meaningful for RTT estimates, this delegate does not apply to indirect pings, nor fallback pings sent over promised connection.
+      Used to custom reconnect behavior, users can implement to allow overriding the reconnect timeout for individual members.
 
   - **`CompositeDelegate`**
 
@@ -137,13 +123,13 @@ ruserf = "0.1"
 
 ## Q & A
 
-- ***Does Rust's ruserf implemenetation compatible to Go's ruserf?***
+- ***Does Rust's ruserf implemenetation compatible to Go's serf?***
 
-  No but yes! By default, it is not compatible. But the secret is the serialize/deserilize layer, Go's ruserf use the msgpack as the serialization/deserialization framework, so in theory, if you can implement a [`Wire`](https://docs.rs/ruserf-core/transport/trait.Wire.html) trait which compat to Go's ruserf, then it becomes compatible.
+  No but yes! By default, it is not compatible. But the secret is the serialize/deserilize layer, Go's serf use the msgpack as the serialization/deserialization framework, so in theory, if you can implement a [`TransformDelegate`](https://docs.rs/ruserf-core/transport/trait.TransformDelegate.html) trait which compat to Go's serf, then it becomes compatible.
 
-- ***If Go's ruserf adds more functionalities, will this project also support?***
+- ***If Go's serf adds more functionalities, will this project also support?***
   
-  Yes! And this project may also add more functionalities whereas the Go's ruserf does not have. e.g. wasmer support, bindings to other languages and etc.
+  Yes! And this project may also add more functionalities whereas the Go's serf does not have. e.g. wasmer support, bindings to other languages and etc.
 
 ## Related Projects
 
@@ -151,10 +137,7 @@ ruserf = "0.1"
 - [`nodecraft`](https://github.com/al8n/nodecraft): crafting seamless node operations for distributed systems, which provides foundational traits for node identification and address resolution.
 - [`transformable`](https://github.com/al8n/transformable): transform its representation between structured and byte form.
 - [`peekable`](https://github.com/al8n/peekable): peekable reader and async reader
-
-<!-- ### Which crates are using ruserf? -->
-
-<!-- - [`ruserf`](https://github.com/al8n/ruserf): A decentralized solution for service discovery and orchestration that is lightweight, highly available, and fault tolerant. -->
+- [`memberlist`](https://github.com/al8n/memberlist): A highly customable, adaptable, runtime agnostic and WASM/WASI friendly Gossip protocol which helps manage cluster membership and member failure detection.
 
 #### License
 

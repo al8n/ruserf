@@ -1,9 +1,6 @@
 use std::{
   collections::HashMap,
-  sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
-  },
+  sync::atomic::{AtomicUsize, Ordering},
   time::Duration,
 };
 
@@ -95,7 +92,21 @@ pub struct CoordinateOptions {
   gravity_rho: f64,
 
   #[cfg(feature = "metrics")]
-  metric_labels: Arc<memberlist_core::types::MetricLabels>,
+  #[viewit(
+    getter(
+      const,
+      style = "ref",
+      attrs(
+        cfg(feature = "metrics"),
+        doc = "The metric labels used to identify the metrics for this coordinate client."
+      )
+    ),
+    setter(attrs(
+      cfg(feature = "metrics"),
+      doc = "Sets the metric labels used to identify the metrics for this coordinate client."
+    ))
+  )]
+  metric_labels: std::sync::Arc<memberlist_core::types::MetricLabels>,
 }
 
 impl Default for CoordinateOptions {
@@ -119,7 +130,7 @@ impl CoordinateOptions {
       latency_filter_size: 3,
       gravity_rho: 150.0,
       #[cfg(feature = "metrics")]
-      metric_labels: Arc::new(memberlist_core::types::MetricLabels::default()),
+      metric_labels: std::sync::Arc::new(memberlist_core::types::MetricLabels::default()),
     }
   }
 }

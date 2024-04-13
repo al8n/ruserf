@@ -35,7 +35,7 @@ impl Broadcast for SerfBroadcast {
 
   async fn finished(&self) {
     if let Some(ref tx) = self.notify_tx {
-      tx.close();
+      let _ = tx.send(()).await;
     }
   }
 
@@ -44,6 +44,7 @@ impl Broadcast for SerfBroadcast {
   }
 }
 
+#[cfg(test)]
 #[tokio::test]
 async fn test_broadcast_finished() {
   use futures::{self, FutureExt};
@@ -66,6 +67,7 @@ async fn test_broadcast_finished() {
   }
 }
 
+#[cfg(test)]
 #[tokio::test]
 async fn test_broadcast_finished_no_sender() {
   let b = SerfBroadcast {

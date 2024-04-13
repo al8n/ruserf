@@ -13,7 +13,8 @@ use memberlist_core::{
 use smol_str::SmolStr;
 
 use crate::event::{
-  INTERNAL_INSTALL_KEY, INTERNAL_LIST_KEYS, INTERNAL_REMOVE_KEY, INTERNAL_USE_KEY,
+  InternalQueryEvent, INTERNAL_INSTALL_KEY, INTERNAL_LIST_KEYS, INTERNAL_REMOVE_KEY,
+  INTERNAL_USE_KEY,
 };
 
 use super::{
@@ -91,7 +92,12 @@ where
   ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
-      .handle_key_request(Some(key), INTERNAL_INSTALL_KEY, opts)
+      .handle_key_request(
+        Some(key),
+        INTERNAL_INSTALL_KEY,
+        opts,
+        InternalQueryEvent::InstallKey,
+      )
       .await
   }
 
@@ -105,7 +111,12 @@ where
   ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
-      .handle_key_request(Some(key), INTERNAL_USE_KEY, opts)
+      .handle_key_request(
+        Some(key),
+        INTERNAL_USE_KEY,
+        opts,
+        InternalQueryEvent::UseKey,
+      )
       .await
   }
 
@@ -119,7 +130,12 @@ where
   ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.write().await;
     self
-      .handle_key_request(Some(key), INTERNAL_REMOVE_KEY, opts)
+      .handle_key_request(
+        Some(key),
+        INTERNAL_REMOVE_KEY,
+        opts,
+        InternalQueryEvent::RemoveKey,
+      )
       .await
   }
 
@@ -131,7 +147,7 @@ where
   pub async fn list_keys(&self) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let _mu = self.l.read().await;
     self
-      .handle_key_request(None, INTERNAL_LIST_KEYS, None)
+      .handle_key_request(None, INTERNAL_LIST_KEYS, None, InternalQueryEvent::ListKey)
       .await
   }
 
@@ -140,6 +156,7 @@ where
     key: Option<SecretKey>,
     ty: &str,
     opts: Option<KeyRequestOptions>,
+    event: InternalQueryEvent<T::Id>,
   ) -> Result<KeyResponse<T::Id>, Error<T, D>> {
     let kr = KeyRequestMessage { key };
     let expected_encoded_len = <D as TransformDelegate>::message_encoded_len(&kr);
@@ -147,8 +164,8 @@ where
     buf.put_u8(MessageType::KeyRequest as u8);
     buf.resize(expected_encoded_len + 1, 0);
     // Encode the query request
-    let len =
-      <D as TransformDelegate>::encode_message(&kr, &mut buf[1..]).map_err(Error::transform)?;
+    let len = <D as TransformDelegate>::encode_message(&kr, &mut buf[1..])
+      .map_err(Error::transform_delegate)?;
 
     debug_assert_eq!(
       len, expected_encoded_len,
@@ -162,7 +179,7 @@ where
       q_param.relay_factor = opts.relay_factor;
     }
     let qresp: QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress> = serf
-      .query(SmolStr::new(ty), buf.freeze(), Some(q_param))
+      .internal_query(SmolStr::new(ty), buf.freeze(), Some(q_param), event)
       .await?;
 
     // Handle the response stream and populate the KeyResponse

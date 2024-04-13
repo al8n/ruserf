@@ -97,13 +97,13 @@ impl<I, A> QueryMessage<I, A> {
   /// Checks if the ack flag is set
   #[inline]
   pub fn ack(&self) -> bool {
-    (self.flags & QueryFlag::ACK) != QueryFlag::empty()
+    self.flags.contains(QueryFlag::ACK)
   }
 
   /// Checks if the no broadcast flag is set
   #[inline]
   pub fn no_broadcast(&self) -> bool {
-    (self.flags & QueryFlag::NO_BROADCAST) != QueryFlag::empty()
+    self.flags.contains(QueryFlag::NO_BROADCAST)
   }
 }
 
@@ -346,13 +346,13 @@ impl<I, A> QueryResponseMessage<I, A> {
   /// Checks if the ack flag is set
   #[inline]
   pub fn ack(&self) -> bool {
-    (self.flags & QueryFlag::ACK) != QueryFlag::empty()
+    self.flags.contains(QueryFlag::ACK)
   }
 
   /// Checks if the no broadcast flag is set
   #[inline]
   pub fn no_broadcast(&self) -> bool {
-    (self.flags & QueryFlag::NO_BROADCAST) != QueryFlag::empty()
+    self.flags.contains(QueryFlag::NO_BROADCAST)
   }
 }
 

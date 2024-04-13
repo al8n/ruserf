@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use super::*;
 
 /// Unit test for the snapshoter.
@@ -20,7 +22,7 @@ pub async fn snapshoter<T>(
     SNAPSHOT_SIZE_LIMIT,
     false,
     clock.clone(),
-    Some(out_tx),
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -172,7 +174,7 @@ pub async fn snapshoter<T>(
     SNAPSHOT_SIZE_LIMIT,
     false,
     clock.clone(),
-    Some(out_tx),
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -199,7 +201,7 @@ pub async fn snapshoter<T>(
     SNAPSHOT_SIZE_LIMIT,
     false,
     clock.clone(),
-    Some(out_tx),
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -225,12 +227,13 @@ pub async fn snapshoter_force_compact<T>(
 
   // Create a very low limit
   let res = open_and_replay_snapshot::<_, _, DefaultDelegate<T>, _>(&p, false).unwrap();
+  let (out_tx, _out_rx) = async_channel::unbounded();
   let (event_tx, _, handle) = Snapshot::<T, DefaultDelegate<T>>::from_replay_result(
     res,
     1024,
     false,
     clock.clone(),
-    None,
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -291,12 +294,13 @@ pub async fn snapshoter_leave<T>(
   let clock = LamportClock::new();
   let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
   let res = open_and_replay_snapshot::<_, _, DefaultDelegate<T>, _>(&p, false).unwrap();
+  let (out_tx, _out_rx) = async_channel::unbounded();
   let (event_tx, _, handle) = Snapshot::<T, DefaultDelegate<T>>::from_replay_result(
     res,
     SNAPSHOT_SIZE_LIMIT,
     false,
     clock.clone(),
-    None,
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -317,7 +321,7 @@ pub async fn snapshoter_leave<T>(
     ctx: Arc::new(QueryContext {
       query_timeout: Duration::default(),
       span: Mutex::new(None),
-      this: s,
+      this: s.clone(),
     }),
     id: 0,
     from: Node::new("baz".into(), addr.clone()),
@@ -350,19 +354,22 @@ pub async fn snapshoter_leave<T>(
   // Close the snapshoter
   shutdown_tx.close();
   handle.wait().await;
+  s.shutdown().await.unwrap();
+  drop(s);
 
   // Open the snapshoter
-  let (_shutdown_tx, shutdown_rx) = async_channel::bounded(1);
+  let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
   let res = open_and_replay_snapshot::<_, _, DefaultDelegate<T>, _>(&p, false).unwrap();
   assert!(res.last_clock == 0.into());
   assert!(res.last_event_clock == 0.into());
   assert!(res.last_query_clock == 0.into());
+  let (out_tx, _out_rx) = async_channel::unbounded();
   let (_, alive_nodes, _) = Snapshot::<T, DefaultDelegate<T>>::from_replay_result(
     res,
     SNAPSHOT_SIZE_LIMIT,
     false,
     clock.clone(),
-    None,
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -370,6 +377,10 @@ pub async fn snapshoter_leave<T>(
   .unwrap();
 
   assert!(alive_nodes.is_empty());
+
+  // Close the snapshoter
+  shutdown_tx.close();
+  handle.wait().await;
 }
 
 /// Unit test for the snapshoter leave rejoin
@@ -386,12 +397,13 @@ pub async fn snapshoter_leave_rejoin<T>(
   let clock = LamportClock::new();
   let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
   let res = open_and_replay_snapshot::<_, _, DefaultDelegate<T>, _>(&p, true).unwrap();
+  let (out_tx, _out_rx) = async_channel::unbounded();
   let (event_tx, _, handle) = Snapshot::<T, DefaultDelegate<T>>::from_replay_result(
     res,
     SNAPSHOT_SIZE_LIMIT,
     true,
     clock.clone(),
-    None,
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -412,7 +424,7 @@ pub async fn snapshoter_leave_rejoin<T>(
     ctx: Arc::new(QueryContext {
       query_timeout: Duration::default(),
       span: Mutex::new(None),
-      this: s,
+      this: s.clone(),
     }),
     id: 0,
     from: Node::new("baz".into(), addr.clone()),
@@ -441,23 +453,30 @@ pub async fn snapshoter_leave_rejoin<T>(
 
   // Leave the cluster!
   handle.leave().await;
-
   // Close the snapshoter
   shutdown_tx.close();
   handle.wait().await;
 
+  let mut f = std::fs::File::open(&p).unwrap();
+  let mut d = vec![];
+  f.read_to_end(&mut d).unwrap();
+
+  s.shutdown().await.unwrap();
+  drop(s);
+
   // Open the snapshoter
-  let (_shutdown_tx, shutdown_rx) = async_channel::bounded(1);
+  let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
   let res = open_and_replay_snapshot::<_, _, DefaultDelegate<T>, _>(&p, true).unwrap();
   assert!(res.last_clock == 100.into());
   assert!(res.last_event_clock == 42.into());
   assert!(res.last_query_clock == 50.into());
-  let (_, alive_nodes, _) = Snapshot::<T, DefaultDelegate<T>>::from_replay_result(
+  let (out_tx, _out_rx) = async_channel::unbounded();
+  let (_, alive_nodes, handle) = Snapshot::<T, DefaultDelegate<T>>::from_replay_result(
     res,
     SNAPSHOT_SIZE_LIMIT,
     false,
     clock.clone(),
-    None,
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -465,13 +484,21 @@ pub async fn snapshoter_leave_rejoin<T>(
   .unwrap();
 
   assert!(!alive_nodes.is_empty());
+
+  // Close the snapshoter
+  shutdown_tx.close();
+  handle.wait().await;
 }
 
 /// Unit tests for the serf snapshot recovery
-pub async fn serf_snapshot_recovery<T>(transport_opts1: T::Options, transport_opts2: T::Options)
-where
+pub async fn serf_snapshot_recovery<T, F>(
+  transport_opts1: T::Options,
+  transport_opts2: T::Options,
+  get_transport: impl FnOnce(T::Id, <T::Resolver as AddressResolver>::ResolvedAddress) -> F + Copy,
+) where
   T: Transport,
   T::Options: Clone,
+  F: core::future::Future<Output = T::Options>,
 {
   let td = tempfile::tempdir().unwrap();
   let snap_path = td.path().join("serf_snapshot_recovery");
@@ -485,7 +512,7 @@ where
   .await
   .unwrap();
 
-  let mut serfs = [s1, s2];
+  let mut serfs = vec![s1, s2];
   wait_until_num_nodes(1, &serfs).await;
 
   let node = serfs[1]
@@ -506,8 +533,11 @@ where
 
   // Now force the shutdown of s2 so it appears to fail.
   serfs[1].shutdown().await.unwrap();
-  <T::Runtime as RuntimeLite>::sleep(serfs[1].inner.opts.memberlist_options.probe_interval * 10)
-    .await;
+  let (s2id, s2addr) = serfs[1].advertise_node().into_components();
+  let t = serfs[1].inner.opts.memberlist_options.probe_interval * 10;
+  let _ = serfs.pop().unwrap();
+
+  <T::Runtime as RuntimeLite>::sleep(t).await;
 
   // Verify that s2 is "failed"
   {
@@ -530,7 +560,7 @@ where
   // Listen for events
   let (event_tx, event_rx) = EventProducer::bounded(4);
   let s2 = Serf::<T>::with_event_producer(
-    transport_opts2,
+    get_transport(s2id, s2addr).await,
     test_config().with_snapshot_path(Some(snap_path.clone())),
     event_tx,
   )
@@ -550,7 +580,7 @@ where
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(10)).await;
   }
 
-  serfs[1] = s2;
+  serfs.push(s2);
 
   // Verify that s2 is "alive"
   {
@@ -572,105 +602,16 @@ where
   }
 }
 
-/// Unit tests for the serf leave snapshot recovery
-pub async fn serf_leave_snapshot_recovery<T>(
-  transport_opts1: T::Options,
-  transport_opts2: T::Options,
-) where
-  T: Transport,
-  T::Options: Clone,
-{
-  let td = tempfile::tempdir().unwrap();
-  let snap_path = td.path().join("serf_leave_snapshot_recovery");
-
-  let s1 = Serf::<T>::new(
-    transport_opts1,
-    test_config().with_reap_interval(Duration::from_secs(30)),
-  )
-  .await
-  .unwrap();
-  let s2 = Serf::<T>::new(
-    transport_opts2.clone(),
-    test_config()
-      .with_snapshot_path(Some(snap_path.clone()))
-      .with_reap_interval(Duration::from_secs(30)),
-  )
-  .await
-  .unwrap();
-
-  let mut serfs = [s1, s2];
-  wait_until_num_nodes(1, &serfs).await;
-
-  let node = serfs[1]
-    .inner
-    .memberlist
-    .advertise_node()
-    .map_address(MaybeResolvedAddress::resolved);
-  serfs[0].join(node.clone(), false).await.unwrap();
-
-  wait_until_num_nodes(2, &serfs).await;
-
-  // Put s2 in left state
-  serfs[1].leave().await.unwrap();
-  serfs[1].shutdown().await.unwrap();
-
-  <T::Runtime as RuntimeLite>::sleep(serfs[1].inner.opts.memberlist_options.probe_interval * 5)
-    .await;
-
-  let s2id = serfs[1].local_id().clone();
-
-  let start = Epoch::now();
-  loop {
-    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
-
-    let members = serfs[0].inner.members.read().await;
-    if test_member_status(&members.states, s2id.clone(), MemberStatus::Left).is_ok() {
-      break;
-    }
-
-    if start.elapsed() > Duration::from_secs(7) {
-      panic!("timed out");
-    }
-  }
-
-  // Restart s2 from the snapshot now!
-  let s2 = Serf::<T>::new(
-    transport_opts2.clone(),
-    test_config()
-      .with_snapshot_path(Some(snap_path.clone()))
-      .with_reap_interval(Duration::from_secs(30)),
-  )
-  .await
-  .unwrap();
-  serfs[1] = s2;
-
-  // Wait for the node to auto rejoin
-
-  // Verify that s2 did not join
-  let start = Epoch::now();
-  loop {
-    <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
-    let num = serfs[1].num_nodes().await;
-    if num != 1 && start.elapsed() > Duration::from_secs(7) {
-      panic!("bad members");
-    }
-
-    let members = serfs[0].inner.members.read().await;
-    if test_member_status(&members.states, s2id.clone(), MemberStatus::Left).is_err()
-      && start.elapsed() > Duration::from_secs(7)
-    {
-      panic!("timed out");
-    }
-  }
-}
-
-#[tokio::test(flavor = "multi_thread")]
+#[cfg(test)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
 async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
   use memberlist_core::{
     agnostic_lite::tokio::TokioRuntime,
     transport::{resolver::socket_addr::SocketAddrResolver, tests::UnimplementedTransport, Lpe},
   };
   use std::net::SocketAddr;
+
+  crate::tests::initialize_tests_tracing();
 
   type Transport = UnimplementedTransport<
     SmolStr,
@@ -695,7 +636,7 @@ async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
     SNAPSHOT_SIZE_LIMIT,
     true,
     clock.clone(),
-    Some(out_tx),
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),
@@ -778,7 +719,8 @@ async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
   handle.wait().await;
 }
 
-#[tokio::test]
+#[cfg(test)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
 async fn test_snapshoter_slow_disk_not_blocking_memberlist() {
   use memberlist_core::{
     agnostic_lite::tokio::TokioRuntime,
@@ -809,7 +751,7 @@ async fn test_snapshoter_slow_disk_not_blocking_memberlist() {
     SNAPSHOT_SIZE_LIMIT,
     true,
     clock.clone(),
-    Some(out_tx),
+    out_tx,
     shutdown_rx.clone(),
     #[cfg(feature = "metrics")]
     Default::default(),

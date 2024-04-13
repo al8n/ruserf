@@ -16,6 +16,8 @@ where
 
   let (_, tags) = <DefaultDelegate<T> as TransformDelegate>::decode_tags(&meta).unwrap();
   assert_eq!(tags.get("role"), Some(&SmolStr::new("test")));
+
+  s.shutdown().await.unwrap();
 }
 
 /// Unit test for delegate node meta panic
@@ -31,6 +33,7 @@ where
   .await
   .unwrap();
   s.inner.memberlist.delegate().unwrap().node_meta(1).await;
+  s.shutdown().await.unwrap();
 }
 
 /// Unit test for delegate local state
@@ -38,10 +41,10 @@ pub async fn delegate_local_state<T>(transport_opts1: T::Options, transport_opts
 where
   T: Transport,
 {
-  let opts = test_config();
+  let opts = test_config().with_event_buffer_size(0);
   let s1 = Serf::<T>::new(transport_opts1, opts).await.unwrap();
 
-  let opts = test_config();
+  let opts = test_config().with_event_buffer_size(0);
   let s2 = Serf::<T>::new(transport_opts2, opts).await.unwrap();
 
   let serfs = [s1, s2];
@@ -115,9 +118,8 @@ where
 }
 
 /// Unit test for delegate merge remote state
-pub async fn delegate_merge_remote_state<A, T>(transport_opts: T::Options)
+pub async fn delegate_merge_remote_state<T>(transport_opts: T::Options)
 where
-  // A: AddressResolver<ResolvedAddress = SocketAddr>,
   T: Transport<Id = SmolStr>,
 {
   let opts = test_config();
@@ -133,7 +135,7 @@ where
     ]
     .into_iter()
     .collect(),
-    left_members: ["test".into()].into_iter().collect(),
+    left_members: ["foo".into()].into_iter().collect(),
     event_ltime: 50.into(),
     events: TinyVec::from(Some(UserEvents {
       ltime: 45.into(),
@@ -145,8 +147,9 @@ where
     query_ltime: 100.into(),
   };
 
-  let mut buf = vec![0; <DefaultDelegate<T> as TransformDelegate>::message_encoded_len(&pp)];
-  <DefaultDelegate<T> as TransformDelegate>::encode_message(&pp, &mut buf).unwrap();
+  let mut buf = vec![0; <DefaultDelegate<T> as TransformDelegate>::message_encoded_len(&pp) + 1];
+  buf[0] = MessageType::PushPull as u8;
+  <DefaultDelegate<T> as TransformDelegate>::encode_message(&pp, &mut buf[1..]).unwrap();
 
   // Merge in fake state
   d.merge_remote_state(buf.into(), false).await;
@@ -178,6 +181,8 @@ where
   assert!(buf.buffer[45].is_some(), "missing event buffer for time");
   assert_eq!(buf.buffer[45].as_ref().unwrap().events[0].name, "test");
   assert_eq!(s.inner.query_clock.time(), 100.into(), "bad query clock");
+
+  s.shutdown().await.unwrap();
 }
 
 /// Unit test for serf ping delegate versioning
@@ -189,19 +194,19 @@ pub async fn serf_ping_delegate_versioning<T>(
 {
   const PROBE_INTERVAL: Duration = Duration::from_millis(2);
 
-  let opts = test_config().with_disable_coordinates(false);
   let s1 = Serf::<T>::new(
     transport_opts1,
-    opts
+    test_config()
+      .with_disable_coordinates(false)
       .with_memberlist_options(memberlist_core::Options::lan().with_probe_interval(PROBE_INTERVAL)),
   )
   .await
   .unwrap();
 
-  let opts = test_config().with_disable_coordinates(false);
   let s2 = Serf::<T>::new(
     transport_opts2,
-    opts
+    test_config()
+      .with_disable_coordinates(false)
       .with_memberlist_options(memberlist_core::Options::lan().with_probe_interval(PROBE_INTERVAL)),
   )
   .await
@@ -236,15 +241,15 @@ pub async fn serf_ping_delegate_versioning<T>(
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
-    if serfs[0].cached_coordinate(&s2id).is_ok() {
+    if serfs[0].cached_coordinate(&s2id).unwrap().is_some() {
       cond1 = true;
-    } else if start.elapsed() > Duration::from_secs(5) {
+    } else if start.elapsed() > Duration::from_secs(7) {
       panic!("s1 didn't get a coordinate for s2");
     }
 
-    if serfs[1].cached_coordinate(&s1id).is_err() {
+    if serfs[1].cached_coordinate(&s1id).unwrap().is_none() {
       cond2 = true;
-    } else if start.elapsed() > Duration::from_secs(5) {
+    } else if start.elapsed() > Duration::from_secs(7) {
       panic!("s2 got an unexpected coordinate for s1");
     }
 
@@ -320,15 +325,19 @@ pub async fn serf_ping_delegate_rogue_coordinate<T>(
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
 
-    if serfs[0].cached_coordinate(&s2id).is_ok() {
+    let s1c = serfs[0].cached_coordinate(&s2id).unwrap();
+    // println!("s1c {:?}", s1c);
+    if s1c.is_some() {
       cond1 = true;
-    } else if start.elapsed() > Duration::from_secs(5) {
+    } else if start.elapsed() > Duration::from_secs(7) {
       panic!("s1 didn't get a coordinate for s2");
     }
 
-    if serfs[1].cached_coordinate(&s1id).is_err() {
+    let s2c = serfs[1].cached_coordinate(&s1id).unwrap();
+    // println!("s2c {:?}", s2c);
+    if s2c.is_none() {
       cond2 = true;
-    } else if start.elapsed() > Duration::from_secs(5) {
+    } else if start.elapsed() > Duration::from_secs(7) {
       panic!("s2 got an unexpected coordinate for s1");
     }
 

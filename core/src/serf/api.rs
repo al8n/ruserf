@@ -1,8 +1,7 @@
 use std::sync::atomic::Ordering;
 
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt};
 use memberlist_core::{
-  agnostic_lite::RuntimeLite,
   bytes::{BufMut, Bytes, BytesMut},
   tracing,
   transport::{MaybeResolvedAddress, Node},
@@ -14,10 +13,8 @@ use smol_str::SmolStr;
 use crate::{
   delegate::TransformDelegate,
   error::{Error, JoinError},
-  event::{EventProducer, InternalQueryEvent},
-  types::{
-    LeaveMessage, Member, MessageType, QueryFlag, QueryMessage, SerfMessage, Tags, UserEventMessage,
-  },
+  event::EventProducer,
+  types::{LeaveMessage, Member, MessageType, SerfMessage, Tags, UserEventMessage},
 };
 
 use super::*;
@@ -120,7 +117,7 @@ where
   #[cfg(feature = "encryption")]
   #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
   pub fn encryption_enabled(&self) -> bool {
-    self.inner.memberlist.keyring().is_some()
+    self.inner.memberlist.encryption_enabled()
   }
 
   /// Returns a receiver that can be used to wait for
@@ -228,7 +225,7 @@ where
     // Check that the meta data length is okay
     let tags_encoded_len = <D as TransformDelegate>::tags_encoded_len(&tags);
     if tags_encoded_len > Meta::MAX_SIZE {
-      return Err(Error::TagsTooLarge(tags_encoded_len));
+      return Err(Error::tags_too_large(tags_encoded_len));
     }
     // update the config
     self.inner.opts.tags.store(Arc::new(tags));
@@ -258,11 +255,13 @@ where
 
     // Check size before encoding to prevent needless encoding and return early if it's over the specified limit.
     if payload_size_before_encoding > self.inner.opts.max_user_event_size {
-      return Err(Error::UserEventTooLarge(payload_size_before_encoding));
+      return Err(Error::user_event_limit_too_large(
+        self.inner.opts.max_user_event_size,
+      ));
     }
 
     if payload_size_before_encoding > USER_EVENT_SIZE_LIMIT {
-      return Err(Error::UserEventTooLarge(payload_size_before_encoding));
+      return Err(Error::user_event_too_large(USER_EVENT_SIZE_LIMIT));
     }
 
     // Create a message
@@ -279,19 +278,19 @@ where
     // Check the size after encoding to be sure again that
     // we're not attempting to send over the specified size limit.
     if len > self.inner.opts.max_user_event_size {
-      return Err(Error::RawUserEventTooLarge(len));
+      return Err(Error::raw_user_event_too_large(len));
     }
 
     if len > USER_EVENT_SIZE_LIMIT {
-      return Err(Error::RawUserEventTooLarge(len));
+      return Err(Error::raw_user_event_too_large(len));
     }
 
     let mut raw = BytesMut::with_capacity(len + 1); // + 1 for message type byte
     raw.put_u8(MessageType::UserEvent as u8);
     raw.resize(len + 1, 0);
 
-    let actual_encoded_len =
-      <D as TransformDelegate>::encode_message(&msg, &mut raw[1..]).map_err(Error::transform)?;
+    let actual_encoded_len = <D as TransformDelegate>::encode_message(&msg, &mut raw[1..])
+      .map_err(Error::transform_delegate)?;
     debug_assert_eq!(
       actual_encoded_len, len,
       "expected encoded len {} mismatch the actual encoded len {}",
@@ -330,97 +329,6 @@ where
       .await
   }
 
-  pub(crate) async fn internal_query(
-    &self,
-    name: SmolStr,
-    payload: Bytes,
-    params: Option<QueryParam<T::Id>>,
-    ty: InternalQueryEvent<T::Id>,
-  ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
-  {
-    self.query_in(name, payload, params, Some(ty)).await
-  }
-
-  async fn query_in(
-    &self,
-    name: SmolStr,
-    payload: Bytes,
-    params: Option<QueryParam<T::Id>>,
-    ty: Option<InternalQueryEvent<T::Id>>,
-  ) -> Result<QueryResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
-  {
-    // Provide default parameters if none given.
-    let params = match params {
-      Some(params) => params,
-      None => self.default_query_param().await,
-    };
-
-    // Get the local node
-    let local = self.inner.memberlist.advertise_node();
-
-    // Encode the filters
-    let filters = params.encode_filters::<D>().map_err(Error::transform)?;
-
-    // Setup the flags
-    let flags = if params.request_ack {
-      QueryFlag::empty()
-    } else {
-      QueryFlag::ACK
-    };
-
-    // Create the message
-    let q = QueryMessage {
-      ltime: self.inner.query_clock.time(),
-      id: rand::random(),
-      from: local.cheap_clone(),
-      filters,
-      flags,
-      relay_factor: params.relay_factor,
-      timeout: params.timeout,
-      name: name.clone(),
-      payload,
-    };
-
-    // Encode the query
-    let len = <D as TransformDelegate>::message_encoded_len(&q);
-
-    // Check the size
-    if len > self.inner.opts.query_size_limit {
-      return Err(Error::QueryTooLarge(len));
-    }
-
-    let mut raw = BytesMut::with_capacity(len + 1); // + 1 for message type byte
-    raw.put_u8(MessageType::Query as u8);
-    raw.resize(len + 1, 0);
-    let actual_encoded_len =
-      <D as TransformDelegate>::encode_message(&q, &mut raw[1..]).map_err(Error::transform)?;
-    debug_assert_eq!(
-      actual_encoded_len, len,
-      "expected encoded len {} mismatch the actual encoded len {}",
-      len, actual_encoded_len
-    );
-
-    // Register QueryResponse to track acks and responses
-    let resp = QueryResponse::from_query(&q, self.inner.memberlist.num_online_members().await);
-    self
-      .register_query_response(params.timeout, resp.clone())
-      .await;
-
-    // Process query locally
-    self.handle_query(q, ty).await;
-
-    // Start broadcasting the event
-    self
-      .inner
-      .broadcasts
-      .queue_broadcast(SerfBroadcast {
-        msg: raw.freeze(),
-        notify_tx: None,
-      })
-      .await;
-    Ok(resp)
-  }
-
   /// Joins an existing Serf cluster. Returns the id of node
   /// successfully contacted. If `ignore_old` is true, then any
   /// user messages sent prior to the join will be ignored.
@@ -432,7 +340,7 @@ where
     // Do a quick state check
     let current_state = self.state();
     if current_state != SerfState::Alive {
-      return Err(Error::BadJoinStatus(current_state));
+      return Err(Error::bad_join_status(current_state));
     }
 
     // Hold the joinLock, this is to make eventJoinIgnore safe
@@ -449,15 +357,22 @@ where
       Ok(node) => {
         // Start broadcasting the update
         if let Err(e) = self.broadcast_join(self.inner.clock.time()).await {
-          self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+          if ignore_old {
+            self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+          }
           return Err(e);
         }
-        self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+        if ignore_old {
+          self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+        }
+
         Ok(node)
       }
       Err(e) => {
-        self.inner.event_join_ignore.store(false, Ordering::SeqCst);
-        Err(Error::Memberlist(e.into()))
+        if ignore_old {
+          self.inner.event_join_ignore.store(false, Ordering::SeqCst);
+        }
+        Err(Error::from(e))
       }
     }
   }
@@ -480,7 +395,7 @@ where
         joined: SmallVec::new(),
         errors: existing
           .into_iter()
-          .map(|node| (node, Error::BadJoinStatus(current_state)))
+          .map(|node| (node, Error::bad_join_status(current_state)))
           .collect(),
         broadcast_error: None,
       });
@@ -560,8 +475,8 @@ where
       let mut s = self.inner.state.lock();
       match *s {
         SerfState::Left => return Ok(()),
-        SerfState::Leaving => return Err(Error::BadLeaveStatus(*s)),
-        SerfState::Shutdown => return Err(Error::BadLeaveStatus(*s)),
+        SerfState::Leaving => return Err(Error::bad_leave_status(*s)),
+        SerfState::Shutdown => return Err(Error::bad_leave_status(*s)),
         _ => {
           // Set the state to leaving
           *s = SerfState::Leaving;
@@ -683,6 +598,14 @@ where
       snap.wait().await;
     }
 
+    loop {
+      if let Ok(mut handles) = self.inner.handles.try_borrow_mut() {
+        let mut futs = core::mem::take(&mut *handles);
+        while futs.next().await.is_some() {}
+        break;
+      }
+    }
+
     Ok(())
   }
 
@@ -692,7 +615,7 @@ where
       return Ok(coord.client.get_coordinate());
     }
 
-    Err(Error::CoordinatesDisabled)
+    Err(Error::coordinates_disabled())
   }
 
   /// Returns the network coordinate for the node with the given
@@ -702,7 +625,7 @@ where
       return Ok(coord.cache.read().get(id).cloned());
     }
 
-    Err(Error::CoordinatesDisabled)
+    Err(Error::coordinates_disabled())
   }
 
   /// Returns the underlying [`Memberlist`] instance

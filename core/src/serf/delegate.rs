@@ -1,7 +1,8 @@
 use crate::{
   broadcast::SerfBroadcast,
   delegate::{Delegate, TransformDelegate},
-  error::{DelegateError, Error},
+  error::{SerfDelegateError, SerfError},
+  event::QueryMessageExt,
   types::{
     DelegateVersion, JoinMessage, LamportTime, LeaveMessage, Member, MemberStatus,
     MemberlistDelegateVersion, MemberlistProtocolVersion, MessageType, ProtocolVersion,
@@ -12,6 +13,7 @@ use crate::{
 
 use std::sync::{atomic::Ordering, Arc, OnceLock};
 
+use arc_swap::ArcSwap;
 use indexmap::IndexSet;
 use memberlist_core::{
   bytes::{Buf, BufMut, Bytes, BytesMut},
@@ -24,12 +26,14 @@ use memberlist_core::{
   types::{Meta, NodeState, SmallVec, State, TinyVec},
   CheapClone, META_MAX_SIZE,
 };
+use ruserf_types::Tags;
 
 // PingVersion is an internal version for the ping message, above the normal
 // versioning we get from the protocol version. This enables small updates
 // to the ping message without a full protocol bump.
 const PING_VERSION: u8 = 1;
 
+#[cfg(any(test, feature = "test"))]
 pub(crate) trait MessageDropper: Send + Sync + 'static {
   fn should_drop(&self, ty: MessageType) -> bool;
 }
@@ -42,6 +46,7 @@ where
 {
   serf: OnceLock<Serf<T, D>>,
   delegate: Option<D>,
+  tags: Arc<ArcSwap<Tags>>,
   #[cfg(any(test, feature = "test"))]
   pub(crate) message_dropper: Option<Box<dyn MessageDropper>>,
   /// Only used for testing purposes
@@ -56,10 +61,11 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
-  pub(crate) fn new(d: Option<D>) -> Self {
+  pub(crate) fn new(d: Option<D>, tags: Arc<ArcSwap<Tags>>) -> Self {
     Self {
       serf: OnceLock::new(),
       delegate: d,
+      tags,
       #[cfg(any(test, feature = "test"))]
       message_dropper: None,
       #[cfg(any(test, feature = "test"))]
@@ -70,10 +76,15 @@ where
   }
 
   #[cfg(any(test, feature = "test"))]
-  pub(crate) fn with_dropper(d: Option<D>, dropper: Box<dyn MessageDropper>) -> Self {
+  pub(crate) fn with_dropper(
+    d: Option<D>,
+    dropper: Box<dyn MessageDropper>,
+    tags: Arc<ArcSwap<Tags>>,
+  ) -> Self {
     Self {
       serf: OnceLock::new(),
       delegate: d,
+      tags,
       #[cfg(any(test, feature = "test"))]
       message_dropper: Some(dropper),
       #[cfg(any(test, feature = "test"))]
@@ -103,7 +114,7 @@ where
   T: Transport,
 {
   async fn node_meta(&self, limit: usize) -> Meta {
-    let tags = self.this().inner.opts.tags();
+    let tags = self.tags.load();
     match tags.is_empty() {
       false => {
         let encoded_len = <D as TransformDelegate>::tags_encoded_len(&tags);
@@ -167,7 +178,6 @@ where
     let this = self.this();
     let mut rebroadcast = None;
     let mut rebroadcast_queue = &this.inner.broadcasts;
-
     match MessageType::try_from(msg[0]) {
       Ok(ty) => {
         #[cfg(any(test, feature = "test"))]
@@ -183,7 +193,7 @@ where
           MessageType::Leave => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
             Ok((_, l)) => {
               if let SerfMessage::Leave(l) = &l {
-                tracing::debug!("ruserf: leave message",);
+                tracing::debug!("ruserf: leave message: {}", l.id());
                 rebroadcast = this.handle_node_leave_intent(l).await.then(|| msg.clone());
               } else {
                 tracing::warn!("ruserf: receive unexpected message: {}", l.ty().as_str());
@@ -196,7 +206,7 @@ where
           MessageType::Join => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
             Ok((_, j)) => {
               if let SerfMessage::Join(j) = &j {
-                tracing::debug!("ruserf: join message",);
+                tracing::debug!("ruserf: join message: {}", j.id());
                 rebroadcast = this.handle_node_join_intent(j).await.then(|| msg.clone());
               } else {
                 tracing::warn!("ruserf: receive unexpected message: {}", j.ty().as_str());
@@ -209,7 +219,7 @@ where
           MessageType::UserEvent => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
             Ok((_, ue)) => {
               if let SerfMessage::UserEvent(ue) = ue {
-                tracing::debug!("ruserf: user event message",);
+                tracing::debug!("ruserf: user event message: {}", ue.name);
                 rebroadcast = this.handle_user_event(ue).await.then(|| msg.clone());
                 rebroadcast_queue = &this.inner.event_broadcasts;
               } else {
@@ -223,9 +233,20 @@ where
           MessageType::Query => match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
             Ok((_, q)) => {
               if let SerfMessage::Query(q) = q {
-                tracing::debug!("ruserf: query message",);
-                rebroadcast = this.handle_query(q, None).await.then(|| msg.clone());
-                rebroadcast_queue = &this.inner.query_broadcasts;
+                tracing::debug!("ruserf: query message: {}", q.name);
+                match q.decode_internal_query::<D>() {
+                  Some(Err(e)) => {
+                    tracing::warn!(err=%e, "ruserf: failed to decode message");
+                  }
+                  Some(Ok(res)) => {
+                    rebroadcast = this.handle_query(q, Some(res)).await.then(|| msg.clone());
+                    rebroadcast_queue = &this.inner.query_broadcasts;
+                  }
+                  None => {
+                    rebroadcast = this.handle_query(q, None).await.then(|| msg.clone());
+                    rebroadcast_queue = &this.inner.query_broadcasts;
+                  }
+                };
               } else {
                 tracing::warn!("ruserf: receive unexpected message: {}", q.ty().as_str());
               }
@@ -238,7 +259,7 @@ where
             match <D as TransformDelegate>::decode_message(ty, &msg[1..]) {
               Ok((_, qr)) => {
                 if let SerfMessage::QueryResponse(qr) = qr {
-                  tracing::debug!("ruserf: query response message",);
+                  tracing::debug!("ruserf: query response message: {}", qr.from);
                   this.handle_query_response(qr).await;
                 } else {
                   tracing::warn!("ruserf: receive unexpected message: {}", qr.ty().as_str());
@@ -335,7 +356,7 @@ where
       .event_broadcasts
       .get_broadcasts(overhead, limit - bytes_used)
       .await;
-    for msg in query_msgs.iter() {
+    for msg in event_msgs.iter() {
       let (encoded_len, _) = encoded_len(msg.clone());
       bytes_used += encoded_len;
       #[cfg(feature = "metrics")]
@@ -347,7 +368,6 @@ where
         .record(encoded_len as f64);
       }
     }
-
     msgs.extend(query_msgs);
     msgs.extend(event_msgs);
     msgs
@@ -464,7 +484,7 @@ where
                   if let Some(&ltime) = pp.status_ltimes.get(node) {
                     this
                       .handle_node_leave_intent(&LeaveMessage {
-                        ltime,
+                        ltime: ltime + LamportTime::new(1),
                         id: node.cheap_clone(),
                         prune: false,
                       })
@@ -543,7 +563,9 @@ where
   type Address = <T::Resolver as AddressResolver>::ResolvedAddress;
 
   async fn notify_join(&self, node: Arc<NodeState<Self::Id, Self::Address>>) {
-    self.this().handle_node_join(node).await;
+    if let Some(serf) = self.serf.get() {
+      serf.handle_node_join(node).await;
+    }
   }
 
   async fn notify_leave(&self, node: Arc<NodeState<Self::Id, Self::Address>>) {
@@ -562,18 +584,18 @@ where
 {
   type Id = T::Id;
   type Address = <T::Resolver as AddressResolver>::ResolvedAddress;
-  type Error = Error<T, D>;
+  type Error = SerfDelegateError<D>;
 
   async fn notify_alive(
     &self,
     node: Arc<NodeState<Self::Id, Self::Address>>,
   ) -> Result<(), Self::Error> {
     if let Some(ref d) = self.delegate {
-      let member = node_to_member(node)?;
+      let member = node_to_member::<T, D>(node)?;
       return d
         .notify_merge(TinyVec::from(member))
         .await
-        .map_err(|e| Error::Delegate(DelegateError::merge(e)));
+        .map_err(SerfDelegateError::merge);
     }
 
     Ok(())
@@ -587,7 +609,7 @@ where
 {
   type Id = T::Id;
   type Address = <T::Resolver as AddressResolver>::ResolvedAddress;
-  type Error = Error<T, D>;
+  type Error = SerfDelegateError<D>;
 
   async fn notify_merge(
     &self,
@@ -596,12 +618,12 @@ where
     if let Some(ref d) = self.delegate {
       let peers = peers
         .into_iter()
-        .map(node_to_member)
+        .map(node_to_member::<T, D>)
         .collect::<Result<TinyVec<_>, _>>()?;
       return d
         .notify_merge(peers)
         .await
-        .map_err(|e| Error::Delegate(DelegateError::merge(e)));
+        .map_err(SerfDelegateError::merge);
     }
     Ok(())
   }
@@ -650,13 +672,12 @@ where
       buf.put_u8(PING_VERSION);
 
       // Make a bad coordinate with the wrong number of dimensions.
-      let coord = crate::coordinate::Coordinate::with_options(
-        crate::coordinate::CoordinateOptions::new()
-          .with_dimensionality(crate::coordinate::CoordinateOptions::new().dimensionality() * 2),
-      );
+      let mut coord = crate::coordinate::Coordinate::new();
+      let len = coord.portion.len();
+      coord.portion.resize(len * 2, 0.0);
 
       // The rest of the message is the serialized coordinate.
-      let len = <D as TransformDelegate>::cooradinate_encoded_len(&coord);
+      let len = <D as TransformDelegate>::coordinate_encoded_len(&coord);
       buf.resize(len + 1, 0);
       if let Err(e) = <D as TransformDelegate>::encode_coordinate(&coord, &mut buf[1..]) {
         panic!("failed to encode coordinate: {}", e);
@@ -665,12 +686,13 @@ where
     }
 
     if let Some(c) = self.this().inner.coord_core.as_ref() {
-      let mut buf = Vec::new();
+      let coord = c.client.get_coordinate();
+      let encoded_len = <D as TransformDelegate>::coordinate_encoded_len(&coord) + 1;
+      let mut buf = BytesMut::with_capacity(encoded_len);
       buf.put_u8(PING_VERSION);
+      buf.resize(encoded_len, 0);
 
-      if let Err(e) =
-        <D as TransformDelegate>::encode_coordinate(&c.client.get_coordinate(), &mut buf[1..])
-      {
+      if let Err(e) = <D as TransformDelegate>::encode_coordinate(&coord, &mut buf[1..]) {
         tracing::error!(err=%e, "ruserf: failed to encode coordinate");
       }
       buf.into()
@@ -711,14 +733,15 @@ where
       };
 
       // Apply the update.
+      #[cfg(feature = "metrics")]
       let before = c.client.get_coordinate();
-      match c.client.update(node.id(), &before, rtt) {
-        Ok(after) => {
+      match c.client.update(node.id(), &coord, rtt) {
+        Ok(_after) => {
           #[cfg(feature = "metrics")]
           {
             // Publish some metrics to give us an idea of how much we are
             // adjusting each time we update.
-            let d = before.distance_to(&after).as_secs_f64() * 1.0e3;
+            let d = before.distance_to(&_after).as_secs_f64() * 1.0e3;
             metrics::histogram!(
               "ruserf.coordinate.adjustment-ms",
               this.inner.opts.memberlist_options.metric_labels.iter()
@@ -773,7 +796,7 @@ where
 
 fn node_to_member<T, D>(
   node: Arc<NodeState<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
-) -> Result<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, Error<T, D>>
+) -> Result<Member<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>, SerfDelegateError<D>>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
@@ -786,18 +809,21 @@ where
 
   let meta = node.meta();
   if meta.len() > META_MAX_SIZE {
-    return Err(Error::TagsTooLarge(meta.len()));
+    return Err(SerfDelegateError::serf(SerfError::TagsTooLarge(meta.len())));
   }
 
   Ok(Member {
     node: node.node(),
-    tags: <D as TransformDelegate>::decode_tags(node.meta())
-      .map_err(Error::transform)
-      .map(|(read, tags)| {
-        tracing::trace!(read=%read, tags=?tags, "ruserf: decode tags successfully");
-        tags
-      })
-      .map(Arc::new)?,
+    tags: if !node.meta().is_empty() {
+      <D as TransformDelegate>::decode_tags(node.meta())
+        .map(|(read, tags)| {
+          tracing::trace!(read=%read, tags=?tags, "ruserf: decode tags successfully");
+          Arc::new(tags)
+        })
+        .map_err(SerfDelegateError::transform)?
+    } else {
+      Default::default()
+    },
     status,
     protocol_version: ProtocolVersion::V1,
     delegate_version: DelegateVersion::V1,

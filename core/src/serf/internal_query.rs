@@ -1,28 +1,33 @@
 use async_channel::{bounded, Receiver, Sender};
 use futures::FutureExt;
 use memberlist_core::{
-  agnostic_lite::RuntimeLite,
+  agnostic_lite::{AsyncSpawner, RuntimeLite},
   bytes::{BufMut, Bytes, BytesMut},
   tracing,
   transport::{AddressResolver, Transport},
 };
-use smol_str::SmolStr;
 
 use crate::{
   delegate::{Delegate, TransformDelegate},
-  error::Error,
   event::{CrateEvent, InternalQueryEvent, QueryEvent},
-  types::{MessageType, QueryResponseMessage, SerfMessage},
+  types::MessageType,
 };
 
 #[cfg(feature = "encryption")]
-use crate::types::KeyResponseMessage;
+use crate::{
+  error::Error,
+  types::{KeyResponseMessage, SerfMessage},
+};
+
+#[cfg(feature = "encryption")]
+use smol_str::SmolStr;
 
 /// Used to compute the max number of keys in a list key
 /// response. eg 1024/25 = 40. a message with max size of 1024 bytes cannot
 /// contain more than 40 keys. There is a test
 /// (TestSerfQueries_estimateMaxKeysInListKeyResponse) which does the
 /// computation and in case of changes, the value can be adjusted.
+#[cfg(feature = "encryption")]
 const MIN_ENCODED_KEY_LENGTH: usize = 25;
 
 pub(crate) struct SerfQueries<T, D>
@@ -31,7 +36,7 @@ where
   T: Transport,
 {
   in_rx: Receiver<CrateEvent<T, D>>,
-  out_tx: Sender<CrateEvent<T, D>>,
+  out_tx: Option<Sender<CrateEvent<T, D>>>,
   shutdown_rx: Receiver<()>,
 }
 
@@ -42,22 +47,24 @@ where
 {
   #[allow(clippy::new_ret_no_self)]
   pub(crate) fn new(
-    out_tx: Sender<CrateEvent<T, D>>,
+    out_tx: Option<Sender<CrateEvent<T, D>>>,
     shutdown_rx: Receiver<()>,
-  ) -> Sender<CrateEvent<T, D>> {
+  ) -> (
+    Sender<CrateEvent<T, D>>,
+    <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()>,
+  ) {
     let (in_tx, in_rx) = bounded(1024);
     let this = Self {
       in_rx,
       out_tx,
       shutdown_rx,
     };
-    this.stream();
-    in_tx
+    (in_tx, this.stream())
   }
 
   /// A long running routine to ingest the event stream
-  fn stream(self) {
-    <T::Runtime as RuntimeLite>::spawn_detach(async move {
+  fn stream(self) -> <<T::Runtime as RuntimeLite>::Spawner as AsyncSpawner>::JoinHandle<()> {
+    <T::Runtime as RuntimeLite>::spawn(async move {
       loop {
         futures::select! {
           ev = self.in_rx.recv().fuse() => {
@@ -68,9 +75,10 @@ where
                   <T::Runtime as RuntimeLite>::spawn_detach(async move {
                     Self::handle_query(ev).await;
                   });
-                } else if let Err(e) = self.out_tx.send(ev).await {
-                  tracing::error!(target="ruserf", err=%e, "failed to send event back in serf query thread");
-                  return;
+                } else if let Some(ref tx) = self.out_tx {
+                  if let Err(e) = tx.send(ev).await {
+                    tracing::error!(target="ruserf", err=%e, "failed to send event back in serf query thread");
+                  }
                 }
               },
               Err(err) => {
@@ -84,41 +92,35 @@ where
           }
         }
       }
-    });
+    })
   }
 
   async fn handle_query(ev: CrateEvent<T, D>) {
-    macro_rules! handle_query {
-      ($ev: expr) => {{
-        match $ev {
-          CrateEvent::InternalQuery { kind, query } => match kind {
-            InternalQueryEvent::Ping => {}
-            InternalQueryEvent::Conflict(conflict) => {
-              Self::handle_conflict(&conflict, &query).await;
-            }
-            #[cfg(feature = "encryption")]
-            InternalQueryEvent::InstallKey => {
-              Self::handle_install_key(&query).await;
-            }
-            #[cfg(feature = "encryption")]
-            InternalQueryEvent::UseKey => {
-              Self::handle_use_key(&query).await;
-            }
-            #[cfg(feature = "encryption")]
-            InternalQueryEvent::RemoveKey => {
-              Self::handle_remove_key(&query).await;
-            }
-            #[cfg(feature = "encryption")]
-            InternalQueryEvent::ListKey => {
-              Self::handle_list_keys(&query).await;
-            }
-          },
-          _ => unreachable!(),
+    match ev {
+      CrateEvent::InternalQuery { kind, query } => match kind {
+        InternalQueryEvent::Ping => {}
+        InternalQueryEvent::Conflict(conflict) => {
+          Self::handle_conflict(&conflict, &query).await;
         }
-      }};
+        #[cfg(feature = "encryption")]
+        InternalQueryEvent::InstallKey => {
+          Self::handle_install_key(&query).await;
+        }
+        #[cfg(feature = "encryption")]
+        InternalQueryEvent::UseKey => {
+          Self::handle_use_key(&query).await;
+        }
+        #[cfg(feature = "encryption")]
+        InternalQueryEvent::RemoveKey => {
+          Self::handle_remove_key(&query).await;
+        }
+        #[cfg(feature = "encryption")]
+        InternalQueryEvent::ListKey => {
+          Self::handle_list_keys(&query).await;
+        }
+      },
+      _ => unreachable!(),
     }
-
-    handle_query!(ev)
   }
 
   /// invoked when we get a query that is attempting to
@@ -132,7 +134,13 @@ where
       return;
     }
 
-    tracing::debug!("ruserf: got conflict resolution query for '{}'", conflict);
+    tracing::error!(
+      "ruserf: local {} got conflict resolution query for '{}'",
+      ev.ctx.this.inner.memberlist.local_id(),
+      conflict
+    );
+
+    // tracing::debug!("ruserf: got conflict resolution query for '{}'", conflict);
 
     // Look for the member info
     let out = {
@@ -207,37 +215,39 @@ where
 
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
-        err = "no keyring to modify (encryption not enabled)",
-        "ruserf: encryption not enabled"
+        err = "encryption is not enabled",
+        "ruserf: fail to handle install key"
       );
-      response.message = SmolStr::new("No keyring to modify (encryption not enabled)");
+      response.message = SmolStr::new("encryption is not enabled");
       Self::send_key_response(q, &mut response).await;
       return;
     }
 
     tracing::info!("ruserf: received install-key query");
     let kr = q.ctx.this.inner.memberlist.keyring();
-    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
-      let kr = kr.unwrap();
-      kr.insert(req.key.unwrap()).await;
-      if q.ctx.this.inner.opts.keyring_file.is_some() {
-        if let Err(e) = q.ctx.this.write_keyring_file().await {
-          tracing::error!(err=%e, "ruserf: failed to write keyring file");
-          response.message = SmolStr::new(e.to_string());
-          Self::send_key_response(q, &mut response).await;
-          return;
+    match kr {
+      Some(kr) => {
+        kr.insert(req.key.unwrap()).await;
+        if q.ctx.this.inner.opts.keyring_file.is_some() {
+          if let Err(e) = q.ctx.this.write_keyring_file().await {
+            tracing::error!(err=%e, "ruserf: failed to write keyring file");
+            response.message = SmolStr::new(e.to_string());
+            Self::send_key_response(q, &mut response).await;
+            return;
+          }
         }
-      }
 
-      response.result = true;
-      Self::send_key_response(q, &mut response).await;
-    } else {
-      tracing::error!(
-        err = "encryption enabled but keyring is empty",
-        "ruserf: keyring is empty"
-      );
-      response.message = SmolStr::new("encryption enabled but keyring is empty");
-      Self::send_key_response(q, &mut response).await;
+        response.result = true;
+        Self::send_key_response(q, &mut response).await;
+      }
+      None => {
+        tracing::error!(
+          err = "encryption enabled but keyring is empty",
+          "ruserf: fail to handle install key"
+        );
+        response.message = SmolStr::new("encryption enabled but keyring is empty");
+        Self::send_key_response(q, &mut response).await;
+      }
     }
   }
 
@@ -269,43 +279,45 @@ where
 
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
-        err = "no keyring to modify (encryption not enabled)",
-        "ruserf: encryption is disabled"
+        err = "encryption is not enabled",
+        "ruserf: fail to handle use key"
       );
-      response.message = SmolStr::new("No keyring to modify (encryption not enabled)");
+      response.message = SmolStr::new("encryption is not enabled");
       Self::send_key_response(q, &mut response).await;
       return;
     }
 
     tracing::info!("ruserf: received use-key query");
     let kr = q.ctx.this.inner.memberlist.keyring();
-    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
-      let kr = kr.unwrap();
-      if let Err(e) = kr.use_key(&req.key.unwrap()).await {
-        tracing::error!(err=%e, "ruserf: failed to change primary key");
-        response.message = SmolStr::new(e.to_string());
-        Self::send_key_response(q, &mut response).await;
-        return;
-      }
-
-      if q.ctx.this.inner.opts.keyring_file.is_some() {
-        if let Err(e) = q.ctx.this.write_keyring_file().await {
-          tracing::error!(err=%e, "ruserf: failed to write keyring file");
+    match kr {
+      Some(kr) => {
+        if let Err(e) = kr.use_key(&req.key.unwrap()).await {
+          tracing::error!(err=%e, "ruserf: failed to change primary key");
           response.message = SmolStr::new(e.to_string());
           Self::send_key_response(q, &mut response).await;
           return;
         }
-      }
 
-      response.result = true;
-      Self::send_key_response(q, &mut response).await;
-    } else {
-      tracing::error!(
-        err = "encryption enabled but keyring is empty",
-        "ruserf: keyring is empty"
-      );
-      response.message = SmolStr::new("encryption enabled but keyring is empty");
-      Self::send_key_response(q, &mut response).await;
+        if q.ctx.this.inner.opts.keyring_file.is_some() {
+          if let Err(e) = q.ctx.this.write_keyring_file().await {
+            tracing::error!(err=%e, "ruserf: failed to write keyring file");
+            response.message = SmolStr::new(e.to_string());
+            Self::send_key_response(q, &mut response).await;
+            return;
+          }
+        }
+
+        response.result = true;
+        Self::send_key_response(q, &mut response).await;
+      }
+      None => {
+        tracing::error!(
+          err = "encryption enabled but keyring is empty",
+          "ruserf: fail to handle use key"
+        );
+        response.message = SmolStr::new("encryption enabled but keyring is empty");
+        Self::send_key_response(q, &mut response).await;
+      }
     }
   }
 
@@ -337,43 +349,45 @@ where
 
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
-        err = "no keyring to modify (encryption not enabled)",
-        "ruserf: encryption is disabled"
+        err = "encryption is not enabled",
+        "ruserf: fail to handle remove key"
       );
-      response.message = SmolStr::new("No keyring to modify (encryption not enabled)");
+      response.message = SmolStr::new("encryption is not enabled");
       Self::send_key_response(q, &mut response).await;
       return;
     }
 
     tracing::info!("ruserf: received remove-key query");
     let kr = q.ctx.this.inner.memberlist.keyring();
-    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
-      let kr = kr.unwrap();
-      if let Err(e) = kr.remove(&req.key.unwrap()).await {
-        tracing::error!(err=%e, "ruserf: failed to remove key");
-        response.message = SmolStr::new(e.to_string());
-        Self::send_key_response(q, &mut response).await;
-        return;
-      }
-
-      if q.ctx.this.inner.opts.keyring_file.is_some() {
-        if let Err(e) = q.ctx.this.write_keyring_file().await {
-          tracing::error!(err=%e, "ruserf: failed to write keyring file");
+    match kr {
+      Some(kr) => {
+        if let Err(e) = kr.remove(&req.key.unwrap()).await {
+          tracing::error!(err=%e, "ruserf: failed to remove key");
           response.message = SmolStr::new(e.to_string());
           Self::send_key_response(q, &mut response).await;
           return;
         }
-      }
 
-      response.result = true;
-      Self::send_key_response(q, &mut response).await;
-    } else {
-      tracing::error!(
-        err = "encryption enabled but keyring is empty",
-        "ruserf: keyring is empty"
-      );
-      response.message = SmolStr::new("encryption enabled but keyring is empty");
-      Self::send_key_response(q, &mut response).await;
+        if q.ctx.this.inner.opts.keyring_file.is_some() {
+          if let Err(e) = q.ctx.this.write_keyring_file().await {
+            tracing::error!(err=%e, "ruserf: failed to write keyring file");
+            response.message = SmolStr::new(e.to_string());
+            Self::send_key_response(q, &mut response).await;
+            return;
+          }
+        }
+
+        response.result = true;
+        Self::send_key_response(q, &mut response).await;
+      }
+      None => {
+        tracing::error!(
+          err = "encryption enabled but keyring is empty",
+          "ruserf: fail to handle remove key"
+        );
+        response.message = SmolStr::new("encryption enabled but keyring is empty");
+        Self::send_key_response(q, &mut response).await;
+      }
     }
   }
 
@@ -385,33 +399,35 @@ where
     let mut response = KeyResponseMessage::default();
     if !q.ctx.this.encryption_enabled() {
       tracing::error!(
-        err = "keyring is empty (encryption not enabled)",
-        "ruserf: encryption is disabled"
+        err = "encryption is not enabled",
+        "ruserf: fail to handle list keys"
       );
-      response.message = SmolStr::new("Keyring is empty (encryption not enabled)");
+      response.message = SmolStr::new("encryption is not enabled");
       Self::send_key_response(q, &mut response).await;
       return;
     }
 
     tracing::info!("ruserf: received list-keys query");
     let kr = q.ctx.this.inner.memberlist.keyring();
-    if q.ctx.this.inner.memberlist.encryption_enabled() && kr.is_some() {
-      let kr = kr.unwrap();
-      for k in kr.keys().await {
-        response.keys.push(k);
-      }
+    match kr {
+      Some(kr) => {
+        for k in kr.keys().await {
+          response.keys.push(k);
+        }
 
-      let primary_key = kr.primary_key().await;
-      response.primary_key = Some(primary_key);
-      response.result = true;
-      Self::send_key_response(q, &mut response).await;
-    } else {
-      tracing::error!(
-        err = "keyring is empty",
-        "ruserf: encryption enabled but keyring is empty"
-      );
-      response.message = SmolStr::new("encryption enabled but keyring is empty");
-      Self::send_key_response(q, &mut response).await;
+        let primary_key = kr.primary_key().await;
+        response.primary_key = Some(primary_key);
+        response.result = true;
+        Self::send_key_response(q, &mut response).await;
+      }
+      None => {
+        tracing::error!(
+          err = "encryption enabled but keyring is empty",
+          "ruserf: fail to handle list keys"
+        );
+        response.message = SmolStr::new("encryption enabled but keyring is empty");
+        Self::send_key_response(q, &mut response).await;
+      }
     }
   }
 
@@ -422,7 +438,7 @@ where
   ) -> Result<
     (
       Bytes,
-      QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+      ruserf_types::QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     ),
     Error<T, D>,
   > {
@@ -440,7 +456,7 @@ where
       raw.resize(expected_k_encoded_len + 1, 0);
 
       let len = <D as TransformDelegate>::encode_message(&*resp, &mut raw[1..])
-        .map_err(Error::transform)?;
+        .map_err(Error::transform_delegate)?;
 
       debug_assert_eq!(
         len, expected_k_encoded_len,
@@ -459,7 +475,7 @@ where
       raw.resize(expected_encoded_len + 1, 0);
 
       let len = <D as TransformDelegate>::encode_message(&qresp, &mut raw[1..])
-        .map_err(Error::transform)?;
+        .map_err(Error::transform_delegate)?;
 
       debug_assert_eq!(
         len, expected_encoded_len,
@@ -484,7 +500,7 @@ where
       }
       return Ok((qraw, qresp));
     }
-    Err(Error::FailTruncateResponse)
+    Err(Error::fail_truncate_response())
   }
 
   #[cfg(feature = "encryption")]

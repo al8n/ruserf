@@ -189,8 +189,8 @@ where
     T::decode_address(bytes)
   }
 
-  fn cooradinate_encoded_len(coordinate: &Coordinate) -> usize {
-    T::cooradinate_encoded_len(coordinate)
+  fn coordinate_encoded_len(coordinate: &Coordinate) -> usize {
+    T::coordinate_encoded_len(coordinate)
   }
 
   fn encode_coordinate(coordinate: &Coordinate, dst: &mut [u8]) -> Result<usize, Self::Error> {
