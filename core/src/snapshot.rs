@@ -521,11 +521,14 @@ where
         ev = in_rx.recv().fuse() => {
           if let Ok(ev) = ev {
             flush_event!(ev)
+          } else {
+            break;
           }
         }
-        default => return,
+        default => break,
       }
     }
+    tracing::debug!("ruserf: snapshotter tee stream exits");
   }
 
   /// Long running routine that is used to handle events
@@ -616,6 +619,7 @@ where
 
           // tee_stream_handle.await;
           self.wait_tx.close();
+          tracing::debug!("ruserf: snapshotter stream exits");
           return;
         }
       }

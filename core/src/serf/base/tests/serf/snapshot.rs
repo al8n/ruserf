@@ -573,7 +573,6 @@ pub async fn serf_snapshot_recovery<T, F>(
   {
     let node = serfs[1].local_id().clone();
     let members = serfs[0].inner.members.read().await;
-    println!("{:?}", members.states);
     test_member_status(&members.states, node, MemberStatus::Alive).unwrap();
   }
   {
@@ -591,13 +590,15 @@ pub async fn serf_snapshot_recovery<T, F>(
 }
 
 #[cfg(test)]
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
 async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
   use memberlist_core::{
     agnostic_lite::tokio::TokioRuntime,
     transport::{resolver::socket_addr::SocketAddrResolver, tests::UnimplementedTransport, Lpe},
   };
   use std::net::SocketAddr;
+
+  memberlist_core::tests::initialize_tests_tracing();
 
   type Transport = UnimplementedTransport<
     SmolStr,
@@ -706,7 +707,7 @@ async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
 }
 
 #[cfg(test)]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
 async fn test_snapshoter_slow_disk_not_blocking_memberlist() {
   use memberlist_core::{
     agnostic_lite::tokio::TokioRuntime,
