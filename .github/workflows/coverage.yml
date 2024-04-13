@@ -38,11 +38,8 @@ jobs:
             features: "metrics,encryption"
             name: "ruserf-types"
           - crate: ruserf
-            features: "test,tokio,tcp,compression,encryption,metrics"
-            name: "ruserf-tcp-compression-encryption"
-          - crate: ruserf
-            features: "test,tokio,native-tls,metrics"
-            name: "ruserf-native-tls"
+            features: "test,tokio,tcp,encryption,metrics"
+            name: "ruserf-tcp-encryption"
           - crate: ruserf
             features: "test,tokio,quinn,compression,metrics"
             name: "ruserf-quinn-compression"

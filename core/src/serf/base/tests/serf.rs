@@ -482,7 +482,7 @@ pub async fn serf_coordinates<T>(
   let s1 = Serf::<T>::new(transport_opts1, opts.clone()).await.unwrap();
   let s2 = Serf::<T>::new(transport_opts2, opts).await.unwrap();
 
-  let mut serfs = [s1, s2];
+  let mut serfs = vec![s1, s2];
   wait_until_num_nodes(1, &serfs).await;
 
   // Make sure both nodes start out the origin so we can prove they did
@@ -571,10 +571,12 @@ pub async fn serf_coordinates<T>(
   // Break up the cluster and make sure the coordinates get removed by
   // the reaper.
   serfs[1].shutdown().await.unwrap();
+  let t = serfs[1].inner.opts.reap_interval * 4;
+  drop(serfs.pop().unwrap());
 
-  <T::Runtime as RuntimeLite>::sleep(serfs[1].inner.opts.reap_interval * 2).await;
+  <T::Runtime as RuntimeLite>::sleep(t).await;
 
-  wait_until_num_nodes(1, &serfs[..1]).await;
+  wait_until_num_nodes(1, &serfs).await;
 
   let start = Epoch::now();
   loop {
@@ -599,7 +601,7 @@ pub async fn serf_coordinates<T>(
   .await
   .unwrap();
 
-  serfs[1] = s3;
+  serfs.push(s3);
   wait_until_num_nodes(1, &serfs).await;
 
   let node = serfs[0]

@@ -418,7 +418,7 @@ pub async fn snapshoter_leave_rejoin<T>(
     ctx: Arc::new(QueryContext {
       query_timeout: Duration::default(),
       span: Mutex::new(None),
-      this: s,
+      this: s.clone(),
     }),
     id: 0,
     from: Node::new("baz".into(), addr.clone()),
@@ -455,14 +455,17 @@ pub async fn snapshoter_leave_rejoin<T>(
   let mut d = vec![];
   f.read_to_end(&mut d).unwrap();
 
+  s.shutdown().await.unwrap();
+  drop(s);
+
   // Open the snapshoter
-  let (_shutdown_tx, shutdown_rx) = async_channel::bounded(1);
+  let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
   let res = open_and_replay_snapshot::<_, _, DefaultDelegate<T>, _>(&p, true).unwrap();
   assert!(res.last_clock == 100.into());
   assert!(res.last_event_clock == 42.into());
   assert!(res.last_query_clock == 50.into());
   let (out_tx, _out_rx) = async_channel::unbounded();
-  let (_, alive_nodes, _) = Snapshot::<T, DefaultDelegate<T>>::from_replay_result(
+  let (_, alive_nodes, handle) = Snapshot::<T, DefaultDelegate<T>>::from_replay_result(
     res,
     SNAPSHOT_SIZE_LIMIT,
     false,
@@ -475,6 +478,10 @@ pub async fn snapshoter_leave_rejoin<T>(
   .unwrap();
 
   assert!(!alive_nodes.is_empty());
+
+  // Close the snapshoter
+  shutdown_tx.close();
+  handle.wait().await;
 }
 
 /// Unit tests for the serf snapshot recovery
@@ -598,7 +605,7 @@ async fn test_snapshoter_slow_disk_not_blocking_event_tx() {
   };
   use std::net::SocketAddr;
 
-  memberlist_core::tests::initialize_tests_tracing();
+  crate::tests::initialize_tests_tracing();
 
   type Transport = UnimplementedTransport<
     SmolStr,
