@@ -41,6 +41,7 @@ pub(crate) const INTERNAL_REMOVE_KEY: &str = "_ruserf_remove_key";
 #[cfg(feature = "encryption")]
 pub(crate) const INTERNAL_LIST_KEYS: &str = "_ruserf_list_keys";
 
+#[cfg(feature = "test")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]

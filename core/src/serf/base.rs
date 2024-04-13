@@ -1197,6 +1197,7 @@ where
 
     let (old_status, fut) = if let Some(member) = members.states.get_mut(node.id()) {
       let old_status = member.member.status;
+      #[cfg(feature = "metrics")]
       let dead_time = member.leave_time.map(|t| t.elapsed());
       #[cfg(feature = "metrics")]
       if old_status == MemberStatus::Failed {

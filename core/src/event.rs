@@ -229,6 +229,7 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
+  #[cfg(feature = "encryption")]
   pub(crate) fn create_response(
     &self,
     buf: Bytes,
@@ -242,10 +243,12 @@ where
     }
   }
 
+  #[cfg(feature = "encryption")]
   pub(crate) fn check_response_size(&self, resp: &[u8]) -> Result<(), Error<T, D>> {
     self.ctx.check_response_size(resp)
   }
 
+  #[cfg(feature = "encryption")]
   pub(crate) async fn respond_with_message_and_response(
     &self,
     raw: Bytes,

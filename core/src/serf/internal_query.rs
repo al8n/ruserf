@@ -6,23 +6,28 @@ use memberlist_core::{
   tracing,
   transport::{AddressResolver, Transport},
 };
-use smol_str::SmolStr;
 
 use crate::{
   delegate::{Delegate, TransformDelegate},
-  error::Error,
   event::{CrateEvent, InternalQueryEvent, QueryEvent},
-  types::{MessageType, QueryResponseMessage, SerfMessage},
+  types::MessageType,
 };
 
 #[cfg(feature = "encryption")]
-use crate::types::KeyResponseMessage;
+use crate::{
+  error::Error,
+  types::{KeyResponseMessage, SerfMessage},
+};
+
+#[cfg(feature = "encryption")]
+use smol_str::SmolStr;
 
 /// Used to compute the max number of keys in a list key
 /// response. eg 1024/25 = 40. a message with max size of 1024 bytes cannot
 /// contain more than 40 keys. There is a test
 /// (TestSerfQueries_estimateMaxKeysInListKeyResponse) which does the
 /// computation and in case of changes, the value can be adjusted.
+#[cfg(feature = "encryption")]
 const MIN_ENCODED_KEY_LENGTH: usize = 25;
 
 pub(crate) struct SerfQueries<T, D>
@@ -439,7 +444,7 @@ where
   ) -> Result<
     (
       Bytes,
-      QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
+      ruserf_types::QueryResponseMessage<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>,
     ),
     Error<T, D>,
   > {

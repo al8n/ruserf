@@ -733,14 +733,15 @@ where
       };
 
       // Apply the update.
+      #[cfg(feature = "metrics")]
       let before = c.client.get_coordinate();
       match c.client.update(node.id(), &coord, rtt) {
-        Ok(after) => {
+        Ok(_after) => {
           #[cfg(feature = "metrics")]
           {
             // Publish some metrics to give us an idea of how much we are
             // adjusting each time we update.
-            let d = before.distance_to(&after).as_secs_f64() * 1.0e3;
+            let d = before.distance_to(&_after).as_secs_f64() * 1.0e3;
             metrics::histogram!(
               "ruserf.coordinate.adjustment-ms",
               this.inner.opts.memberlist_options.metric_labels.iter()
