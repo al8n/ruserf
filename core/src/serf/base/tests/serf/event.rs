@@ -867,10 +867,6 @@ where
   }
   assert_eq!(acks.len(), 2, "missing acks {acks:?}");
   assert_eq!(responses.len(), 1, "missing responses {responses:?}");
-
-  for s in serfs {
-    let _ = s.shutdown().await;
-  }
 }
 
 /// Unit test for serf query filter
@@ -992,10 +988,6 @@ pub async fn serf_query_filter<T>(
 
   assert_eq!(acks.len(), 1, "missing acks {acks:?}");
   assert_eq!(responses.len(), 1, "missing responses {responses:?}");
-
-  for s in serfs {
-    let _ = s.shutdown().await;
-  }
 }
 
 /// Unit test for serf query deduplicate

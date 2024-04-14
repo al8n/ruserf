@@ -86,10 +86,6 @@ pub async fn serf_remove_failed_node<T>(
       panic!("Failed to remove failed node");
     }
   }
-
-  for s in serfs.iter() {
-    s.shutdown().await.unwrap();
-  }
 }
 
 /// Unit test for remove failed node prune
@@ -157,10 +153,6 @@ pub async fn serf_remove_failed_node_prune<T>(
   serfs.swap(1, 2);
 
   wait_until_num_nodes(2, &serfs[..2]).await;
-
-  for s in serfs.iter() {
-    s.shutdown().await.unwrap();
-  }
 }
 
 /// Unit test for remove failed node ourself

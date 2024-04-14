@@ -725,10 +725,6 @@ pub async fn serf_name_resolution<T>(
       panic!("timed out");
     }
   }
-
-  for s in serfs.iter() {
-    s.shutdown().await.unwrap();
-  }
 }
 
 /// Unit test for serf local member
