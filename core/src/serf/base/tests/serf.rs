@@ -641,10 +641,6 @@ pub async fn serf_coordinates<T>(
       panic!("timed out");
     }
   }
-
-  for s in serfs.iter() {
-    s.shutdown().await.unwrap();
-  }
 }
 
 /// Unit tests for serf name resolution
