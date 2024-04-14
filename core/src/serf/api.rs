@@ -589,7 +589,6 @@ where
       // channel signals that we are cleaned up outside of Serf.
       *s = SerfState::Shutdown;
     }
-    tracing::error!("debug: shutdown memberlist");
     self.inner.memberlist.shutdown().await?;
     self.inner.shutdown_tx.close();
 
@@ -598,7 +597,6 @@ where
       snap.wait().await;
     }
 
-    tracing::error!("debug: shutdown serf handles");
     loop {
       if let Ok(mut handles) = self.inner.handles.try_borrow_mut() {
         let mut futs = core::mem::take(&mut *handles);

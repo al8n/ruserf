@@ -988,6 +988,10 @@ pub async fn serf_query_filter<T>(
 
   assert_eq!(acks.len(), 1, "missing acks {acks:?}");
   assert_eq!(responses.len(), 1, "missing responses {responses:?}");
+
+  for s in serfs.iter() {
+    s.shutdown().await.unwrap();
+  }
 }
 
 /// Unit test for serf query deduplicate
