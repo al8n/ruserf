@@ -857,6 +857,7 @@ pub async fn serf_write_keyring_file<T>(
 
   let resp = manager.list_keys().await.unwrap();
   assert_eq!(resp.primary_keys().len(), 1);
+  assert_eq!(resp.keys().len(), 1);
 }
 
 #[test]

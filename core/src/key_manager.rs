@@ -31,7 +31,7 @@ use super::{
   getters(style = "ref", vis_all = "pub"),
   setters(skip)
 )]
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct KeyResponse<I> {
   /// Map of node id to response message
   messages: HashMap<I, SmolStr>,
@@ -227,7 +227,7 @@ where
       resp.num_resp += 1;
 
       // Decode the response
-      if !r.payload.is_empty() || r.payload[0] != MessageType::KeyResponse as u8 {
+      if r.payload.is_empty() || r.payload[0] != MessageType::KeyResponse as u8 {
         resp.messages.insert(
           r.from.id().cheap_clone(),
           SmolStr::new(format!(
