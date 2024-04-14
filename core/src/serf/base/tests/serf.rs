@@ -793,18 +793,18 @@ pub async fn serf_write_keyring_file<T>(
   let existing_bytes = general_purpose::STANDARD.decode(EXISTING).unwrap();
   let sk = memberlist_core::types::SecretKey::try_from(existing_bytes.as_slice()).unwrap();
 
-  let s = Serf::<T>::new(
+  let serf = Serf::<T>::new(
     get_transport_opts(sk),
     test_config().with_keyring_file(Some(p.clone())),
   )
   .await
   .unwrap();
   assert!(
-    s.encryption_enabled(),
+    serf.encryption_enabled(),
     "write keyring file test only works on encrypted serf"
   );
 
-  let manager = s.key_manager();
+  let manager = serf.key_manager();
   let new_key = general_purpose::STANDARD.decode(NEW_KEY).unwrap();
   let new_sk = memberlist_core::types::SecretKey::try_from(new_key.as_slice()).unwrap();
   manager.install_key(new_sk, None).await.unwrap();
@@ -850,6 +850,9 @@ pub async fn serf_write_keyring_file<T>(
   assert_eq!(lines.len(), 3);
 
   assert!(lines[1].contains(NEW_KEY));
+
+  let resp = manager.list_keys().await.unwrap();
+  assert_eq!(resp.keys().len(), 1);
 }
 
 #[test]

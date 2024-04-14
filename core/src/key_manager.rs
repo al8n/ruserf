@@ -26,6 +26,11 @@ use super::{
 };
 
 /// KeyResponse is used to relay a query for a list of all keys in use.
+#[viewit::viewit(
+  vis_all = "pub(crate)",
+  getters(style = "ref", vis_all = "pub"),
+  setters(skip)
+)]
 #[derive(Default)]
 pub struct KeyResponse<I> {
   /// Map of node id to response message
