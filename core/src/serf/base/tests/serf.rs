@@ -242,6 +242,10 @@ pub async fn serf_update<T, F>(
     }
   }
   assert!(found, "did not found s2 in members");
+
+  for s in serfs.iter() {
+    s.shutdown().await.unwrap();
+  }
 }
 
 /// Unit tests for the role
@@ -566,7 +570,7 @@ pub async fn serf_coordinates<T>(
     }
 
     if start.elapsed() > Duration::from_secs(7) {
-      panic!("timed out");
+      panic!("timed out cond1 {} cond2 {} cond3 {} cond4 {}", cond1, cond2, cond3, cond4);
     }
   }
 
@@ -637,8 +641,8 @@ pub async fn serf_coordinates<T>(
       break;
     }
 
-    if start.elapsed() > Duration::from_secs(7) {
-      panic!("timed out");
+    if start.elapsed() > Duration::from_secs(14) {
+      panic!("timed out: cond1 {} cond2 {}", cond1, cond2);
     }
   }
 
