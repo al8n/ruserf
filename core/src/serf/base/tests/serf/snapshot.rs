@@ -360,9 +360,17 @@ pub async fn snapshoter_leave<T>(
   // Open the snapshoter
   let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
   let res = open_and_replay_snapshot::<_, _, DefaultDelegate<T>, _>(&p, false).unwrap();
-  assert!(res.last_clock == 0.into());
-  assert!(res.last_event_clock == 0.into());
-  assert!(res.last_query_clock == 0.into());
+  assert!(res.last_clock == 0.into(), "last_clock: {}", res.last_clock);
+  assert!(
+    res.last_event_clock == 0.into(),
+    "last_event_clock: {}",
+    res.last_event_clock
+  );
+  assert!(
+    res.last_query_clock == 0.into(),
+    "last_query_clock: {}",
+    res.last_query_clock
+  );
   let (out_tx, _out_rx) = async_channel::unbounded();
   let (_, alive_nodes, _) = Snapshot::<T, DefaultDelegate<T>>::from_replay_result(
     res,

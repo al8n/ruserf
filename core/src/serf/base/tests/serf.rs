@@ -112,7 +112,7 @@ pub async fn serf_get_queue_max<T>(
   let want = 1024;
   assert_eq!(got, want);
 
-  s.shutdown().await.unwrap();
+  sn.shutdown().await.unwrap();
   <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(2)).await;
 
   // Bring it under the number of nodes, so the calculation based on
@@ -153,6 +153,8 @@ pub async fn serf_get_queue_max<T>(
   let got = snn.get_queue_max().await;
   let want = 202;
   assert_eq!(got, want);
+  snn.shutdown().await.unwrap();
+  drop(snn);
 }
 
 /// Unit tests for the update
