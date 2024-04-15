@@ -55,13 +55,6 @@ Here are the layers:
 
     The address resolver layer is supported by [`nodecraft`'s AddressResolver](https://docs.rs/nodecraft/latest/nodecraft/resolver/trait.AddressResolver.html) trait.
 
-  - **Serialize/Deserilize Layer**
-
-    By default, Rust's ruserf is using [`length-prefix encoding (Lpe)`](https://docs.rs/ruserf-core/transport/struct.Lpe.html) to serialize/deserialize messages to bytes or visa-vise.
-    The implemention of `Lpe` tries the best to avoid reallocating when doing the serialize/deserialize.
-
-    But, users can use any other serialize/deserialize framework by implementing [`Wire`](https://docs.rs/ruserf-core/transport/trait.Wire.html) trait.
-
   - **[`NetTransport`](https://docs.rs/ruserf-net/struct.NetTransport.html)**
 
     Three kinds of different builtin stream layers for `NetTransport`:
