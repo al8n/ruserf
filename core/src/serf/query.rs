@@ -27,25 +27,67 @@ use super::Serf;
 
 /// Provided to [`Serf::query`] to configure the parameters of the
 /// query. If not provided, sane defaults will be used.
-#[viewit::viewit]
+#[viewit::viewit(
+  vis_all = "pub(crate)",
+  getters(vis_all = "pub", style = "ref"),
+  setters(vis_all = "pub", prefix = "with")
+)]
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct QueryParam<I> {
   /// The filters to apply to the query.
+  #[viewit(
+    getter(const, attrs(doc = "Returns the filters of the query")),
+    setter(attrs(doc = "Sets the filters of the query"))
+  )]
   filters: OneOrMore<Filter<I>>,
 
   /// If true, we are requesting an delivery acknowledgement from
   /// every node that meets the filter requirement. This means nodes
   /// the receive the message but do not pass the filters, will not
   /// send an ack.
+  #[viewit(
+    getter(
+      const,
+      style = "move",
+      attrs(
+        doc = "Returns if we are requesting an delivery acknowledgement from every node that meets the filter requirement. This means nodes the receive the message but do not pass the filters, will not send an ack."
+      )
+    ),
+    setter(attrs(
+      doc = "Sets if we are requesting an delivery acknowledgement from every node that meets the filter requirement. This means nodes the receive the message but do not pass the filters, will not send an ack."
+    ))
+  )]
   request_ack: bool,
 
-  /// RelayFactor controls the number of duplicate responses to relay
+  /// Controls the number of duplicate responses to relay
   /// back to the sender through other nodes for redundancy.
+  #[viewit(
+    getter(
+      const,
+      style = "move",
+      attrs(
+        doc = "Returns the number of duplicate responses to relay back to the sender through other nodes for redundancy."
+      )
+    ),
+    setter(attrs(
+      doc = "Sets the number of duplicate responses to relay back to the sender through other nodes for redundancy."
+    ))
+  )]
   relay_factor: u8,
 
   /// The timeout limits how long the query is left open. If not provided,
   /// then a default timeout is used based on the configuration of Serf
+  #[viewit(
+    getter(
+      const,
+      style = "move",
+      attrs(
+        doc = "Returns timeout limits how long the query is left open. If not provided, then a default timeout is used based on the configuration of [`Serf`]"
+      )
+    ),
+    setter(attrs(doc = "Sets timeout limits how long the query is left open."))
+  )]
   #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
   timeout: Duration,
 }
@@ -345,11 +387,17 @@ impl<I, A> QueryResponse<I, A> {
 }
 
 /// Used to represent a single response from a node
-#[viewit::viewit]
+#[viewit::viewit(
+  vis_all = "pub(crate)",
+  setters(skip),
+  getters(vis_all = "pub", style = "ref")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NodeResponse<I, A> {
+  #[viewit(getter(attrs(doc = "Returns the node that sent the response")))]
   from: Node<I, A>,
+  #[viewit(getter(attrs(doc = "Returns the payload of the response")))]
   payload: Bytes,
 }
 

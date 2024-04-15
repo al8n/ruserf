@@ -76,13 +76,18 @@ pub(crate) struct EventCore {
 /// The state of the Serf instance.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum SerfState {
+  /// Alive state
   Alive,
+  /// Leaving state
   Leaving,
+  /// Left state
   Left,
+  /// Shutdown state
   Shutdown,
 }
 
 impl SerfState {
+  /// Returns the string representation of the state.
   pub const fn as_str(&self) -> &'static str {
     match self {
       Self::Alive => "alive",

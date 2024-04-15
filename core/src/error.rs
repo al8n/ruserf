@@ -15,17 +15,6 @@ use crate::{
 
 pub use crate::snapshot::SnapshotError;
 
-#[derive(Debug)]
-pub struct VoidError;
-
-impl std::fmt::Display for VoidError {
-  fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    Ok(())
-  }
-}
-
-impl std::error::Error for VoidError {}
-
 /// Error trait for [`Delegate`]
 #[derive(thiserror::Error)]
 pub enum SerfDelegateError<D: Delegate> {
@@ -83,20 +72,26 @@ where
   }
 }
 
+/// Error type for the ruserf crate.
 #[derive(thiserror::Error)]
 pub enum Error<T, D>
 where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
+  /// Returned when the underlyhing memberlist error
   #[error(transparent)]
   Memberlist(#[from] MemberlistError<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>),
+  /// Returned when the serf error
   #[error(transparent)]
   Serf(#[from] SerfError),
+  /// Returned when the transport error
   #[error(transparent)]
   Transport(T::Error),
+  /// Returned when the delegate error
   #[error(transparent)]
   Delegate(#[from] SerfDelegateError<D>),
+  /// Returned when the relay error
   #[error(transparent)]
   Relay(#[from] RelayError<T, D>),
 }
@@ -293,44 +288,68 @@ where
   }
 }
 
+/// [`Serf`](crate::Serf) error.
 #[derive(Debug, thiserror::Error)]
 pub enum SerfError {
+  /// Returned when the user event exceeds the configured limit.
   #[error("ruserf: user event exceeds configured limit of {0} bytes before encoding")]
   UserEventLimitTooLarge(usize),
+  /// Returned when the user event exceeds the sane limit.
   #[error("ruserf: user event exceeds sane limit of {0} bytes before encoding")]
   UserEventTooLarge(usize),
+  /// Returned when the join status is bad.
   #[error("ruserf: join called on {0} statues")]
   BadJoinStatus(SerfState),
+  /// Returned when the leave status is bad.
   #[error("ruserf: leave called on {0} statues")]
   BadLeaveStatus(SerfState),
+  /// Returned when the encoded user event exceeds the sane limit after encoding.
   #[error("ruserf: user event exceeds sane limit of {0} bytes after encoding")]
   RawUserEventTooLarge(usize),
+  /// Returned when the query size exceeds the configured limit.
   #[error("ruserf: query exceeds limit of {0} bytes")]
   QueryTooLarge(usize),
+  /// Returned when the query is timeout.
   #[error("ruserf: query response is past the deadline")]
   QueryTimeout,
+  /// Returned when the query response is too large.
   #[error("ruserf: query response ({got} bytes) exceeds limit of {limit} bytes")]
-  QueryResponseTooLarge { limit: usize, got: usize },
+  QueryResponseTooLarge {
+    /// The query response size limit.
+    limit: usize,
+    /// The query response size.
+    got: usize,
+  },
+  /// Returned when the query has already been responded.
   #[error("ruserf: query response already sent")]
   QueryAlreadyResponsed,
+  /// Returned when failed to truncate response so that it fits into message.
   #[error("ruserf: failed to truncate response so that it fits into message")]
   FailTruncateResponse,
+  /// Returned when the tags too large.
   #[error("ruserf: encoded length of tags exceeds limit of {0} bytes")]
   TagsTooLarge(usize),
+  /// Returned when the relayed response is too large.
   #[error("ruserf: relayed response exceeds limit of {0} bytes")]
   RelayedResponseTooLarge(usize),
+  /// Returned when failed to deliver query response, dropping.
   #[error("ruserf: failed to deliver query response, dropping")]
   QueryResponseDeliveryFailed,
+  /// Returned when the coordinates are disabled.
   #[error("ruserf: coordinates are disabled")]
   CoordinatesDisabled,
+  /// Returned when snapshot error.
   #[error("ruserf: {0}")]
   Snapshot(#[from] SnapshotError),
+  /// Returned when timed out broadcasting node removal.
   #[error("ruserf: timed out broadcasting node removal")]
   RemovalBroadcastTimeout,
+  /// Returned when the timed out broadcasting channel closed.
   #[error("ruserf: timed out broadcasting channel closed")]
   BroadcastChannelClosed,
 }
 
+/// Error type for [`Memberlist`](memberlist_core::Memberlist).
 #[derive(Debug, thiserror::Error)]
 pub enum MemberlistError<I, A> {
   /// Returns when the node is not running.
@@ -370,6 +389,7 @@ pub enum MemberlistError<I, A> {
   Other(Cow<'static, str>),
 }
 
+/// Relay error from remote nodes.
 pub struct RelayError<T, D>(
   #[allow(clippy::type_complexity)]
   TinyVec<(
@@ -455,20 +475,28 @@ where
   D: Delegate<Id = T::Id, Address = <T::Resolver as AddressResolver>::ResolvedAddress>,
   T: Transport,
 {
+  /// Returns the broadcast error that occurred during the join.
+  #[inline]
   pub const fn broadcast_error(&self) -> Option<&Error<T, D>> {
     self.broadcast_error.as_ref()
   }
 
+  /// Returns the errors that occurred during the join.
+  #[inline]
   pub const fn errors(&self) -> &HashMap<Node<T::Id, MaybeResolvedAddress<T>>, Error<T, D>> {
     &self.errors
   }
 
+  /// Returns the nodes have successfully joined.
+  #[inline]
   pub const fn joined(
     &self,
   ) -> &SmallVec<Node<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>> {
     &self.joined
   }
 
+  /// Returns how many nodes have successfully joined.
+  #[inline]
   pub fn num_joined(&self) -> usize {
     self.joined.len()
   }

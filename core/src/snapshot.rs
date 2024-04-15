@@ -59,34 +59,49 @@ const SNAPSHOT_BYTES_PER_NODE: usize = 128;
 /// the snapshot size estimate (nodes * bytes per node) before compacting.
 const SNAPSHOT_COMPACTION_THRESHOLD: usize = 2;
 
+/// Errors that can occur while interacting with snapshots
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
+  /// Returned when opening a snapshot fails
   #[error("failed to open snapshot: {0}")]
   Open(std::io::Error),
+  /// Returned when opening a new snapshot fails
   #[error("failed to open new snapshot: {0}")]
   OpenNew(std::io::Error),
+  /// Returned when flush new snapshot fails
   #[error("failed to flush new snapshot: {0}")]
   FlushNew(std::io::Error),
+  /// Returned when flush snapshot fails
   #[error("failed to flush snapshot: {0}")]
   Flush(std::io::Error),
+  /// Returned when fsync snapshot fails
   #[error("failed to fsync snapshot: {0}")]
   Sync(std::io::Error),
+  /// Returned when stat snapshot fails
   #[error("failed to stat snapshot: {0}")]
   Stat(std::io::Error),
+  /// Returned when remove old snapshot fails
   #[error("failed to remove old snapshot: {0}")]
   Remove(std::io::Error),
+  /// Returned when installing a new snapshot fails
   #[error("failed to install new snapshot: {0}")]
   Install(std::io::Error),
+  /// Returned when writing to a new snapshot fails
   #[error("failed to write to new snapshot: {0}")]
   WriteNew(std::io::Error),
+  /// Returned when writing to a snapshot fails
   #[error("failed to write to snapshot: {0}")]
   Write(std::io::Error),
+  /// Returned when seek to start of a snapshot fails
   #[error("failed to seek to beginning of snapshot: {0}")]
   SeekStart(std::io::Error),
+  /// Returned when seek to end of a snapshot fails
   #[error("failed to seek to end of snapshot: {0}")]
   SeekEnd(std::io::Error),
+  /// Returned when replaying a snapshot fails
   #[error("failed to replay snapshot: {0}")]
   Replay(std::io::Error),
+  /// Returned when fail to decode snapshot record type.
   #[error(transparent)]
   UnknownRecordType(#[from] UnknownRecordType),
 }

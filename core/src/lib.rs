@@ -1,7 +1,7 @@
 #![doc = include_str!("../../README.md")]
 #![doc(html_logo_url = "https://raw.githubusercontent.com/al8n/ruserf/main/art/logo_72x72.png")]
 #![forbid(unsafe_code)]
-#![deny(warnings)]
+#![deny(warnings, missing_docs)]
 #![allow(clippy::type_complexity)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(docsrs, allow(unused_attributes))]
@@ -13,6 +13,7 @@ mod coalesce;
 /// Coordinate.
 pub mod coordinate;
 
+/// Events for [`Serf`]
 pub mod event;
 
 /// Errors for `ruserf`.

@@ -14,6 +14,9 @@ description = "A decentralized solution for service discovery and orchestration 
 repository = "https://github.com/al8n/ruserf"
 homepage = "https://github.com/al8n/ruserf"
 license = "MPL-2.0"
+keywords = ["swim", "gossip", "service-discovery", "serf", "memberlist"]
+categories = ["network-programming", "asynchronous"]
+readme = "README.md"
 
 [workspace.dependencies]
 byteorder = "1"

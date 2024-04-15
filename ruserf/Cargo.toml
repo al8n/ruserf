@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 description.workspace = true
 repository.workspace = true
+readme.workspace = true
 homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 description.workspace = true
 repository.workspace = true
+readme.workspace = true
 homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [features]
 default = ["metrics"]
@@ -27,6 +30,7 @@ serde = [
 test = ["memberlist-core/test", "paste", "tracing-subscriber", "tempfile"]
 
 [dependencies]
+auto_impl = "1"
 atomic_refcell = "0.1"
 arc-swap = "1"
 async-lock = "3"
