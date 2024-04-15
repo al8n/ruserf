@@ -143,10 +143,6 @@ pub async fn serf_reconnect_same_ip<T, R, F>(
     .collect(),
   )
   .await;
-
-  for s in serfs.iter() {
-    s.shutdown().await.unwrap();
-  }
 }
 
 #[derive(Clone)]

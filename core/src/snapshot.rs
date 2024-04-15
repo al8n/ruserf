@@ -547,7 +547,26 @@ where
         default => break,
       }
     }
-    tracing::info!("ruserf: snapshotter tee stream exits");
+    tracing::debug!("ruserf: snapshotter tee stream exits");
+  }
+
+  fn handle_leave(&mut self) {
+    self.leaving = true;
+
+    // If we plan to re-join, keep our state
+    if !self.rejoin_after_leave {
+      self.alive_nodes.clear();
+    }
+    self.try_append(SnapshotRecord::Leave);
+    if let Some(fh) = self.fh.as_mut() {
+      if let Err(e) = fh.flush() {
+        tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
+      }
+
+      if let Err(e) = fh.get_mut().sync_all() {
+        tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
+      }
+    }
   }
 
   /// Long running routine that is used to handle events
@@ -559,23 +578,9 @@ where
 
     loop {
       futures::select! {
-        _ = self.leave_rx.recv().fuse() => {
-          self.leaving = true;
-
-          // If we plan to re-join, keep our state
-          if !self.rejoin_after_leave {
-            self.alive_nodes.clear();
-          }
-          self.try_append(SnapshotRecord::Leave);
-
-          if let Some(fh) = self.fh.as_mut() {
-            if let Err(e) = fh.flush() {
-              tracing::error!(target="ruserf", err=%SnapshotError::Flush(e), "failed to flush leave to snapshot");
-            }
-
-            if let Err(e) = fh.get_mut().sync_all() {
-              tracing::error!(target="ruserf", err=%SnapshotError::Sync(e), "failed to sync leave to snapshot");
-            }
+        signal = self.leave_rx.recv().fuse() => {
+          if signal.is_ok() {
+            self.handle_leave();
           }
         }
         ev = self.stream_rx.recv().fuse() => {
@@ -592,6 +597,10 @@ where
           break;
         }
       }
+    }
+
+    if self.leave_rx.try_recv().is_ok() {
+      self.handle_leave();
     }
 
     // Setup a timeout
@@ -632,7 +641,7 @@ where
 
     self.wait_tx.close();
     tee_handle.await;
-    tracing::info!("ruserf: snapshotter stream exits");
+    tracing::debug!("ruserf: snapshotter stream exits");
   }
 
   /// Used to handle a single user event

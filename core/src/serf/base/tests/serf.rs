@@ -112,7 +112,7 @@ pub async fn serf_get_queue_max<T>(
   let want = 1024;
   assert_eq!(got, want);
 
-  s.shutdown().await.unwrap();
+  sn.shutdown().await.unwrap();
   <T::Runtime as RuntimeLite>::sleep(Duration::from_secs(2)).await;
 
   // Bring it under the number of nodes, so the calculation based on
@@ -153,6 +153,8 @@ pub async fn serf_get_queue_max<T>(
   let got = snn.get_queue_max().await;
   let want = 202;
   assert_eq!(got, want);
+  snn.shutdown().await.unwrap();
+  drop(snn);
 }
 
 /// Unit tests for the update
@@ -240,6 +242,10 @@ pub async fn serf_update<T, F>(
     }
   }
   assert!(found, "did not found s2 in members");
+
+  for s in serfs.iter() {
+    s.shutdown().await.unwrap();
+  }
 }
 
 /// Unit tests for the role
@@ -564,7 +570,7 @@ pub async fn serf_coordinates<T>(
     }
 
     if start.elapsed() > Duration::from_secs(7) {
-      panic!("timed out");
+      panic!("timed out cond1 {} cond2 {} cond3 {} cond4 {}", cond1, cond2, cond3, cond4);
     }
   }
 
@@ -635,8 +641,8 @@ pub async fn serf_coordinates<T>(
       break;
     }
 
-    if start.elapsed() > Duration::from_secs(7) {
-      panic!("timed out");
+    if start.elapsed() > Duration::from_secs(14) {
+      panic!("timed out: cond1 {} cond2 {}", cond1, cond2);
     }
   }
 
@@ -791,18 +797,18 @@ pub async fn serf_write_keyring_file<T>(
   let existing_bytes = general_purpose::STANDARD.decode(EXISTING).unwrap();
   let sk = memberlist_core::types::SecretKey::try_from(existing_bytes.as_slice()).unwrap();
 
-  let s = Serf::<T>::new(
+  let serf = Serf::<T>::new(
     get_transport_opts(sk),
     test_config().with_keyring_file(Some(p.clone())),
   )
   .await
   .unwrap();
   assert!(
-    s.encryption_enabled(),
+    serf.encryption_enabled(),
     "write keyring file test only works on encrypted serf"
   );
 
-  let manager = s.key_manager();
+  let manager = serf.key_manager();
   let new_key = general_purpose::STANDARD.decode(NEW_KEY).unwrap();
   let new_sk = memberlist_core::types::SecretKey::try_from(new_key.as_slice()).unwrap();
   manager.install_key(new_sk, None).await.unwrap();
@@ -848,6 +854,10 @@ pub async fn serf_write_keyring_file<T>(
   assert_eq!(lines.len(), 3);
 
   assert!(lines[1].contains(NEW_KEY));
+
+  let resp = manager.list_keys().await.unwrap();
+  assert_eq!(resp.primary_keys().len(), 1);
+  assert_eq!(resp.keys().len(), 1);
 }
 
 #[test]

@@ -48,7 +48,7 @@ fn invalid_data_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> 
 #[cfg(feature = "test")]
 #[cfg_attr(docsrs, doc(cfg(feature = "test")))]
 pub mod tests {
-  pub use memberlist_core::tests::{next_socket_addr_v4, next_socket_addr_v6, run, AnyError};
+  pub use memberlist_core::tests::{next_socket_addr_v4, next_socket_addr_v6, AnyError};
   pub use paste;
 
   pub use super::serf::base::tests::{serf::*, *};
@@ -98,8 +98,8 @@ pub mod tests {
     use std::sync::Once;
     static TRACE: Once = Once::new();
     TRACE.call_once(|| {
-      let filter =
-        std::env::var("RUSERF_TESTING_LOG").unwrap_or_else(|_| "ruserf_core=trace".to_owned());
+      let filter = std::env::var("RUSERF_TESTING_LOG")
+        .unwrap_or_else(|_| "ruserf_core=info,memberlist_core=debug".to_owned());
       memberlist_core::tracing::subscriber::set_global_default(
         tracing_subscriber::fmt::fmt()
           .without_time()
@@ -112,5 +112,15 @@ pub mod tests {
       )
       .unwrap();
     });
+  }
+
+  /// Run the unit test with a given async runtime sequentially.
+  pub fn run<B, F>(block_on: B, fut: F)
+  where
+    B: FnOnce(F) -> F::Output,
+    F: std::future::Future<Output = ()>,
+  {
+    // initialize_tests_tracing();
+    block_on(fut);
   }
 }

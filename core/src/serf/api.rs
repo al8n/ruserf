@@ -589,7 +589,6 @@ where
       // channel signals that we are cleaned up outside of Serf.
       *s = SerfState::Shutdown;
     }
-
     self.inner.memberlist.shutdown().await?;
     self.inner.shutdown_tx.close();
 
