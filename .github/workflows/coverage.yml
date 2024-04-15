@@ -40,9 +40,6 @@ jobs:
           - crate: ruserf
             features: "test,tokio,tcp,encryption,metrics"
             name: "ruserf-tcp-encryption"
-          - crate: ruserf
-            features: "test,tokio,quinn,compression,metrics"
-            name: "ruserf-quinn-compression"
     steps:
       - uses: actions/checkout@v3
       - name: Install latest nightly

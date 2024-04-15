@@ -570,7 +570,10 @@ pub async fn serf_coordinates<T>(
     }
 
     if start.elapsed() > Duration::from_secs(7) {
-      panic!("timed out cond1 {} cond2 {} cond3 {} cond4 {}", cond1, cond2, cond3, cond4);
+      panic!(
+        "timed out cond1 {} cond2 {} cond3 {} cond4 {}",
+        cond1, cond2, cond3, cond4
+      );
     }
   }
 
