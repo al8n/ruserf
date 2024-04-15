@@ -86,7 +86,7 @@ Here are the layers:
 
   - **`Delegate`**
   
-    Delegate is the trait that clients must implement if they want to hook into the gossip layer of Memberlist. All the methods must be thread-safe, as they can and generally will be called concurrently.
+    Delegate is the trait that clients must implement if they want to hook into the gossip layer of Serf. All the methods must be thread-safe, as they can and generally will be called concurrently.
 
     Here are the sub delegate traits:
 

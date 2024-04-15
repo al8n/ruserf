@@ -116,8 +116,8 @@ pub async fn serf_reconnect_same_ip<T, R, F>(
   serfs[1].shutdown().await.unwrap();
 
   let t = serfs[1].inner.opts.memberlist_options.probe_interval();
-  let _ = serfs.pop().unwrap();
-  <T::Runtime as RuntimeLite>::sleep(t * 5).await;
+  drop(serfs.pop().unwrap());
+  <T::Runtime as RuntimeLite>::sleep(t * 10).await;
 
   // Bring back s2
   let s2 = Serf::<T>::new(
