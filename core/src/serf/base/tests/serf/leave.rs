@@ -494,7 +494,7 @@ pub async fn serf_leave_snapshot_recovery<T, F>(
   let mut cond2 = false;
   loop {
     if !cond1 {
-      let num = serfs[1].num_nodes().await;
+      let num = serfs[1].num_members().await;
       if num == 1 {
         cond1 = true;
       }

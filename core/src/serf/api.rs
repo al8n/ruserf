@@ -189,12 +189,13 @@ where
   /// Returns the number of nodes in the serf cluster, regardless of
   /// their health or status.
   #[inline]
-  pub async fn num_nodes(&self) -> usize {
+  pub async fn num_members(&self) -> usize {
     self.inner.members.read().await.states.len()
   }
 
   /// Returns the key manager for the current serf instance
   #[cfg(feature = "encryption")]
+  #[cfg_attr(docsrs, doc(cfg(feature = "encryption")))]
   #[inline]
   pub fn key_manager(&self) -> &crate::key_manager::KeyManager<T, D> {
     &self.inner.key_manager
@@ -628,7 +629,6 @@ where
   }
 
   /// Returns the underlying [`Memberlist`] instance
-  #[allow(private_interfaces)]
   #[inline]
   pub fn memberlist(&self) -> &Memberlist<T, SerfDelegate<T, D>> {
     &self.inner.memberlist

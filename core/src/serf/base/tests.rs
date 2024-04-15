@@ -50,7 +50,7 @@ where
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
     let mut conds = Vec::with_capacity(serfs.len());
     for (idx, s) in serfs.iter().enumerate() {
-      let n = s.num_nodes().await;
+      let n = s.num_members().await;
       if n == desired_nodes {
         conds.push(true);
         continue;

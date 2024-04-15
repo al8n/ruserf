@@ -237,7 +237,7 @@ where
     ch: Receiver<NodeResponse<T::Id, <T::Resolver as AddressResolver>::ResolvedAddress>>,
   ) -> KeyResponse<T::Id> {
     let mut resp = KeyResponse {
-      num_nodes: self.serf.get().unwrap().num_nodes().await,
+      num_nodes: self.serf.get().unwrap().num_members().await,
       messages: HashMap::new(),
       num_resp: 0,
       num_err: 0,

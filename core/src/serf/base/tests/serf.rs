@@ -457,7 +457,7 @@ where
     .await
     .unwrap();
 
-  assert_eq!(s1.num_nodes().await, 1);
+  assert_eq!(s1.num_members().await, 1);
 
   let serfs = [s1, s2];
   wait_until_num_nodes(1, &serfs).await;

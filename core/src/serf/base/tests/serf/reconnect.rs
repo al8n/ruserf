@@ -202,7 +202,7 @@ pub async fn serf_per_node_reconnect_timeout<T>(
   let mut cond2 = false;
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
-    let n = s1.num_nodes().await;
+    let n = s1.num_members().await;
     if n == 1 {
       cond1 = true;
     }
@@ -210,7 +210,7 @@ pub async fn serf_per_node_reconnect_timeout<T>(
       panic!("s1 got {} expected {}", n, 1);
     }
 
-    let n = s2.num_nodes().await;
+    let n = s2.num_members().await;
     if n == 1 {
       cond2 = true;
     }
@@ -233,7 +233,7 @@ pub async fn serf_per_node_reconnect_timeout<T>(
   let mut cond2 = false;
   loop {
     <T::Runtime as RuntimeLite>::sleep(Duration::from_millis(25)).await;
-    let n = s1.num_nodes().await;
+    let n = s1.num_members().await;
     if n == 2 {
       cond1 = true;
     }
@@ -241,7 +241,7 @@ pub async fn serf_per_node_reconnect_timeout<T>(
       panic!("s1 got {} expected {}", n, 2);
     }
 
-    let n = s2.num_nodes().await;
+    let n = s2.num_members().await;
     if n == 2 {
       cond2 = true;
     }
