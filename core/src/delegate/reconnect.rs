@@ -6,9 +6,12 @@ use crate::types::Member;
 
 /// Implemented to allow overriding the reconnect timeout for individual members.
 pub trait ReconnectDelegate: Send + Sync + 'static {
+  /// The id type of the delegate
   type Id: Id;
+  /// The address type of the delegate
   type Address: CheapClone + Send + Sync + 'static;
 
+  /// Returns the reconnect timeout for the given member.
   fn reconnect_timeout(
     &self,
     member: &Member<Self::Id, Self::Address>,

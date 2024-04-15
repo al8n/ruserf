@@ -28,26 +28,48 @@ use super::{
 /// KeyResponse is used to relay a query for a list of all keys in use.
 #[viewit::viewit(
   vis_all = "pub(crate)",
-  getters(style = "ref", vis_all = "pub"),
+  getters(style = "move", vis_all = "pub"),
   setters(skip)
 )]
 #[derive(Default, Debug)]
 pub struct KeyResponse<I> {
   /// Map of node id to response message
+  #[viewit(getter(
+    const,
+    style = "ref",
+    attrs(doc = "Returns a map of node id to response message.")
+  ))]
   messages: HashMap<I, SmolStr>,
   /// Total nodes memberlist knows of
+  #[viewit(getter(const, attrs(doc = "Returns the total nodes memberlist knows of.")))]
   num_nodes: usize,
   /// Total responses received
+  #[viewit(getter(const, attrs(doc = "Returns the total responses received.")))]
   num_resp: usize,
   /// Total errors from request
+  #[viewit(getter(const, attrs(doc = "Returns the total errors from request.")))]
   num_err: usize,
 
   /// A mapping of the value of the key bytes to the
   /// number of nodes that have the key installed.
+  #[viewit(getter(
+    const,
+    style = "ref",
+    attrs(
+      doc = "Returns a mapping of the value of the key bytes to the number of nodes that have the key installed.."
+    )
+  ))]
   keys: HashMap<SecretKey, usize>,
 
   /// A mapping of the value of the primary
   /// key bytes to the number of nodes that have the key installed.
+  #[viewit(getter(
+    const,
+    style = "ref",
+    attrs(
+      doc = "Returns a mapping of the value of the primary key bytes to the number of nodes that have the key installed."
+    )
+  ))]
   primary_keys: HashMap<SecretKey, usize>,
 }
 

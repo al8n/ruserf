@@ -15,6 +15,9 @@ use super::{
   ReconnectDelegate, TransformDelegate,
 };
 
+/// `CompositeDelegate` is a helpful struct to split the [`Delegate`] into multiple small delegates,
+/// so that users do not need to implement full [`Delegate`] when they only want to custom some methods
+/// in the [`Delegate`].
 pub struct CompositeDelegate<
   I,
   A,
@@ -35,6 +38,7 @@ impl<I, A> Default for CompositeDelegate<I, A> {
 }
 
 impl<I, A> CompositeDelegate<I, A> {
+  /// Returns a new `CompositeDelegate`.
   pub fn new() -> Self {
     Self {
       merge: Default::default(),
@@ -49,6 +53,7 @@ impl<I, A, M, R, T> CompositeDelegate<I, A, M, R, T>
 where
   M: MergeDelegate<Id = I, Address = A>,
 {
+  /// Set the [`MergeDelegate`] for the `CompositeDelegate`.
   pub fn with_merge_delegate<NM>(self, merge: NM) -> CompositeDelegate<I, A, NM, R, T> {
     CompositeDelegate {
       merge,
@@ -60,6 +65,7 @@ where
 }
 
 impl<I, A, M, R, T> CompositeDelegate<I, A, M, R, T> {
+  /// Set the [`ReconnectDelegate`] for the `CompositeDelegate`.
   pub fn with_reconnect_delegate<NR>(self, reconnect: NR) -> CompositeDelegate<I, A, M, NR, T> {
     CompositeDelegate {
       reconnect,
@@ -71,6 +77,7 @@ impl<I, A, M, R, T> CompositeDelegate<I, A, M, R, T> {
 }
 
 impl<I, A, M, R, T> CompositeDelegate<I, A, M, R, T> {
+  /// Set the [`TransformDelegate`] for the `CompositeDelegate`.
   pub fn with_transform_delegate<NT>(self, transform: NT) -> CompositeDelegate<I, A, M, R, NT> {
     CompositeDelegate {
       transform,

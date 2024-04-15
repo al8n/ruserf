@@ -23,12 +23,16 @@ pub trait TransformDelegate: Send + Sync + 'static {
   /// The Address type.
   type Address: CheapClone + Send + Sync + 'static;
 
+  /// Encodes the filter into bytes.
   fn encode_filter(filter: &Filter<Self::Id>) -> Result<Bytes, Self::Error>;
 
+  /// Decodes the filter from the given bytes, returning the number of bytes consumed and the filter.
   fn decode_filter(bytes: &[u8]) -> Result<(usize, Filter<Self::Id>), Self::Error>;
 
+  /// Returns the encoded length of the node.
   fn node_encoded_len(node: &Node<Self::Id, Self::Address>) -> usize;
 
+  /// Encodes the node into the given buffer, returning the number of bytes written.
   fn encode_node(
     node: &Node<Self::Id, Self::Address>,
     dst: &mut [u8],
@@ -39,30 +43,43 @@ pub trait TransformDelegate: Send + Sync + 'static {
     bytes: impl AsRef<[u8]>,
   ) -> Result<(usize, Node<Self::Id, Self::Address>), Self::Error>;
 
+  /// Returns the encoded length of the id.
   fn id_encoded_len(id: &Self::Id) -> usize;
 
+  /// Encodes the id into the given buffer, returning the number of bytes written.
   fn encode_id(id: &Self::Id, dst: &mut [u8]) -> Result<usize, Self::Error>;
 
+  /// Decodes the id from the given bytes, returning the number of bytes consumed and the id.
   fn decode_id(bytes: &[u8]) -> Result<(usize, Self::Id), Self::Error>;
 
+  /// Returns the encoded length of the address.
   fn address_encoded_len(address: &Self::Address) -> usize;
 
+  /// Encodes the address into the given buffer, returning the number of bytes written.
   fn encode_address(address: &Self::Address, dst: &mut [u8]) -> Result<usize, Self::Error>;
 
+  /// Decodes the address from the given bytes, returning the number of bytes consumed and the address.
   fn decode_address(bytes: &[u8]) -> Result<(usize, Self::Address), Self::Error>;
 
+  /// Encoded length of the coordinate.
   fn coordinate_encoded_len(coordinate: &Coordinate) -> usize;
 
+  /// Encodes the coordinate into the given buffer, returning the number of bytes written.
   fn encode_coordinate(coordinate: &Coordinate, dst: &mut [u8]) -> Result<usize, Self::Error>;
 
+  /// Decodes the coordinate from the given bytes, returning the number of bytes consumed and the coordinate.
   fn decode_coordinate(bytes: &[u8]) -> Result<(usize, Coordinate), Self::Error>;
 
+  /// Encoded length of the tags.
   fn tags_encoded_len(tags: &Tags) -> usize;
 
+  /// Encodes the tags into the given buffer, returning the number of bytes written.
   fn encode_tags(tags: &Tags, dst: &mut [u8]) -> Result<usize, Self::Error>;
 
+  /// Decodes the tags from the given bytes, returning the number of bytes consumed and the tags.
   fn decode_tags(bytes: &[u8]) -> Result<(usize, Tags), Self::Error>;
 
+  /// Encoded length of the message.
   fn message_encoded_len(msg: impl AsMessageRef<Self::Id, Self::Address>) -> usize;
 
   /// Encodes the message into the given buffer, returning the number of bytes written.
@@ -78,6 +95,7 @@ pub trait TransformDelegate: Send + Sync + 'static {
     dst: impl AsMut<[u8]>,
   ) -> Result<usize, Self::Error>;
 
+  /// Decodes the message from the given bytes, returning the number of bytes consumed and the message.
   fn decode_message(
     ty: MessageType,
     bytes: impl AsRef<[u8]>,
@@ -130,6 +148,7 @@ where
   }
 }
 
+/// A length-prefixed encoding [`TransformDelegate`] implementation
 pub struct LpeTransfromDelegate<I, A>(std::marker::PhantomData<(I, A)>);
 
 impl<I, A> Default for LpeTransfromDelegate<I, A> {

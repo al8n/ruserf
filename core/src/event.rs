@@ -275,23 +275,31 @@ where
   }
 }
 
+/// The event type for member event
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case", untagged))]
 pub enum MemberEventType {
+  /// Join event
   #[cfg_attr(feature = "serde", serde(rename = "member-join"))]
   Join,
+  /// Leave event
   #[cfg_attr(feature = "serde", serde(rename = "member-leave"))]
   Leave,
+  /// Failed event
   #[cfg_attr(feature = "serde", serde(rename = "member-failed"))]
   Failed,
+  /// Update event
   #[cfg_attr(feature = "serde", serde(rename = "member-update"))]
   Update,
+  /// Reap event
   #[cfg_attr(feature = "serde", serde(rename = "member-reap"))]
   Reap,
 }
 
 impl MemberEventType {
+  /// Returns the string representation of the event type.
+  #[inline]
   pub const fn as_str(&self) -> &'static str {
     match self {
       Self::Join => "member-join",
@@ -356,17 +364,12 @@ impl<I, A> core::fmt::Display for MemberEvent<I, A> {
 }
 
 impl<I, A> MemberEvent<I, A> {
-  pub fn new(ty: MemberEventType, members: TinyVec<Member<I, A>>) -> Self {
-    Self {
-      ty,
-      members: Arc::new(members),
-    }
-  }
-
+  /// Returns the event type of this member event
   pub fn ty(&self) -> MemberEventType {
     self.ty
   }
 
+  /// Returns the members of this event
   pub fn members(&self) -> &[Member<I, A>] {
     &self.members
   }

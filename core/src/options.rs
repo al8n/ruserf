@@ -53,6 +53,17 @@ pub struct Options {
   /// things like leave messages and force remove messages. If this is not
   /// set, a timeout of 5 seconds will be set.
   #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
+  #[viewit(
+    getter(
+      const,
+      attrs(
+        doc = "Returns the amount of time to wait for a broadcast message to be sent to the cluster."
+      )
+    ),
+    setter(attrs(
+      doc = "Sets the amount of time to wait for a broadcast message to be sent to the cluster."
+    ))
+  )]
   broadcast_timeout: Duration,
 
   /// For our leave (node dead) message to propagate
@@ -61,6 +72,10 @@ pub struct Options {
   /// leaving and stop probing. Otherwise, we risk getting node failures as
   /// we leave.
   #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
+  #[viewit(
+    getter(const, attrs(doc = "Returns the leave propagate delay.")),
+    setter(attrs(doc = "Sets the leave propagate delay."))
+  )]
   leave_propagate_delay: Duration,
 
   /// The settings below relate to Serf's event coalescence feature. Serf
@@ -78,6 +93,10 @@ pub struct Options {
   /// within 5 seconds that can be coalesced will be.
   ///
   #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
+  #[viewit(
+    getter(const, attrs(doc = "Returns the coalesce period.")),
+    setter(attrs(doc = "Sets the coalesce period."))
+  )]
   coalesce_period: Duration,
 
   /// specifies the duration of time where if no events
@@ -87,39 +106,92 @@ pub struct Options {
   /// new events are received within 2 seconds of the last event. Otherwise,
   /// every event will always be delayed by at least 10 seconds.
   #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
+  #[viewit(
+    getter(
+      const,
+      attrs(
+        doc = "Returns the specifies the duration of time where if no events are received, coalescence immediately happens."
+      )
+    ),
+    setter(attrs(
+      doc = "Sets specifies the duration of time where if no events are received, coalescence immediately happens."
+    ))
+  )]
   quiescent_period: Duration,
 
   /// The settings below relate to Serf's user event coalescing feature.
   /// The settings operate like above but only affect user messages and
   /// not the Member* messages that Serf generates.
   #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
+  #[viewit(
+    getter(const, attrs(doc = "Returns the user event coalesce period.")),
+    setter(attrs(doc = "Sets the user event coalesce period."))
+  )]
   user_coalesce_period: Duration,
+
   /// The settings below relate to Serf's user event coalescing feature.
   /// The settings operate like above but only affect user messages and
   /// not the Member* messages that Serf generates.
   #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
+  #[viewit(
+    getter(const, attrs(doc = "Returns the user quiescent period.")),
+    setter(attrs(doc = "Sets the user quiescent period."))
+  )]
   user_quiescent_period: Duration,
 
   /// The interval when the reaper runs. If this is not
   /// set (it is zero), it will be set to a reasonable default.
   #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
+  #[viewit(
+    getter(const, attrs(doc = "Returns the interval when the reaper runs.")),
+    setter(attrs(doc = "Sets the interval when the reaper runs."))
+  )]
   reap_interval: Duration,
 
   /// The interval when we attempt to reconnect
   /// to failed nodes. If this is not set (it is zero), it will be set
   /// to a reasonable default.
   #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
+  #[viewit(
+    getter(
+      const,
+      attrs(doc = "Returns the interval when we attempt to reconnect to failed nodes.")
+    ),
+    setter(attrs(doc = "Sets the interval when we attempt to reconnect to failed nodes."))
+  )]
   reconnect_interval: Duration,
 
   /// The amount of time to attempt to reconnect to
   /// a failed node before giving up and considering it completely gone.
   #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
+  #[viewit(
+    getter(
+      const,
+      attrs(
+        doc = "Returns the amount of time to attempt to reconnect to a failed node before giving up and considering it completely gone."
+      )
+    ),
+    setter(attrs(
+      doc = "Sets the amount of time to attempt to reconnect to a failed node before giving up and considering it completely gone."
+    ))
+  )]
   reconnect_timeout: Duration,
 
   /// The amount of time to keep around nodes
   /// that gracefully left as tombstones for syncing state with other
   /// Serf nodes.
   #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
+  #[viewit(
+    getter(
+      const,
+      attrs(
+        doc = "Returns the amount of time to keep around nodes that gracefully left as tombstones for syncing state with other Serf nodes."
+      )
+    ),
+    setter(attrs(
+      doc = "Sets the amount of time to keep around nodes that gracefully left as tombstones for syncing state with other Serf nodes."
+    ))
+  )]
   tombstone_timeout: Duration,
 
   /// The amount of time less than which we consider a node
@@ -128,28 +200,69 @@ pub struct Options {
   /// to see actual events, given our expected detection times for a failed
   /// node.
   #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
+  #[viewit(
+    getter(
+      const,
+      attrs(
+        doc = "Returns the amount of time less than which we consider a node being failed and rejoining looks like a flap for telemetry purposes."
+      )
+    ),
+    setter(attrs(
+      doc = "Sets the amount of time less than which we consider a node being failed and rejoining looks like a flap for telemetry purposes."
+    ))
+  )]
   flap_timeout: Duration,
 
   /// The interval at which we check the message
   /// queue to apply the warning and max depth.
   #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
+  #[viewit(
+    getter(
+      const,
+      attrs(
+        doc = "Returns the interval at which we check the message queue to apply the warning and max depth."
+      )
+    ),
+    setter(attrs(
+      doc = "Sets the interval at which we check the message queue to apply the warning and max depth."
+    ))
+  )]
   queue_check_interval: Duration,
 
   /// Used to generate warning message if the
   /// number of queued messages to broadcast exceeds this number. This
   /// is to provide the user feedback if events are being triggered
   /// faster than they can be disseminated
+  #[viewit(
+    getter(const, attrs(doc = "Returns the queue depth warning.")),
+    setter(attrs(doc = "Sets the queue depth warning."))
+  )]
   queue_depth_warning: usize,
 
   /// Used to start dropping messages if the number
   /// of queued messages to broadcast exceeds this number. This is to
   /// prevent an unbounded growth of memory utilization
+  #[viewit(
+    getter(const, attrs(doc = "Returns the max queue depth.")),
+    setter(attrs(doc = "Sets the max queue depth."))
+  )]
   max_queue_depth: usize,
 
   /// if >0 will enforce a lower limit for dropping messages
   /// and then the max will be max(MinQueueDepth, 2*SizeOfCluster). This
   /// defaults to 0 which disables this dynamic sizing feature. If this is
   /// >0 then `max_queue_depth` will be ignored.
+  #[viewit(
+    getter(
+      const,
+      attrs(
+        doc = "Returns if `>0` will enforce a lower limit for dropping messages and then the max will be `max(min_queue_depth, 2 * size_of_cluster)`. This defaults to 0 which disables this dynamic sizing feature. If this is `>0` then `max_queue_depth` will be ignored."
+      )
+    ),
+    setter(attrs(
+      doc = "Sets if `>0` will enforce a lower limit for dropping messages and then the max will be `max(min_queue_depth, 2 * size_of_cluster)`. This defaults to 0 which disables this dynamic sizing feature. If this is `>0` then `max_queue_depth` will be ignored."
+    ))
+  )]
   min_queue_depth: usize,
 
   /// Used to determine how long we store recent
@@ -158,6 +271,13 @@ pub struct Options {
   /// It is important that this not be too short to avoid continuous
   /// rebroadcasting of dead events.
   #[cfg_attr(feature = "serde", serde(with = "humantime_serde"))]
+  #[viewit(
+    getter(
+      const,
+      attrs(doc = "Returns how long we store recent join and leave intents.")
+    ),
+    setter(attrs(doc = "Sets how long we store recent join and leave intents."))
+  )]
   recent_intent_timeout: Duration,
 
   /// Used to control how many events are buffered.
@@ -166,6 +286,10 @@ pub struct Options {
   /// not deliver messages that are older than the oldest entry in the buffer.
   /// Thus if a client is generating too many events, it's possible that the
   /// buffer gets overrun and messages are not delivered.
+  #[viewit(
+    getter(const, attrs(doc = "Returns how many events are buffered.")),
+    setter(attrs(doc = "Sets how many events are buffered."))
+  )]
   event_buffer_size: usize,
 
   /// used to control how many queries are buffered.
@@ -174,6 +298,10 @@ pub struct Options {
   /// deliver queries older than the oldest entry in the buffer.
   /// Thus if a client is generating too many queries, it's possible that the
   /// buffer gets overrun and messages are not delivered.
+  #[viewit(
+    getter(const, attrs(doc = "Returns how many queries are buffered.")),
+    setter(attrs(doc = "Sets how many queries are buffered."))
+  )]
   query_buffer_size: usize,
 
   /// Configures the default timeout multipler for a query to run if no
@@ -187,40 +315,87 @@ pub struct Options {
   /// ```text
   /// timeout = gossip_interval * query_timeout_mult * log(N+1)
   /// ```
+  #[viewit(
+    getter(
+      const,
+      attrs(
+        doc = "Returns the default timeout multipler for a query to run if no specific value is provided."
+      )
+    ),
+    setter(attrs(
+      doc = "Sets the default timeout multipler for a query to run if no specific value is provided."
+    ))
+  )]
   query_timeout_mult: usize,
 
   /// Limit the outbound payload sizes for queries, respectively. These must fit
   /// in a UDP packet with some additional overhead, so tuning these
   /// past the default values of 1024 will depend on your network
   /// configuration.
+  #[viewit(
+    getter(
+      const,
+      attrs(doc = "Returns the limit of the outbound payload sizes for queries.")
+    ),
+    setter(attrs(doc = "Sets the limit of the outbound payload sizes for queries."))
+  )]
   query_response_size_limit: usize,
 
   /// Limit the inbound payload sizes for queries, respectively. These must fit
   /// in a UDP packet with some additional overhead, so tuning these
   /// past the default values of 1024 will depend on your network
   /// configuration.
+  #[viewit(
+    getter(
+      const,
+      attrs(doc = "Returns the limit of the inbound payload sizes for queries.")
+    ),
+    setter(attrs(doc = "Sets the limit of the inbound payload sizes for queries."))
+  )]
   query_size_limit: usize,
 
   /// The memberlist configuration that Serf will
   /// use to do the underlying membership management and gossip.
-  #[viewit(getter(const, style = "ref"))]
+  #[viewit(
+    getter(
+      const,
+      style = "ref",
+      attrs(
+        doc = "Returns the memberlist configuration that Serf will use to do the underlying membership management and gossip."
+      )
+    ),
+    setter(attrs(
+      doc = "Sets the memberlist configuration that Serf will use to do the underlying membership management and gossip."
+    ))
+  )]
   memberlist_options: MemberlistOptions,
 
   /// If provided is used to snapshot live nodes as well
   /// as lamport clock values. When Serf is started with a snapshot,
   /// it will attempt to join all the previously known nodes until one
   /// succeeds and will also avoid replaying old user events.
-  #[viewit(getter(
-    const,
-    style = "ref",
-    result(converter(fn = "Option::as_ref"), type = "Option<&PathBuf>")
-  ))]
+  #[viewit(
+    getter(
+      const,
+      style = "ref",
+      result(converter(fn = "Option::as_ref"), type = "Option<&PathBuf>"),
+      attrs(doc = "Returns the path to the snapshot file.")
+    ),
+    setter(attrs(doc = "Sets the path to the snapshot file."))
+  )]
   snapshot_path: Option<PathBuf>,
 
   /// Controls our interaction with the snapshot file.
   /// When set to false (default), a leave causes a Serf to not rejoin
   /// the cluster until an explicit join is received. If this is set to
   /// true, we ignore the leave, and rejoin the cluster on start.
+  #[viewit(
+    getter(
+      const,
+      attrs(doc = "Returns if Serf will rejoin the cluster after a leave.")
+    ),
+    setter(attrs(doc = "Sets if Serf will rejoin the cluster after a leave."))
+  )]
   rejoin_after_leave: bool,
 
   /// Controls if Serf will actively attempt
@@ -231,25 +406,65 @@ pub struct Options {
   /// conflict and issues a special query which asks the cluster for the
   /// Name -> IP:Port mapping. If there is a simple majority of votes, that
   /// node stays while the other node will leave the cluster and exit.
+  #[viewit(
+    getter(
+      const,
+      attrs(doc = "Returns if Serf will attempt to resolve a name conflict.")
+    ),
+    setter(attrs(doc = "Sets if Serf will attempt to resolve a name conflict."))
+  )]
   enable_id_conflict_resolution: bool,
 
   /// Controls if Serf will maintain an estimate of this
   /// node's network coordinate internally. A network coordinate is useful
   /// for estimating the network distance (i.e. round trip time) between
   /// two nodes. Enabling this option adds some overhead to ping messages.
+  #[viewit(
+    getter(
+      const,
+      attrs(
+        doc = "Returns if Serf will maintain an estimate of this node's network coordinate internally."
+      )
+    ),
+    setter(attrs(
+      doc = "Sets if Serf will maintain an estimate of this node's network coordinate internally."
+    ))
+  )]
   disable_coordinates: bool,
 
   /// Provides the location of a writable file where Serf can
   /// persist changes to the encryption keyring.
-  #[viewit(getter(
-    const,
-    style = "ref",
-    result(converter(fn = "Option::as_ref"), type = "Option<&PathBuf>")
-  ))]
+  #[cfg(feature = "encryption")]
+  #[viewit(
+    getter(
+      const,
+      style = "ref",
+      result(converter(fn = "Option::as_ref"), type = "Option<&PathBuf>"),
+      attrs(
+        doc = "Returns the location of a writable file where Serf can persist changes to the encryption keyring.",
+        cfg(feature = "encryption")
+      )
+    ),
+    setter(attrs(
+      doc = "Sets the location of a writable file where Serf can persist changes to the encryption keyring.",
+      cfg(feature = "encryption")
+    ))
+  )]
   keyring_file: Option<PathBuf>,
 
   /// Maximum byte size limit of user event `name` + `payload` in bytes.
   /// It's optimal to be relatively small, since it's going to be gossiped through the cluster.
+  #[viewit(
+    getter(
+      const,
+      attrs(
+        doc = "Returns the maximum byte size limit of user event `name` + `payload` in bytes."
+      )
+    ),
+    setter(attrs(
+      doc = "Sets the maximum byte size limit of user event `name` + `payload` in bytes."
+    ))
+  )]
   max_user_event_size: usize,
 }
 
@@ -312,6 +527,7 @@ impl Options {
     }
   }
 
+  /// Sets the tags for this node.
   #[inline]
   pub fn with_tags<K: Into<SmolStr>, V: Into<SmolStr>>(
     self,

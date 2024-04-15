@@ -27,6 +27,7 @@ serde = [
 test = ["memberlist-core/test", "paste", "tracing-subscriber", "tempfile"]
 
 [dependencies]
+auto_impl = "1"
 atomic_refcell = "0.1"
 arc-swap = "1"
 async-lock = "3"
