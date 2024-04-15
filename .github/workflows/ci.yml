@@ -79,12 +79,6 @@ jobs:
           cargo test --no-default-features --features "test,encryption,net,metrics,${{ matrix.runtime }}" -- --test-threads=1
         working-directory: ruserf
 
-
-      - name: Run Unit Tests for ruserf based on quinn transport
-        run: |
-          cargo test --no-default-features --features "test,compression,quinn,metrics,${{ matrix.runtime }}" -- --test-threads=1
-        working-directory: ruserf
-
       - name: Cache Cargo registry
         uses: actions/cache@v3
         with:

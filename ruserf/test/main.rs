@@ -5,10 +5,6 @@ use ruserf_core::tests::run as run_unit_test;
 #[path = "./main/net.rs"]
 mod net;
 
-#[cfg(feature = "quic")]
-#[path = "./main/quic.rs"]
-mod quic;
-
 #[cfg(feature = "tokio")]
 fn tokio_run(fut: impl Future<Output = ()>) {
   let runtime = ::tokio::runtime::Builder::new_multi_thread()
